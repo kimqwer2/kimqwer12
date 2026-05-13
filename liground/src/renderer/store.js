@@ -996,8 +996,13 @@ export const store = new Vuex.Store({
     setResized9x10height (context, payload) {
       context.commit('resized9x10height', payload)
     },
-    goEngine (context) {
-      engine.send('go infinite')
+    goEngine (context, payload = {}) {
+      const targetDepth = context.state.analysisVisualization.analysisTargetDepth
+      const goCmd = (payload.depth || (targetDepth !== 'infinite' && Number.isFinite(Number(targetDepth))))
+        ? `go depth ${payload.depth || Number(targetDepth)}`
+        : 'go infinite'
+      console.log('[analysis] goEngine ->', goCmd, 'mode=', context.state.appMode, 'transitioning=', context.state.modeTransitioning)
+      engine.send(goCmd)
       context.commit('setEngineClock')
       context.commit('active', true)
     },
@@ -1305,6 +1310,7 @@ export const store = new Vuex.Store({
       context.dispatch('resetEngineData')
     },
     stopEngine (context) {
+      console.log('[analysis] stopEngine active=', context.state.active, 'mode=', context.state.appMode, 'transitioning=', context.state.modeTransitioning)
       engine.send('stop')
       context.commit('resetEngineTime')
       context.commit('active', false)
@@ -1330,6 +1336,7 @@ export const store = new Vuex.Store({
       const normalizedFen = context.getters.normalizedFen
       const engineName = context.getters.engineName
 
+      console.log('[analysis] position fen', context.getters.fen, 'mode=', context.state.appMode)
       engine.send(`position fen ${context.getters.fen}`)
       const eve = new CustomEvent('position', { detail: { fen: context.getters.fen } })
       document.dispatchEvent(eve)
@@ -1687,6 +1694,9 @@ export const store = new Vuex.Store({
       context.commit('idAuthor', payload)
     },
     updateMultiPV (context, payload) {
+      if ('pv' in payload || typeof payload.depth === 'number') {
+        console.log('[analysis] updateMultiPV depth=', payload.depth, 'pv?', 'pv' in payload, 'active=', context.state.active)
+      }
       // ignore pv updates when engine is expected to be inactive
       if (!context.state.active) {
         return
@@ -1851,19 +1861,23 @@ export const store = new Vuex.Store({
       context.commit('analysisMode', payload)
     },
     async setAppMode (context, mode) {
+      console.log('[analysis] setAppMode requested', mode, 'from', context.state.appMode, 'transitioning=', context.state.modeTransitioning)
       if (context.state.modeTransitioning || context.state.appMode === mode) return
       context.commit('modeTransitioning', true)
       try {
+        console.log('[analysis] resetEngineData before mode transition')
         context.dispatch('resetEngineData')
         if (mode === 'analysis') {
-          context.dispatch('position')
+          await context.dispatch('position')
           context.dispatch('goEngine')
         } else {
           context.dispatch('stopEngine')
         }
         context.commit('appMode', mode)
+        console.log('[analysis] setAppMode committed', mode, 'active=', context.state.active)
       } finally {
         context.commit('modeTransitioning', false)
+        console.log('[analysis] setAppMode transition completed mode=', context.state.appMode, 'active=', context.state.active)
       }
     },
     toggleAnalysisMode (context) {
