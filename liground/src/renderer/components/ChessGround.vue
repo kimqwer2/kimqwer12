@@ -434,20 +434,23 @@ export default {
       const cfg = this.analysisVisualization
       const shapes = []
       const pieceShapes = []
+      const trajectoryShapes = []
+      const multipvShapes = []
       const visibleMultiPv = cfg.multiPvCount > 0 ? this.multipv.slice(0, cfg.multiPvCount) : this.multipv
-      const showArrows = cfg.visualizationMode === 'arrow' || cfg.visualizationMode === 'hybrid'
-      if (cfg.showMultiPvArrows && showArrows) {
+      const showTrajectoryArrows = cfg.visualizationMode === 'arrow' || cfg.visualizationMode === 'hybrid'
+      if (cfg.showMultiPvArrows) {
         for (const [i, pvline] of visibleMultiPv.entries()) {
           if (!pvline || !pvline.ucimove) continue
           const { orig, dest } = this.toBoardKeys(pvline.ucimove)
           const highlighted = i === 0 ? 'yellow' : (i === this.hoveredpv ? 'blue' : 'paleBlue')
-          shapes.unshift({ orig, dest, brush: highlighted, modifiers: { lineWidth: 2 + ((visibleMultiPv.length - i) / Math.max(1, visibleMultiPv.length)) * 8 } })
+          multipvShapes.unshift({ orig, dest, brush: highlighted, modifiers: { lineWidth: 2 + ((visibleMultiPv.length - i) / Math.max(1, visibleMultiPv.length)) * 8 } })
         }
       }
       if (cfg.trajectoryEnabled && this.multipv[0] && this.multipv[0].pvUCI) {
         const rainbow = ['red', 'orange', 'yellow', 'green', 'blue', 'purple', 'pink']
         const allMoves = this.multipv[0].pvUCI.split(/\s+/).filter(Boolean)
         const maxMoves = cfg.trajectoryUnlimited ? allMoves.length : Math.min(allMoves.length, cfg.trajectoryDepth)
+        const tempPieces = { ...(this.board && this.board.state && this.board.state.pieces ? this.board.state.pieces : {}) }
         for (let idx = 0; idx < maxMoves; idx++) {
           if (cfg.trajectorySideMode === 'my' && idx % 2 === 1) continue
           const move = allMoves[idx]
@@ -459,11 +462,11 @@ export default {
           const circled = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩', '⑪', '⑫', '⑬', '⑭', '⑮', '⑯', '⑰', '⑱', '⑲', '⑳']
           const label = cfg.orderNumbers ? (idx < circled.length ? circled[idx] : String(idx + 1)) : undefined
           const brush = rainbow[idx % rainbow.length]
-          if (showArrows) {
-            shapes.push({ orig, dest, brush, label, modifiers: { lineWidth, opacity } })
+          if (showTrajectoryArrows) {
+            trajectoryShapes.push({ orig, dest, brush, label, modifiers: { lineWidth, opacity } })
           }
           if (cfg.visualizationMode === 'ghost' || cfg.visualizationMode === 'hybrid') {
-            const pieceOnOrig = this.board && this.board.state && this.board.state.pieces ? this.board.state.pieces[orig] : null
+            const pieceOnOrig = tempPieces[orig]
             if (pieceOnOrig && pieceOnOrig.role) {
               const ghostOpacity = idx === 0 ? 0.65 : (idx === 1 ? 0.45 : 0.25)
               pieceShapes.push({
@@ -475,10 +478,15 @@ export default {
               })
             }
           }
+          if (tempPieces[orig]) {
+            tempPieces[dest] = tempPieces[orig]
+            delete tempPieces[orig]
+          }
         }
       }
-      this.shapes = shapes
+      this.shapes = [...multipvShapes, ...trajectoryShapes]
       this.pieceShapes = pieceShapes
+      console.log('[viz] multipvShapes=', multipvShapes.length, 'trajectoryShapes=', trajectoryShapes.length, 'ghostShapes=', pieceShapes.length, 'cfg=', cfg, 'multipvRaw=', this.multipv)
       this.drawShapes()
     },
     closeCursorHand () {

@@ -1664,6 +1664,9 @@ export const store = new Vuex.Store({
           if (!filteredSettings.includes(name)) {
             context.state.engineSettings[name] = value
           }
+          if (name === 'MultiPV' || name === 'UCI_Variant') {
+            console.log('[engine-cmd] setoption', name, value)
+          }
           engine.send(`setoption name ${name} value ${value}`)
         } else {
           engine.send(`setoption name ${name}`)
@@ -1737,6 +1740,9 @@ export const store = new Vuex.Store({
               console.warn('Invalid engine pv move.\nFEN:', board.fen(), '\nPV:', payload.pv)
             }
             multipv[payload.multipv - 1] = pvline
+            if (typeof payload.multipv === 'number' && payload.multipv <= 5) {
+              console.log('[multipv] idx', payload.multipv, 'depth', payload.depth, 'uci', pvline.ucimove, 'pv', payload.pv)
+            }
           }
         }
         context.commit('multipv', multipv)
