@@ -38,27 +38,6 @@
             @mouseout="hideShade"
           />
           <div ref="board" />
-          <button class="viz-toggle" @click="showVizSettings = !showVizSettings">
-            Viz ⚙
-          </button>
-          <div v-if="showVizSettings" class="viz-panel">
-            <label><input v-model="vizLocal.showMultiPvArrows" type="checkbox" @change="applyVizSettings"> MultiPV arrows</label>
-            <label>Top N <input v-model.number="vizLocal.multiPvCount" type="number" min="1" @change="applyVizSettings"></label>
-            <label><input v-model="vizLocal.trajectoryEnabled" type="checkbox" @change="applyVizSettings"> Best-line trajectory</label>
-            <label>Side
-              <select v-model="vizLocal.trajectorySideMode" @change="applyVizSettings">
-                <option value="both">Both sides</option><option value="my">My side only</option>
-              </select>
-            </label>
-            <label>Depth
-              <select v-model="depthMode" @change="applyDepthSetting">
-                <option value="4">4</option><option value="8">8</option><option value="12">12</option><option value="20">20</option><option value="40">40</option><option value="unlimited">Unlimited</option>
-              </select>
-            </label>
-            <label><input v-model="vizLocal.orderNumbers" type="checkbox" @change="applyVizSettings"> Numbering</label>
-            <label><input v-model="vizLocal.orderThickness" type="checkbox" @change="applyVizSettings"> Thickness scale</label>
-            <label><input v-model="vizLocal.orderOpacity" type="checkbox" @change="applyVizSettings"> Opacity fade</label>
-          </div>
           <div
             v-if="isPromotionModalVisible"
             id="PromotionModal"
@@ -201,10 +180,7 @@ export default {
       promotionMove: undefined,
       pieceStyleEl: null,
       boardStyleEl: null,
-      start: true,
-      showVizSettings: false,
-      depthMode: '12',
-      vizLocal: {}
+      start: true
     }
   },
   computed: {
@@ -313,7 +289,6 @@ export default {
     analysisVisualization: {
       deep: true,
       handler () {
-        this.syncLocalVizSettings()
         this.renderAnalysisVisualization()
       }
     },
@@ -436,26 +411,9 @@ export default {
       this.startingPoint = this.enlarged
     }
     document.body.dispatchEvent(new Event('chessground.resize'))
-    this.syncLocalVizSettings()
     this.renderAnalysisVisualization()
   },
   methods: {
-    syncLocalVizSettings () {
-      this.vizLocal = { ...this.analysisVisualization }
-      this.depthMode = this.analysisVisualization.trajectoryUnlimited ? 'unlimited' : String(this.analysisVisualization.trajectoryDepth)
-    },
-    applyVizSettings () {
-      this.$store.dispatch('analysisVisualization', this.vizLocal)
-    },
-    applyDepthSetting () {
-      if (this.depthMode === 'unlimited') {
-        this.vizLocal.trajectoryUnlimited = true
-      } else {
-        this.vizLocal.trajectoryUnlimited = false
-        this.vizLocal.trajectoryDepth = Number(this.depthMode)
-      }
-      this.applyVizSettings()
-    },
     toBoardKeys (move) {
       let orig = move.substring(0, 2)
       let dest = move.substring(2, 4)
@@ -496,8 +454,10 @@ export default {
           const progress = idx / Math.max(1, maxMoves)
           const lineWidth = cfg.orderThickness ? Math.max(1.5, 7 - progress * 5) : 3
           const opacity = cfg.orderOpacity ? Math.max(0.2, 1 - progress * 0.8) : 1
-          const label = cfg.orderNumbers ? String(idx + 1) : undefined
-          shapes.push({ orig, dest, brush: 'green', label, modifiers: { lineWidth, opacity } })
+          const circled = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩']
+          const label = cfg.orderNumbers ? (idx < circled.length ? circled[idx] : String(idx + 1)) : undefined
+          const brush = idx % 2 === 0 ? 'green' : 'red'
+          shapes.push({ orig, dest, brush, label, modifiers: { lineWidth, opacity } })
         }
       }
       this.shapes = shapes
@@ -701,7 +661,8 @@ export default {
       if (this.$store.getters.isInternational) {
         node.href = '../../../../static/board-css/international/' + boardStyle + '.css'
       } else if (this.$store.getters.isXiangqi || this.$store.getters.isJanggi) {
-        node.href = '../../../../static/board-css/xiangqi/' + this.variant + '/' + boardStyle + '.css'
+        const boardVariant = this.variant === 'janggimodern' ? 'janggi' : this.variant
+        node.href = '../../../../static/board-css/xiangqi/' + boardVariant + '/' + boardStyle + '.css'
       } else if (this.$store.getters.isSEA) {
         node.href = '../../../../static/board-css/sea/' + boardStyle + '.css'
       } else if (this.$store.getters.isShogi) {
@@ -1051,9 +1012,6 @@ export default {
   width: 12.5%;
   height: 62.5%;
 }
-.viz-toggle { position: absolute; top: 6px; right: 6px; z-index: 5; font-size: 12px; }
-.viz-panel { position: absolute; top: 32px; right: 6px; z-index: 6; display: flex; flex-direction: column; gap: 4px; background: rgba(30,30,30,.92); color: #fff; padding: 8px; border-radius: 6px; font-size: 12px; }
-.viz-panel label { display: flex; align-items: center; gap: 6px; justify-content: space-between; }
 .mirror {
   transform: scaleY(-1);
 }

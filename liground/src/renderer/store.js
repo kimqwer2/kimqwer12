@@ -345,7 +345,8 @@ export const store = new Vuex.Store({
       trajectoryUnlimited: false,
       orderNumbers: true,
       orderThickness: true,
-      orderOpacity: true
+      orderOpacity: true,
+      analysisTargetDepth: 'infinite'
     },
     menuAtMove: null,
     displayMenu: true,
@@ -1686,6 +1687,10 @@ export const store = new Vuex.Store({
 
       // only update multipv if depth is higher than cached depth
       if (stats.isEvalCached && stats.depth <= stats.cachedDepth) return
+      const targetDepth = context.state.analysisVisualization.analysisTargetDepth
+      if (context.state.active && targetDepth !== 'infinite' && Number.isFinite(Number(targetDepth)) && stats.depth >= Number(targetDepth)) {
+        context.dispatch('stopEngine')
+      }
 
       // update pvline
       if ('pv' in payload) {
