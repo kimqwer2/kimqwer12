@@ -175,6 +175,7 @@ export default {
       board: null,
       shapes: [],
       pieceShapes: [],
+      ghostFallbackShapes: [],
       promotions: [],
       isPromotionModalVisible: false,
       promotionMove: undefined,
@@ -483,9 +484,10 @@ export default {
         return
       }
       const cfg = this.analysisVisualization
-      const pieceShapes = []
-      const markerShapes = []
+      const trajectoryData = []
       const trajectoryShapes = []
+      const pieceShapes = []
+      const ghostFallbackShapes = []
       const multipvShapes = []
       const visibleMultiPv = cfg.multiPvCount > 0 ? this.multipv.slice(0, cfg.multiPvCount) : this.multipv
       const renderMode = cfg.visualizationMode
@@ -523,6 +525,8 @@ export default {
               const isPassMove = from === to
               const pieceOnFrom = tempPieces[from]
               const captured = isPassMove ? undefined : tempPieces[to]
+              let simulatedPiece
+              let validPiece = false
 
               console.log('[PV SIM DECODE]', {
                 ply: idx,
@@ -534,41 +538,28 @@ export default {
                 isJanggi: this.isJanggiPvVariant()
               })
 
-              if (shouldRenderPly && showArrows && from && to && !isPassMove) {
-                trajectoryShapes.push({ orig: from, dest: to, brush, label, modifiers: { lineWidth, opacity } })
+              if (this.isValidTrajectoryPiece(idx, move, from, to, pieceOnFrom)) {
+                validPiece = true
+                simulatedPiece = this.cloneSimulatedPiece(pieceOnFrom)
               }
 
-              if (!this.isValidTrajectoryPiece(idx, move, from, to, pieceOnFrom)) {
-                this.logPvSimulation(idx, move, from, to, pieceOnFrom, captured, tempPieces[to])
-                continue
-              }
+              trajectoryData.push({
+                ply: idx,
+                move,
+                from,
+                to,
+                piece: simulatedPiece,
+                captured,
+                shouldRenderPly,
+                isPassMove,
+                validPiece,
+                brush,
+                label,
+                lineWidth,
+                opacity
+              })
 
-              const simulatedPiece = this.cloneSimulatedPiece(pieceOnFrom)
-              if (shouldRenderPly && showGhosts && !isPassMove) {
-                const ghostOpacity = idx === 0 ? 0.65 : (idx === 1 ? 0.45 : 0.25)
-                if (this.isJanggiPvVariant()) {
-                  markerShapes.push({
-                    orig: to,
-                    brush: 'paleBlue',
-                    label,
-                    modifiers: { opacity: ghostOpacity, lineWidth: 2 }
-                  })
-                } else {
-                  const ghostShape = {
-                    orig: to,
-                    piece: this.buildGhostPiece(simulatedPiece),
-                    brush: 'paleBlue',
-                    modifiers: { opacity: ghostOpacity, lineWidth: 1.5 }
-                  }
-                  if (ghostShape.piece && ghostShape.piece.role && ghostShape.piece.color) {
-                    pieceShapes.push(ghostShape)
-                  } else {
-                    console.warn('[Trajectory] Skipping invalid ghost shape', { index: idx, uci: move, from, to, piece: ghostShape.piece })
-                  }
-                }
-              }
-
-              if (!isPassMove) {
+              if (validPiece && !isPassMove) {
                 tempPieces[to] = simulatedPiece
                 delete tempPieces[from]
               }
@@ -581,9 +572,41 @@ export default {
           console.warn('[Trajectory] Rendering skipped after unexpected simulation error', error)
         }
       }
+
+      for (const step of trajectoryData) {
+        if (!step.shouldRenderPly || !step.from || !step.to || step.isPassMove) continue
+        if (showArrows) {
+          trajectoryShapes.push({
+            orig: step.from,
+            dest: step.to,
+            brush: step.brush,
+            label: step.label,
+            modifiers: { lineWidth: step.lineWidth, opacity: step.opacity }
+          })
+        }
+        if (showGhosts) {
+          const ghostOpacity = step.ply === 0 ? 0.65 : (step.ply === 1 ? 0.45 : 0.25)
+          ghostFallbackShapes.push({ orig: step.to, brush: 'paleBlue', label: step.label, modifiers: { opacity: ghostOpacity, lineWidth: 2 } })
+          if (step.validPiece && step.piece) {
+            const ghostShape = {
+              orig: step.to,
+              piece: this.buildGhostPiece(step.piece),
+              brush: 'paleBlue',
+              modifiers: { opacity: ghostOpacity, lineWidth: 1.5 }
+            }
+            if (ghostShape.piece && ghostShape.piece.role && ghostShape.piece.color) {
+              pieceShapes.push(ghostShape)
+            } else {
+              console.warn('[Trajectory] Skipping invalid ghost shape', { index: step.ply, uci: step.move, from: step.from, to: step.to, piece: ghostShape.piece })
+            }
+          }
+        }
+      }
+
       this.shapes = [...multipvShapes, ...trajectoryShapes]
-      this.pieceShapes = [...markerShapes, ...pieceShapes]
-      console.log('[viz] mode=', renderMode, 'showArrows=', showArrows, 'showGhosts=', showGhosts, 'multipvShapes=', multipvShapes.length, 'trajectoryShapes=', trajectoryShapes.length, 'markerShapes=', markerShapes.length, 'ghostShapes=', pieceShapes.length, 'cfg=', cfg, 'multipvRaw=', this.multipv)
+      this.pieceShapes = pieceShapes
+      this.ghostFallbackShapes = ghostFallbackShapes
+      console.log('[viz] mode=', renderMode, 'showArrows=', showArrows, 'showGhosts=', showGhosts, 'multipvShapes=', multipvShapes.length, 'trajectoryShapes=', trajectoryShapes.length, 'ghostFallbackShapes=', ghostFallbackShapes.length, 'ghostShapes=', pieceShapes.length, 'cfg=', cfg, 'multipvRaw=', this.multipv)
       this.drawShapes()
     },
     closeCursorHand () {
@@ -1106,8 +1129,8 @@ export default {
         try {
           this.board.setAutoShapes(combinedShapes)
         } catch (error) {
-          console.warn('[Trajectory] Ghost rendering failed; retrying with arrows only', error)
-          const fallbackShapes = [...this.shapes]
+          console.warn('[Trajectory] Ghost rendering failed; retrying with arrows and marker fallback', error)
+          const fallbackShapes = [...this.shapes, ...this.ghostFallbackShapes]
           addLastMove(fallbackShapes)
           try {
             this.board.setAutoShapes(fallbackShapes)
