@@ -336,6 +336,17 @@ export const store = new Vuex.Store({
     viewAnalysis: true,
     analysisMode: true,
     editorMode: false,
+    analysisVisualization: {
+      showMultiPvArrows: true,
+      multiPvCount: 3,
+      trajectoryEnabled: false,
+      trajectorySideMode: 'both',
+      trajectoryDepth: 12,
+      trajectoryUnlimited: false,
+      orderNumbers: true,
+      orderThickness: true,
+      orderOpacity: true
+    },
     menuAtMove: null,
     displayMenu: true,
     darkMode: false,
@@ -690,6 +701,9 @@ export const store = new Vuex.Store({
     },
     editorMode (state, payload) {
       state.editorMode = payload
+    },
+    analysisVisualization (state, payload) {
+      state.analysisVisualization = { ...state.analysisVisualization, ...payload }
     },
     openedPGN (state, payload) {
       state.openedPGN = payload
@@ -1833,6 +1847,9 @@ export const store = new Vuex.Store({
       }
       context.commit('editorMode', next)
     },
+    analysisVisualization (context, payload) {
+      context.commit('analysisVisualization', payload)
+    },
     openedPGN (context, payload) {
       context.commit('openedPGN', payload)
     },
@@ -2283,6 +2300,9 @@ export const store = new Vuex.Store({
     },
     editorMode (state) {
       return state.editorMode
+    },
+    analysisVisualization (state) {
+      return state.analysisVisualization
     },
     menuAtMove (state) {
       return state.menuAtMove

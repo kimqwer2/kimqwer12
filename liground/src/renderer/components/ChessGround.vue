@@ -38,6 +38,27 @@
             @mouseout="hideShade"
           />
           <div ref="board" />
+          <button class="viz-toggle" @click="showVizSettings = !showVizSettings">
+            Viz ⚙
+          </button>
+          <div v-if="showVizSettings" class="viz-panel">
+            <label><input v-model="vizLocal.showMultiPvArrows" type="checkbox" @change="applyVizSettings"> MultiPV arrows</label>
+            <label>Top N <input v-model.number="vizLocal.multiPvCount" type="number" min="1" @change="applyVizSettings"></label>
+            <label><input v-model="vizLocal.trajectoryEnabled" type="checkbox" @change="applyVizSettings"> Best-line trajectory</label>
+            <label>Side
+              <select v-model="vizLocal.trajectorySideMode" @change="applyVizSettings">
+                <option value="both">Both sides</option><option value="my">My side only</option>
+              </select>
+            </label>
+            <label>Depth
+              <select v-model="depthMode" @change="applyDepthSetting">
+                <option value="4">4</option><option value="8">8</option><option value="12">12</option><option value="20">20</option><option value="40">40</option><option value="unlimited">Unlimited</option>
+              </select>
+            </label>
+            <label><input v-model="vizLocal.orderNumbers" type="checkbox" @change="applyVizSettings"> Numbering</label>
+            <label><input v-model="vizLocal.orderThickness" type="checkbox" @change="applyVizSettings"> Thickness scale</label>
+            <label><input v-model="vizLocal.orderOpacity" type="checkbox" @change="applyVizSettings"> Opacity fade</label>
+          </div>
           <div
             v-if="isPromotionModalVisible"
             id="PromotionModal"
@@ -180,7 +201,10 @@ export default {
       promotionMove: undefined,
       pieceStyleEl: null,
       boardStyleEl: null,
-      start: true
+      start: true,
+      showVizSettings: false,
+      depthMode: '12',
+      vizLocal: {}
     }
   },
   computed: {
@@ -231,7 +255,7 @@ export default {
       // Block mouse input completely when not player's turn
       return this.isPlayerTurn ? 'auto' : 'none'
     },
-    ...mapGetters(['initialized', 'variant', 'multipv', 'hoveredpv', 'redraw', 'pieceStyle', 'boardStyle', 'fen', 'lastFen', 'orientation', 'moves', 'isPast', 'dimensionNumber', 'analysisMode', 'editorMode', 'active', 'PvE', 'PvEPlayerIsWhite', 'EvE', 'enginetime', 'resized', 'resized9x9width', 'resized9x9height', 'resized9x10width', 'resized9x10height', 'dimNumber'])
+    ...mapGetters(['initialized', 'variant', 'multipv', 'hoveredpv', 'redraw', 'pieceStyle', 'boardStyle', 'fen', 'lastFen', 'orientation', 'moves', 'isPast', 'dimensionNumber', 'analysisMode', 'editorMode', 'analysisVisualization', 'active', 'PvE', 'PvEPlayerIsWhite', 'EvE', 'enginetime', 'resized', 'resized9x9width', 'resized9x9height', 'resized9x10width', 'resized9x10height', 'dimNumber'])
   },
   watch: {
     dimensionNumber () {
@@ -267,12 +291,15 @@ export default {
     },
     initialized () {
       this.updateBoard()
+      this.renderAnalysisVisualization()
     },
     fen () {
       this.updateBoard()
+      this.renderAnalysisVisualization()
     },
     orientation () {
       this.updateBoard()
+      this.renderAnalysisVisualization()
       document.dispatchEvent(new Event('renderPromotion'))
     },
     pieceStyle (pieceStyle) {
@@ -282,71 +309,18 @@ export default {
     boardStyle (boardStyle) {
       this.updateBoardCSS(boardStyle)
     },
-    multipv () {
-      // Don't draw engine arrows during PvE or EvE modes
-      if (this.PvE || this.EvE) {
-        this.shapes = []
-        this.pieceShapes = []
-        this.drawShapes()
-        return
+    multipv () { this.renderAnalysisVisualization() },
+    analysisVisualization: {
+      deep: true,
+      handler () {
+        this.syncLocalVizSettings()
+        this.renderAnalysisVisualization()
       }
-
-      const multipv = this.multipv
-      const shapes = []
-      const pieceShapes = []
-      for (const [i, pvline] of multipv.entries()) {
-        if (pvline && 'ucimove' in pvline && pvline.ucimove.length > 0) {
-          const lineWidth = 2 + ((multipv.length - i) / multipv.length) * 8
-          const move = pvline.ucimove
-          let orig = move.substring(0, 2)
-          let dest = move.substring(2, 4)
-          let drawShape
-          if (this.dimensionNumber === 3) {
-            const extract = this.extractMoves(move)
-            orig = extract[0].replace('10', ':')
-            dest = extract[1].replace('10', ':')
-          }
-          if (move.includes('@')) {
-            const pieceType = move[0].toLowerCase()
-            const pieceConv = { p: 'pawn', n: 'knight', b: 'bishop', r: 'rook', q: 'queen', k: 'king' }
-            pieceShapes.unshift({
-              orig: dest,
-              dest: dest,
-              brush: 'paleBlue',
-              modifiers: { lineWidth },
-              piece: {
-                role: pieceConv[pieceType],
-                color: this.turn
-              }
-            })
-            drawShape = { orig: dest, brush: 'paleBlue', modifiers: { lineWidth } }
-          } else {
-            drawShape = { orig, dest, brush: 'paleBlue', modifiers: { lineWidth } }
-          }
-          // adjust color if pv line is hovered
-          if (i === this.hoveredpv) {
-            drawShape.brush = 'blue'
-          }
-          if (i === 0) {
-            drawShape.brush = 'yellow'
-          }
-          // put item in front of list, so that the best move is drawn last
-          shapes.unshift(drawShape)
-        }
-      }
-      this.pieceShapes = pieceShapes
-      this.shapes = shapes
-      this.drawShapes()
     },
-    hoveredpv () {
-      const index = this.shapes.length - this.hoveredpv - 1
-      for (const [i, shape] of this.shapes.entries()) {
-        shape.brush = i === index ? 'blue' : 'paleBlue'
-        if (i === this.shapes.length - 1) {
-          this.shapes[this.shapes.length - 1].brush = 'yellow'
-        }
-      }
-      this.drawShapes()
+    hoveredpv () { this.renderAnalysisVisualization() },
+    editorMode () {
+      this.updateBoard()
+      this.renderAnalysisVisualization()
     },
     variant () {
       if (this.variant === 'shogi') {
@@ -462,8 +436,74 @@ export default {
       this.startingPoint = this.enlarged
     }
     document.body.dispatchEvent(new Event('chessground.resize'))
+    this.syncLocalVizSettings()
+    this.renderAnalysisVisualization()
   },
   methods: {
+    syncLocalVizSettings () {
+      this.vizLocal = { ...this.analysisVisualization }
+      this.depthMode = this.analysisVisualization.trajectoryUnlimited ? 'unlimited' : String(this.analysisVisualization.trajectoryDepth)
+    },
+    applyVizSettings () {
+      this.$store.dispatch('analysisVisualization', this.vizLocal)
+    },
+    applyDepthSetting () {
+      if (this.depthMode === 'unlimited') {
+        this.vizLocal.trajectoryUnlimited = true
+      } else {
+        this.vizLocal.trajectoryUnlimited = false
+        this.vizLocal.trajectoryDepth = Number(this.depthMode)
+      }
+      this.applyVizSettings()
+    },
+    toBoardKeys (move) {
+      let orig = move.substring(0, 2)
+      let dest = move.substring(2, 4)
+      if (this.dimensionNumber === 3) {
+        const extract = this.extractMoves(move)
+        orig = extract[0].replace('10', ':')
+        dest = extract[1].replace('10', ':')
+      }
+      return { orig, dest }
+    },
+    renderAnalysisVisualization () {
+      if (this.PvE || this.EvE || this.editorMode) {
+        this.shapes = []
+        this.pieceShapes = []
+        this.drawShapes()
+        return
+      }
+      const cfg = this.analysisVisualization
+      const shapes = []
+      const pieceShapes = []
+      const visibleMultiPv = cfg.multiPvCount > 0 ? this.multipv.slice(0, cfg.multiPvCount) : this.multipv
+      if (cfg.showMultiPvArrows) {
+        for (const [i, pvline] of visibleMultiPv.entries()) {
+          if (!pvline || !pvline.ucimove) continue
+          const { orig, dest } = this.toBoardKeys(pvline.ucimove)
+          const highlighted = i === 0 ? 'yellow' : (i === this.hoveredpv ? 'blue' : 'paleBlue')
+          shapes.unshift({ orig, dest, brush: highlighted, modifiers: { lineWidth: 2 + ((visibleMultiPv.length - i) / Math.max(1, visibleMultiPv.length)) * 8 } })
+        }
+      }
+      if (cfg.trajectoryEnabled && this.multipv[0] && this.multipv[0].pvUCI) {
+        const allMoves = this.multipv[0].pvUCI.split(/\s+/).filter(Boolean)
+        const maxMoves = cfg.trajectoryUnlimited ? allMoves.length : Math.min(allMoves.length, cfg.trajectoryDepth)
+        for (let idx = 0; idx < maxMoves; idx++) {
+          if (cfg.trajectorySideMode === 'my' && idx % 2 === 1) continue
+          const move = allMoves[idx]
+          if (move.includes('@')) continue
+          const { orig, dest } = this.toBoardKeys(move)
+          const progress = idx / Math.max(1, maxMoves)
+          const lineWidth = cfg.orderThickness ? Math.max(1.5, 7 - progress * 5) : 3
+          const opacity = cfg.orderOpacity ? Math.max(0.2, 1 - progress * 0.8) : 1
+          const label = cfg.orderNumbers ? String(idx + 1) : undefined
+          shapes.push({ orig, dest, brush: 'green', label, modifiers: { lineWidth, opacity } })
+        }
+      }
+      this.shapes = shapes
+      this.pieceShapes = pieceShapes
+      this.drawShapes()
+    },
     closeCursorHand () {
       const board = document.querySelector('.cg-wrap')
       board.style.cursor = 'grabbing'
@@ -1011,6 +1051,9 @@ export default {
   width: 12.5%;
   height: 62.5%;
 }
+.viz-toggle { position: absolute; top: 6px; right: 6px; z-index: 5; font-size: 12px; }
+.viz-panel { position: absolute; top: 32px; right: 6px; z-index: 6; display: flex; flex-direction: column; gap: 4px; background: rgba(30,30,30,.92); color: #fff; padding: 8px; border-radius: 6px; font-size: 12px; }
+.viz-panel label { display: flex; align-items: center; gap: 6px; justify-content: space-between; }
 .mirror {
   transform: scaleY(-1);
 }
