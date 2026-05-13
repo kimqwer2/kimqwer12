@@ -229,6 +229,14 @@ export default {
           event.preventDefault()
           this.openPrevGame()
         }
+        if (event.ctrlKey && keyName.toLowerCase() === 'a') {
+          event.preventDefault()
+          this.$store.dispatch('toggleAnalysisMode')
+        }
+        if (event.ctrlKey && keyName.toLowerCase() === 'e') {
+          event.preventDefault()
+          this.$store.dispatch('toggleEditorMode')
+        }
       }
     }, false)
   },

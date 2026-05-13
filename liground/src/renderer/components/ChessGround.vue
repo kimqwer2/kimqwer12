@@ -231,7 +231,7 @@ export default {
       // Block mouse input completely when not player's turn
       return this.isPlayerTurn ? 'auto' : 'none'
     },
-    ...mapGetters(['initialized', 'variant', 'multipv', 'hoveredpv', 'redraw', 'pieceStyle', 'boardStyle', 'fen', 'lastFen', 'orientation', 'moves', 'isPast', 'dimensionNumber', 'analysisMode', 'active', 'PvE', 'PvEPlayerIsWhite', 'EvE', 'enginetime', 'resized', 'resized9x9width', 'resized9x9height', 'resized9x10width', 'resized9x10height', 'dimNumber'])
+    ...mapGetters(['initialized', 'variant', 'multipv', 'hoveredpv', 'redraw', 'pieceStyle', 'boardStyle', 'fen', 'lastFen', 'orientation', 'moves', 'isPast', 'dimensionNumber', 'analysisMode', 'editorMode', 'active', 'PvE', 'PvEPlayerIsWhite', 'EvE', 'enginetime', 'resized', 'resized9x9width', 'resized9x9height', 'resized9x10width', 'resized9x10height', 'dimNumber'])
   },
   watch: {
     dimensionNumber () {
@@ -819,6 +819,11 @@ export default {
     },
     afterDrag () {
       return (role, key) => {
+        if (this.editorMode) {
+          this.$store.dispatch('fen', this.board.getFen())
+          this.$store.dispatch('lastFen', this.board.getFen())
+          return
+        }
         const pieces = { 'p-piece': 'P', 'n-piece': 'N', 'b-piece': 'B', 'r-piece': 'R', 'q-piece': 'Q', 's-piece': 'S', 'g-piece': 'G', 'l-piece': 'L' }
         const move = pieces[role] + '@' + key
         const prevMov = this.currentMove
@@ -832,6 +837,14 @@ export default {
     },
     changeTurn () {
       return (orig, dest, metadata) => {
+        if (this.editorMode) {
+          const editedFen = this.board.getFen()
+          this.$store.dispatch('fen', editedFen)
+          this.$store.dispatch('lastFen', editedFen)
+          this.board.state.lastMove = [orig, dest]
+          this.drawShapes()
+          return
+        }
         let uciMove = orig + dest
         if (this.dimensionNumber === 3) {
           uciMove = uciMove.replaceAll(':', '10') // Convert the ':' back to '10'
@@ -933,7 +946,13 @@ export default {
           lastMove: true,
           check: true
         },
-        movable: (this.fen === this.lastFen || this.analysisMode)
+        movable: this.editorMode
+          ? {
+              free: true,
+              color: 'both',
+              dests: undefined
+            }
+          : (this.fen === this.lastFen || this.analysisMode)
           ? {
               dests: this.possibleMoves(),
               color: this.turn
@@ -950,7 +969,11 @@ export default {
     },
     drawShapes () {
       if (this.board !== null) {
-        this.board.setAutoShapes([...this.shapes, ...this.pieceShapes])
+        const combinedShapes = [...this.shapes, ...this.pieceShapes]
+        if (this.board.state.lastMove && this.board.state.lastMove.length === 2) {
+          combinedShapes.push({ orig: this.board.state.lastMove[0], dest: this.board.state.lastMove[1], brush: 'green' })
+        }
+        this.board.setAutoShapes(combinedShapes)
       }
     },
     removeFocusFromInputs () {

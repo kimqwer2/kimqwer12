@@ -275,6 +275,7 @@ export const store = new Vuex.Store({
       Makruk: 'makruk',
       Shogi: 'shogi',
       Janggi: 'janggi',
+      'Janggi Modern': 'janggimodern',
       Xiangqi: 'xiangqi',
       Fischerandom: 'fischerandom'
 
@@ -334,6 +335,7 @@ export const store = new Vuex.Store({
     curVar960Fen: '',
     viewAnalysis: true,
     analysisMode: true,
+    editorMode: false,
     menuAtMove: null,
     displayMenu: true,
     darkMode: false,
@@ -349,7 +351,7 @@ export const store = new Vuex.Store({
       '+ Add Custom', 'xiangqi'
     ],
     janggiVariants: [
-      '+ Add Custom', 'janggi'
+      '+ Add Custom', 'janggi', 'janggimodern'
     ],
     shogiVariants: [
       '+ Add Custom', 'shogi'
@@ -685,6 +687,9 @@ export const store = new Vuex.Store({
     },
     analysisMode (state, payload) {
       state.analysisMode = payload
+    },
+    editorMode (state, payload) {
+      state.editorMode = payload
     },
     openedPGN (state, payload) {
       state.openedPGN = payload
@@ -1811,6 +1816,23 @@ export const store = new Vuex.Store({
     analysisMode (context, payload) {
       context.commit('analysisMode', payload)
     },
+    toggleAnalysisMode (context) {
+      const enable = !context.getters.active
+      if (enable) {
+        context.dispatch('position')
+        context.dispatch('goEngine')
+      } else {
+        context.dispatch('stopEngine')
+      }
+      context.commit('analysisMode', enable)
+    },
+    toggleEditorMode (context) {
+      const next = !context.getters.editorMode
+      if (next && context.getters.active) {
+        context.dispatch('stopEngine')
+      }
+      context.commit('editorMode', next)
+    },
     openedPGN (context, payload) {
       context.commit('openedPGN', payload)
     },
@@ -2242,7 +2264,7 @@ export const store = new Vuex.Store({
         return 0
       } else {
         const var2Dim = {
-          shogi: 1, xiangqi: 3, janggi: 3, makruk: 0
+          shogi: 1, xiangqi: 3, janggi: 3, janggimodern: 3, makruk: 0
         }
         return var2Dim[state.variant]
       }
@@ -2258,6 +2280,9 @@ export const store = new Vuex.Store({
     },
     analysisMode (state) {
       return state.analysisMode
+    },
+    editorMode (state) {
+      return state.editorMode
     },
     menuAtMove (state) {
       return state.menuAtMove
