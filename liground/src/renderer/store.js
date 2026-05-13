@@ -991,6 +991,7 @@ export const store = new Vuex.Store({
       const goCmd = (payload.depth || (targetDepth !== 'infinite' && Number.isFinite(Number(targetDepth))))
         ? `go depth ${payload.depth || Number(targetDepth)}`
         : 'go infinite'
+      console.log('[engine-order] cmd:', goCmd)
       engine.send(goCmd)
       context.commit('setEngineClock')
       context.commit('active', true)
@@ -1324,6 +1325,7 @@ export const store = new Vuex.Store({
       const normalizedFen = context.getters.normalizedFen
       const engineName = context.getters.engineName
 
+      console.log('[engine-order] cmd: position fen', context.getters.fen)
       engine.send(`position fen ${context.getters.fen}`)
       const eve = new CustomEvent('position', { detail: { fen: context.getters.fen } })
       document.dispatchEvent(eve)
@@ -1849,7 +1851,7 @@ export const store = new Vuex.Store({
     analysisMode (context, payload) {
       context.commit('analysisMode', payload)
     },
-    toggleAnalysisMode (context) {
+    async toggleAnalysisMode (context) {
       if (context.state.active) {
         context.dispatch('stopEngine')
         context.commit('analysisMode', false)
@@ -1857,11 +1859,11 @@ export const store = new Vuex.Store({
         // Ensure engine options are sent before position/go so MultiPV activates reliably.
         const topN = context.state.analysisVisualization.multiPvCount
         const multiPvValue = typeof topN === 'number' && topN > 0 ? topN : 1
-        context.dispatch('setEngineOptions', {
+        await context.dispatch('setEngineOptions', {
           MultiPV: multiPvValue,
           UCI_Variant: context.getters.variant
         })
-        context.dispatch('position')
+        await context.dispatch('position')
         context.dispatch('goEngine')
         context.commit('analysisMode', true)
       }

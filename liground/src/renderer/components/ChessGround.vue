@@ -467,15 +467,20 @@ export default {
           }
           if (cfg.visualizationMode === 'ghost' || cfg.visualizationMode === 'hybrid') {
             const pieceOnOrig = tempPieces[orig]
-            if (pieceOnOrig && pieceOnOrig.role) {
+            const normalizedColor = pieceOnOrig && (pieceOnOrig.color === 'white' || pieceOnOrig.color === true ? 'white' : (pieceOnOrig.color === 'black' || pieceOnOrig.color === false ? 'black' : null))
+            if (!pieceOnOrig || !pieceOnOrig.role || !normalizedColor) {
+              console.warn('[viz] invalid ghost piece', { idx, orig, dest, pieceOnOrig })
+            } else {
               const ghostOpacity = idx === 0 ? 0.65 : (idx === 1 ? 0.45 : 0.25)
-              pieceShapes.push({
+              const ghostShape = {
                 orig: dest,
-                // use same role pipeline as board pieces; normalize color token for all variants
-                piece: { role: pieceOnOrig.role, color: pieceOnOrig.color === 'white' || pieceOnOrig.color === true ? 'white' : 'black' },
+                piece: { role: pieceOnOrig.role, color: normalizedColor },
                 brush: 'paleBlue',
                 modifiers: { opacity: ghostOpacity, lineWidth: 1.5 }
-              })
+              }
+              if (ghostShape.piece && ghostShape.piece.role && ghostShape.piece.color) {
+                pieceShapes.push(ghostShape)
+              }
             }
           }
           if (tempPieces[orig]) {
