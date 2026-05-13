@@ -893,7 +893,9 @@ export const store = new Vuex.Store({
       }
       context.commit('newBoard')
       context.dispatch('updateBoard')
-      context.dispatch('changeEngine', context.getters.availableEngines[0].name)
+      const available = context.getters.availableEngines
+      const preferred = available.find(e => /fairy/i.test(e.name)) || available[0]
+      context.dispatch('changeEngine', preferred.name)
       context.commit('initialized', true)
     },
     updateBoard (context) {
@@ -1532,7 +1534,9 @@ export const store = new Vuex.Store({
         const last = context.state.selectedEngines[payload]
         const newEngine = typeof last === 'string'
           ? last
-          : (oldEngine && oldEngine.variants.includes(payload) ? oldEngine.name : context.getters.availableEngines[0].name)
+          : (oldEngine && oldEngine.variants.includes(payload)
+              ? oldEngine.name
+              : ((context.getters.availableEngines.find(e => /fairy/i.test(e.name)) || context.getters.availableEngines[0]).name))
         context.dispatch('changeEngine', newEngine).then(() => {
           context.dispatch('setEngineOptions', { UCI_Variant: payload })
         })
@@ -1650,12 +1654,18 @@ export const store = new Vuex.Store({
       context.commit('clearIO')
       await context.dispatch('resetEngineData')
       context.commit('engineInfo', await engine.run(binary, cwd))
+      const variantOption = context.state.engineInfo.options.find(option => option.name === 'UCI_Variant')
+      console.log('[engine-check] active engine:', context.state.engineInfo.name, 'binary:', binary, 'variantOption:', !!variantOption)
+      if (!variantOption) {
+        console.error('[engine-check] Engine is missing UCI_Variant; likely not Fairy-Stockfish or incorrect binary path.')
+      }
       await context.dispatch('initEngineOptions')
     },
     initEngineOptions (context) {
+      const hasVariantOption = context.state.engineInfo.options.some(option => option.name === 'UCI_Variant')
       const options = {
-        // variant & 960 are handled separately and always set
-        UCI_Variant: context.getters.variant,
+        // 960 is always set; UCI_Variant only if engine supports it
+        ...(hasVariantOption ? { UCI_Variant: context.getters.variant } : {}),
         UCI_Chess960: context.state.board.is960(),
 
         // multi pv 5 is default
