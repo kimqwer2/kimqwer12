@@ -1460,7 +1460,11 @@ export const store = new Vuex.Store({
       context.commit('orientation', payload)
     },
     active (context, payload) {
-      context.commit('active', payload)
+      if (payload) {
+        context.dispatch('setAppMode', 'analysis')
+      } else {
+        context.dispatch('setAppMode', 'idle')
+      }
     },
     PvE (context, payload) {
       context.commit('PvE', payload)
@@ -1850,6 +1854,7 @@ export const store = new Vuex.Store({
       if (context.state.modeTransitioning || context.state.appMode === mode) return
       context.commit('modeTransitioning', true)
       try {
+        context.dispatch('resetEngineData')
         if (mode === 'analysis') {
           context.dispatch('position')
           context.dispatch('goEngine')
