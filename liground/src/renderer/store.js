@@ -1854,6 +1854,13 @@ export const store = new Vuex.Store({
         context.dispatch('stopEngine')
         context.commit('analysisMode', false)
       } else {
+        // Ensure engine options are sent before position/go so MultiPV activates reliably.
+        const topN = context.state.analysisVisualization.multiPvCount
+        const multiPvValue = typeof topN === 'number' && topN > 0 ? topN : 1
+        context.dispatch('setEngineOptions', {
+          MultiPV: multiPvValue,
+          UCI_Variant: context.getters.variant
+        })
         context.dispatch('position')
         context.dispatch('goEngine')
         context.commit('analysisMode', true)
@@ -2352,6 +2359,11 @@ ffish.onRuntimeInitialized = () => {
   // setup debug and error output
   engine.on('debug', (...msgs) => console.log('%c[Main Engine] Debug:', 'color: #82aaff; font-weight: 700;', ...msgs))
   engine.on('error', (...msgs) => console.error('%c[Main Engine]', 'color: #82aaff; font-weight: 700;', ...msgs))
+  engine.on('io', line => {
+    if (typeof line === 'string' && line.startsWith('info ') && line.includes(' pv ')) {
+      console.log('[engine-raw-info]', line)
+    }
+  })
   engine.on('eval-debug', (...msgs) => console.log('%c[Eval Engine] Debug:', 'color: #9580ff; font-weight: 700;', ...msgs))
   engine.on('eval-error', (...msgs) => console.error('%c[Eval Engine]', 'color: #9580ff; font-weight: 700;', ...msgs))
 
