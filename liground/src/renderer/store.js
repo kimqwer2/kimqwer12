@@ -1467,10 +1467,12 @@ export const store = new Vuex.Store({
       context.commit('orientation', payload)
     },
     active (context, payload) {
-      if (payload) {
-        context.dispatch('setAppMode', 'analysis')
-      } else {
-        context.dispatch('setAppMode', 'idle')
+      // keep engine lifecycle explicit and lightweight
+      if (payload && !context.state.active) {
+        context.dispatch('position')
+        context.dispatch('goEngine')
+      } else if (!payload && context.state.active) {
+        context.dispatch('stopEngine')
       }
     },
     PvE (context, payload) {
@@ -1860,33 +1862,25 @@ export const store = new Vuex.Store({
     analysisMode (context, payload) {
       context.commit('analysisMode', payload)
     },
-    async setAppMode (context, mode) {
-      console.log('[analysis] setAppMode requested', mode, 'from', context.state.appMode, 'transitioning=', context.state.modeTransitioning)
-      if (context.state.modeTransitioning || context.state.appMode === mode) return
-      context.commit('modeTransitioning', true)
-      try {
-        console.log('[analysis] resetEngineData before mode transition')
-        context.dispatch('resetEngineData')
-        if (mode === 'analysis') {
-          await context.dispatch('position')
-          context.dispatch('goEngine')
-        } else {
-          context.dispatch('stopEngine')
-        }
-        context.commit('appMode', mode)
-        console.log('[analysis] setAppMode committed', mode, 'active=', context.state.active)
-      } finally {
-        context.commit('modeTransitioning', false)
-        console.log('[analysis] setAppMode transition completed mode=', context.state.appMode, 'active=', context.state.active)
+    toggleAnalysisMode (context) {
+      if (context.state.active) {
+        context.dispatch('stopEngine')
+        context.commit('analysisMode', false)
+      } else {
+        context.dispatch('position')
+        context.dispatch('goEngine')
+        context.commit('analysisMode', true)
       }
     },
-    toggleAnalysisMode (context) {
-      const next = context.state.appMode === 'analysis' ? 'idle' : 'analysis'
-      context.dispatch('setAppMode', next)
-    },
     toggleEditorMode (context) {
-      const next = context.state.appMode === 'editor' ? 'idle' : 'editor'
-      context.dispatch('setAppMode', next)
+      const enteringEditor = !context.state.editorMode
+      if (enteringEditor && context.state.active) {
+        context.dispatch('stopEngine')
+      }
+      context.commit('editorMode', enteringEditor)
+      if (enteringEditor) {
+        context.commit('analysisMode', false)
+      }
     },
     analysisVisualization (context, payload) {
       context.commit('analysisVisualization', payload)
