@@ -424,6 +424,40 @@ export default {
       }
       return { orig, dest }
     },
+    clonePiece (piece) {
+      return piece && typeof piece === 'object' ? { ...piece } : piece
+    },
+    clonePieceMap (pieces) {
+      const cloned = {}
+      if (!pieces) return cloned
+      if (pieces instanceof Map) {
+        pieces.forEach((piece, key) => {
+          cloned[key] = this.clonePiece(piece)
+        })
+        return cloned
+      }
+      for (const key of Object.keys(pieces)) {
+        cloned[key] = this.clonePiece(pieces[key])
+      }
+      return cloned
+    },
+    normalizedPieceColor (piece) {
+      if (!piece) return null
+      if (piece.color === 'white' || piece.color === true) return 'white'
+      if (piece.color === 'black' || piece.color === false) return 'black'
+      return null
+    },
+    warnInvalidTrajectoryPiece (idx, move, orig, dest, piece) {
+      console.warn('[Trajectory] Invalid simulated piece', { index: idx, uci: move, from: orig, to: dest, piece })
+    },
+    isValidTrajectoryPiece (idx, move, orig, dest, piece) {
+      const color = this.normalizedPieceColor(piece)
+      if (!orig || !dest || !piece || !color || !piece.role) {
+        this.warnInvalidTrajectoryPiece(idx, move, orig, dest, piece)
+        return false
+      }
+      return true
+    },
     renderAnalysisVisualization () {
       if (this.PvE || this.EvE) return
       if (this.editorMode) {
@@ -432,7 +466,6 @@ export default {
         return
       }
       const cfg = this.analysisVisualization
-      const shapes = []
       const pieceShapes = []
       const trajectoryShapes = []
       const multipvShapes = []
@@ -447,46 +480,52 @@ export default {
         }
       }
       if (cfg.trajectoryEnabled && this.multipv[0] && this.multipv[0].pvUCI) {
-        const rainbow = ['red', 'orange', 'yellow', 'green', 'blue', 'purple', 'pink']
-        const allMoves = this.multipv[0].pvUCI.split(/\s+/).filter(Boolean)
-        const maxMoves = cfg.trajectoryUnlimited ? allMoves.length : Math.min(allMoves.length, cfg.trajectoryDepth)
-        const tempPieces = { ...(this.board && this.board.state && this.board.state.pieces ? this.board.state.pieces : {}) }
-        for (let idx = 0; idx < maxMoves; idx++) {
-          if (cfg.trajectorySideMode === 'my' && idx % 2 === 1) continue
-          const move = allMoves[idx]
-          if (move.includes('@')) continue
-          const { orig, dest } = this.toBoardKeys(move)
-          const progress = idx / Math.max(1, maxMoves)
-          const lineWidth = cfg.orderThickness ? Math.max(1.5, 7 - progress * 5) : 3
-          const opacity = cfg.orderOpacity ? Math.max(0.2, 1 - progress * 0.8) : 1
-          const circled = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩', '⑪', '⑫', '⑬', '⑭', '⑮', '⑯', '⑰', '⑱', '⑲', '⑳']
-          const label = cfg.orderNumbers ? (idx < circled.length ? circled[idx] : String(idx + 1)) : undefined
-          const brush = rainbow[idx % rainbow.length]
-          if (showTrajectoryArrows) {
-            trajectoryShapes.push({ orig, dest, brush, label, modifiers: { lineWidth, opacity } })
-          }
-          if (cfg.visualizationMode === 'ghost' || cfg.visualizationMode === 'hybrid') {
-            const pieceOnOrig = tempPieces[orig]
-            const normalizedColor = pieceOnOrig && (pieceOnOrig.color === 'white' || pieceOnOrig.color === true ? 'white' : (pieceOnOrig.color === 'black' || pieceOnOrig.color === false ? 'black' : null))
-            if (!pieceOnOrig || !pieceOnOrig.role || !normalizedColor) {
-              console.warn('[viz] invalid ghost piece', { idx, orig, dest, pieceOnOrig })
-            } else {
-              const ghostOpacity = idx === 0 ? 0.65 : (idx === 1 ? 0.45 : 0.25)
-              const ghostShape = {
-                orig: dest,
-                piece: { role: pieceOnOrig.role, color: normalizedColor },
-                brush: 'paleBlue',
-                modifiers: { opacity: ghostOpacity, lineWidth: 1.5 }
+        try {
+          const rainbow = ['red', 'orange', 'yellow', 'green', 'blue', 'purple', 'pink']
+          const allMoves = this.multipv[0].pvUCI.split(/\s+/).filter(Boolean)
+          const maxMoves = cfg.trajectoryUnlimited ? allMoves.length : Math.min(allMoves.length, cfg.trajectoryDepth)
+          const tempPieces = this.clonePieceMap(this.board && this.board.state && this.board.state.pieces)
+          for (let idx = 0; idx < maxMoves; idx++) {
+            const move = allMoves[idx]
+            try {
+              if (move.includes('@')) continue
+              const { orig, dest } = this.toBoardKeys(move)
+              const pieceOnOrig = tempPieces[orig]
+              if (!this.isValidTrajectoryPiece(idx, move, orig, dest, pieceOnOrig)) continue
+              const normalizedColor = this.normalizedPieceColor(pieceOnOrig)
+              const progress = idx / Math.max(1, maxMoves)
+              const lineWidth = cfg.orderThickness ? Math.max(1.5, 7 - progress * 5) : 3
+              const opacity = cfg.orderOpacity ? Math.max(0.2, 1 - progress * 0.8) : 1
+              const circled = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩', '⑪', '⑫', '⑬', '⑭', '⑮', '⑯', '⑰', '⑱', '⑲', '⑳']
+              const label = cfg.orderNumbers ? (idx < circled.length ? circled[idx] : String(idx + 1)) : undefined
+              const brush = rainbow[idx % rainbow.length]
+              if (cfg.trajectorySideMode !== 'my' || idx % 2 === 0) {
+                if (showTrajectoryArrows) {
+                  trajectoryShapes.push({ orig, dest, brush, label, modifiers: { lineWidth, opacity } })
+                }
+                if (cfg.visualizationMode === 'ghost' || cfg.visualizationMode === 'hybrid') {
+                  const ghostOpacity = idx === 0 ? 0.65 : (idx === 1 ? 0.45 : 0.25)
+                  const ghostShape = {
+                    orig: dest,
+                    piece: { role: pieceOnOrig.role, color: normalizedColor },
+                    brush: 'paleBlue',
+                    modifiers: { opacity: ghostOpacity, lineWidth: 1.5 }
+                  }
+                  if (ghostShape.piece && ghostShape.piece.role && ghostShape.piece.color) {
+                    pieceShapes.push(ghostShape)
+                  } else {
+                    console.warn('[Trajectory] Skipping invalid ghost shape', { index: idx, uci: move, from: orig, to: dest, piece: ghostShape.piece })
+                  }
+                }
               }
-              if (ghostShape.piece && ghostShape.piece.role && ghostShape.piece.color) {
-                pieceShapes.push(ghostShape)
-              }
+              tempPieces[dest] = { ...pieceOnOrig, color: normalizedColor }
+              delete tempPieces[orig]
+            } catch (moveError) {
+              console.warn('[Trajectory] Invalid simulated move', { index: idx, uci: move, error: moveError })
             }
           }
-          if (tempPieces[orig]) {
-            tempPieces[dest] = tempPieces[orig]
-            delete tempPieces[orig]
-          }
+        } catch (error) {
+          console.warn('[Trajectory] Rendering skipped after unexpected simulation error', error)
         }
       }
       this.shapes = [...multipvShapes, ...trajectoryShapes]
@@ -1000,11 +1039,29 @@ export default {
     },
     drawShapes () {
       if (this.board !== null) {
-        const combinedShapes = [...this.shapes, ...this.pieceShapes]
-        if (this.board.state.lastMove && this.board.state.lastMove.length === 2) {
-          combinedShapes.push({ orig: this.board.state.lastMove[0], dest: this.board.state.lastMove[1], brush: 'green' })
+        const combinedShapes = [...this.shapes, ...this.pieceShapes].filter(shape => {
+          const validPieceShape = !shape.piece || (shape.piece.role && this.normalizedPieceColor(shape.piece))
+          if (!validPieceShape) console.warn('[Trajectory] Dropping malformed piece shape', shape)
+          return validPieceShape
+        })
+        const addLastMove = shapes => {
+          if (this.board.state.lastMove && this.board.state.lastMove.length === 2) {
+            shapes.push({ orig: this.board.state.lastMove[0], dest: this.board.state.lastMove[1], brush: 'green' })
+          }
         }
-        this.board.setAutoShapes(combinedShapes)
+        addLastMove(combinedShapes)
+        try {
+          this.board.setAutoShapes(combinedShapes)
+        } catch (error) {
+          console.warn('[Trajectory] Ghost rendering failed; retrying with arrows only', error)
+          const fallbackShapes = [...this.shapes]
+          addLastMove(fallbackShapes)
+          try {
+            this.board.setAutoShapes(fallbackShapes)
+          } catch (fallbackError) {
+            console.warn('[Trajectory] Failed to render fallback analysis arrows', fallbackError)
+          }
+        }
       }
     },
     removeFocusFromInputs () {
