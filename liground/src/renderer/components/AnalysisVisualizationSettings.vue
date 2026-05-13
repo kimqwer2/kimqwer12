@@ -10,6 +10,9 @@
     <label>Depth
       <select v-model="depthMode" @change="saveDepth"><option value="4">4</option><option value="8">8</option><option value="12">12</option><option value="20">20</option><option value="40">40</option><option value="unlimited">Unlimited</option></select>
     </label>
+    <label>Render mode
+      <select v-model="local.visualizationMode" @change="save"><option value="arrow">Arrow</option><option value="ghost">Ghost trajectory</option><option value="hybrid">Hybrid</option></select>
+    </label>
     <label><input v-model="local.orderNumbers" type="checkbox" @change="save"> Number badges</label>
     <label><input v-model="local.orderThickness" type="checkbox" @change="save"> Thickness</label>
     <label><input v-model="local.orderOpacity" type="checkbox" @change="save"> Opacity</label>

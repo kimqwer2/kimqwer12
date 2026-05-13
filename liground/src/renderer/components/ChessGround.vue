@@ -425,9 +425,9 @@ export default {
       return { orig, dest }
     },
     renderAnalysisVisualization () {
-      if (this.PvE || this.EvE || this.editorMode) {
-        this.shapes = []
-        this.pieceShapes = []
+      if (this.PvE || this.EvE) return
+      if (this.editorMode) {
+        // preserve analysis overlays while editing; don't recompute/clear them
         this.drawShapes()
         return
       }
@@ -435,7 +435,8 @@ export default {
       const shapes = []
       const pieceShapes = []
       const visibleMultiPv = cfg.multiPvCount > 0 ? this.multipv.slice(0, cfg.multiPvCount) : this.multipv
-      if (cfg.showMultiPvArrows) {
+      const showArrows = cfg.visualizationMode === 'arrow' || cfg.visualizationMode === 'hybrid'
+      if (cfg.showMultiPvArrows && showArrows) {
         for (const [i, pvline] of visibleMultiPv.entries()) {
           if (!pvline || !pvline.ucimove) continue
           const { orig, dest } = this.toBoardKeys(pvline.ucimove)
@@ -457,7 +458,21 @@ export default {
           const circled = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩']
           const label = cfg.orderNumbers ? (idx < circled.length ? circled[idx] : String(idx + 1)) : undefined
           const brush = idx % 2 === 0 ? 'green' : 'red'
-          shapes.push({ orig, dest, brush, label, modifiers: { lineWidth, opacity } })
+          if (showArrows) {
+            shapes.push({ orig, dest, brush, label, modifiers: { lineWidth, opacity } })
+          }
+          if (cfg.visualizationMode === 'ghost' || cfg.visualizationMode === 'hybrid') {
+            const pieceOnOrig = this.board && this.board.state && this.board.state.pieces ? this.board.state.pieces[orig] : null
+            if (pieceOnOrig && pieceOnOrig.role) {
+              const ghostOpacity = idx === 0 ? 0.65 : (idx === 1 ? 0.45 : 0.25)
+              pieceShapes.push({
+                orig: dest,
+                piece: { role: pieceOnOrig.role, color: pieceOnOrig.color },
+                brush: 'paleBlue',
+                modifiers: { opacity: ghostOpacity, lineWidth: 1.5 }
+              })
+            }
+          }
         }
       }
       this.shapes = shapes

@@ -160,7 +160,8 @@ export default {
     return {
       positionInfo: '',
       game: null,
-      resetAnalysis: false
+      resetAnalysis: false,
+      keydownHandler: null
     }
   },
   computed: {
@@ -202,7 +203,7 @@ export default {
     ...mapGetters(['QuickTourIndex'])
   },
   mounted () { // EventListener für Keyboardinput, ruft direkt die jeweilige Methode auf
-    window.addEventListener('keydown', (event) => {
+    this.keydownHandler = (event) => {
       const keyName = event.key
       if (event.target.nodeName.toLowerCase() !== 'input' || event.target.type.toLowerCase() === 'checkbox') {
         if (keyName === 'ArrowUp') {
@@ -238,7 +239,13 @@ export default {
           this.$store.dispatch('toggleEditorMode')
         }
       }
-    }, false)
+    }
+    window.addEventListener('keydown', this.keydownHandler, false)
+  },
+  beforeDestroy () {
+    if (this.keydownHandler) {
+      window.removeEventListener('keydown', this.keydownHandler, false)
+    }
   },
   methods: {
     setFenSize () {

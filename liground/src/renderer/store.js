@@ -336,6 +336,8 @@ export const store = new Vuex.Store({
     viewAnalysis: true,
     analysisMode: true,
     editorMode: false,
+    appMode: 'idle',
+    modeTransitioning: false,
     analysisVisualization: {
       showMultiPvArrows: true,
       multiPvCount: 3,
@@ -346,7 +348,8 @@ export const store = new Vuex.Store({
       orderNumbers: true,
       orderThickness: true,
       orderOpacity: true,
-      analysisTargetDepth: 'infinite'
+      analysisTargetDepth: 'infinite',
+      visualizationMode: 'arrow'
     },
     menuAtMove: null,
     displayMenu: true,
@@ -705,6 +708,14 @@ export const store = new Vuex.Store({
     },
     analysisVisualization (state, payload) {
       state.analysisVisualization = { ...state.analysisVisualization, ...payload }
+    },
+    appMode (state, payload) {
+      state.appMode = payload
+      state.editorMode = payload === 'editor'
+      state.analysisMode = payload === 'analysis'
+    },
+    modeTransitioning (state, payload) {
+      state.modeTransitioning = payload
     },
     openedPGN (state, payload) {
       state.openedPGN = payload
@@ -1835,22 +1846,28 @@ export const store = new Vuex.Store({
     analysisMode (context, payload) {
       context.commit('analysisMode', payload)
     },
-    toggleAnalysisMode (context) {
-      const enable = !context.getters.active
-      if (enable) {
-        context.dispatch('position')
-        context.dispatch('goEngine')
-      } else {
-        context.dispatch('stopEngine')
+    async setAppMode (context, mode) {
+      if (context.state.modeTransitioning || context.state.appMode === mode) return
+      context.commit('modeTransitioning', true)
+      try {
+        if (mode === 'analysis') {
+          context.dispatch('position')
+          context.dispatch('goEngine')
+        } else {
+          context.dispatch('stopEngine')
+        }
+        context.commit('appMode', mode)
+      } finally {
+        context.commit('modeTransitioning', false)
       }
-      context.commit('analysisMode', enable)
+    },
+    toggleAnalysisMode (context) {
+      const next = context.state.appMode === 'analysis' ? 'idle' : 'analysis'
+      context.dispatch('setAppMode', next)
     },
     toggleEditorMode (context) {
-      const next = !context.getters.editorMode
-      if (next && context.getters.active) {
-        context.dispatch('stopEngine')
-      }
-      context.commit('editorMode', next)
+      const next = context.state.appMode === 'editor' ? 'idle' : 'editor'
+      context.dispatch('setAppMode', next)
     },
     analysisVisualization (context, payload) {
       context.commit('analysisVisualization', payload)
@@ -2308,6 +2325,9 @@ export const store = new Vuex.Store({
     },
     analysisVisualization (state) {
       return state.analysisVisualization
+    },
+    appMode (state) {
+      return state.appMode
     },
     menuAtMove (state) {
       return state.menuAtMove
