@@ -484,11 +484,17 @@ export default {
       }
       const cfg = this.analysisVisualization
       const pieceShapes = []
+      const markerShapes = []
       const trajectoryShapes = []
       const multipvShapes = []
       const visibleMultiPv = cfg.multiPvCount > 0 ? this.multipv.slice(0, cfg.multiPvCount) : this.multipv
-      const showTrajectoryArrows = cfg.visualizationMode === 'arrow' || cfg.visualizationMode === 'hybrid'
-      if (cfg.showMultiPvArrows) {
+      const renderMode = cfg.visualizationMode
+      const isArrowMode = renderMode === 'arrow'
+      const isGhostMode = renderMode === 'ghost'
+      const isHybridMode = renderMode === 'hybrid'
+      const showArrows = isArrowMode || isHybridMode
+      const showGhosts = isGhostMode || isHybridMode
+      if (showArrows && cfg.showMultiPvArrows) {
         for (const [i, pvline] of visibleMultiPv.entries()) {
           if (!pvline || !pvline.ucimove) continue
           const { orig, dest } = this.toBoardKeys(pvline.ucimove)
@@ -528,7 +534,7 @@ export default {
                 isJanggi: this.isJanggiPvVariant()
               })
 
-              if (shouldRenderPly && showTrajectoryArrows && from && to && !isPassMove) {
+              if (shouldRenderPly && showArrows && from && to && !isPassMove) {
                 trajectoryShapes.push({ orig: from, dest: to, brush, label, modifiers: { lineWidth, opacity } })
               }
 
@@ -538,18 +544,27 @@ export default {
               }
 
               const simulatedPiece = this.cloneSimulatedPiece(pieceOnFrom)
-              if (shouldRenderPly && !isPassMove && (cfg.visualizationMode === 'ghost' || cfg.visualizationMode === 'hybrid')) {
+              if (shouldRenderPly && showGhosts && !isPassMove) {
                 const ghostOpacity = idx === 0 ? 0.65 : (idx === 1 ? 0.45 : 0.25)
-                const ghostShape = {
-                  orig: to,
-                  piece: this.buildGhostPiece(simulatedPiece),
-                  brush: 'paleBlue',
-                  modifiers: { opacity: ghostOpacity, lineWidth: 1.5 }
-                }
-                if (ghostShape.piece && ghostShape.piece.role && ghostShape.piece.color) {
-                  pieceShapes.push(ghostShape)
+                if (this.isJanggiPvVariant()) {
+                  markerShapes.push({
+                    orig: to,
+                    brush: 'paleBlue',
+                    label,
+                    modifiers: { opacity: ghostOpacity, lineWidth: 2 }
+                  })
                 } else {
-                  console.warn('[Trajectory] Skipping invalid ghost shape', { index: idx, uci: move, from, to, piece: ghostShape.piece })
+                  const ghostShape = {
+                    orig: to,
+                    piece: this.buildGhostPiece(simulatedPiece),
+                    brush: 'paleBlue',
+                    modifiers: { opacity: ghostOpacity, lineWidth: 1.5 }
+                  }
+                  if (ghostShape.piece && ghostShape.piece.role && ghostShape.piece.color) {
+                    pieceShapes.push(ghostShape)
+                  } else {
+                    console.warn('[Trajectory] Skipping invalid ghost shape', { index: idx, uci: move, from, to, piece: ghostShape.piece })
+                  }
                 }
               }
 
@@ -567,8 +582,8 @@ export default {
         }
       }
       this.shapes = [...multipvShapes, ...trajectoryShapes]
-      this.pieceShapes = pieceShapes
-      console.log('[viz] multipvShapes=', multipvShapes.length, 'trajectoryShapes=', trajectoryShapes.length, 'ghostShapes=', pieceShapes.length, 'cfg=', cfg, 'multipvRaw=', this.multipv)
+      this.pieceShapes = [...markerShapes, ...pieceShapes]
+      console.log('[viz] mode=', renderMode, 'showArrows=', showArrows, 'showGhosts=', showGhosts, 'multipvShapes=', multipvShapes.length, 'trajectoryShapes=', trajectoryShapes.length, 'markerShapes=', markerShapes.length, 'ghostShapes=', pieceShapes.length, 'cfg=', cfg, 'multipvRaw=', this.multipv)
       this.drawShapes()
     },
     closeCursorHand () {
