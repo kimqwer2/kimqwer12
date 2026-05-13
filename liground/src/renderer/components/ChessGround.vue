@@ -445,6 +445,7 @@ export default {
         }
       }
       if (cfg.trajectoryEnabled && this.multipv[0] && this.multipv[0].pvUCI) {
+        const rainbow = ['red', 'orange', 'yellow', 'green', 'blue', 'purple', 'pink']
         const allMoves = this.multipv[0].pvUCI.split(/\s+/).filter(Boolean)
         const maxMoves = cfg.trajectoryUnlimited ? allMoves.length : Math.min(allMoves.length, cfg.trajectoryDepth)
         for (let idx = 0; idx < maxMoves; idx++) {
@@ -455,9 +456,9 @@ export default {
           const progress = idx / Math.max(1, maxMoves)
           const lineWidth = cfg.orderThickness ? Math.max(1.5, 7 - progress * 5) : 3
           const opacity = cfg.orderOpacity ? Math.max(0.2, 1 - progress * 0.8) : 1
-          const circled = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩']
+          const circled = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩', '⑪', '⑫', '⑬', '⑭', '⑮', '⑯', '⑰', '⑱', '⑲', '⑳']
           const label = cfg.orderNumbers ? (idx < circled.length ? circled[idx] : String(idx + 1)) : undefined
-          const brush = idx % 2 === 0 ? 'green' : 'red'
+          const brush = rainbow[idx % rainbow.length]
           if (showArrows) {
             shapes.push({ orig, dest, brush, label, modifiers: { lineWidth, opacity } })
           }
@@ -467,7 +468,8 @@ export default {
               const ghostOpacity = idx === 0 ? 0.65 : (idx === 1 ? 0.45 : 0.25)
               pieceShapes.push({
                 orig: dest,
-                piece: { role: pieceOnOrig.role, color: pieceOnOrig.color },
+                // use same role pipeline as board pieces; normalize color token for all variants
+                piece: { role: pieceOnOrig.role, color: pieceOnOrig.color === 'white' || pieceOnOrig.color === true ? 'white' : 'black' },
                 brush: 'paleBlue',
                 modifiers: { opacity: ghostOpacity, lineWidth: 1.5 }
               })

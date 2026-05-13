@@ -1696,6 +1696,8 @@ export const store = new Vuex.Store({
       const targetDepth = context.state.analysisVisualization.analysisTargetDepth
       if (context.state.active && targetDepth !== 'infinite' && Number.isFinite(Number(targetDepth)) && stats.depth >= Number(targetDepth)) {
         context.dispatch('stopEngine')
+        context.commit('analysisMode', false)
+        return
       }
 
       // update pvline

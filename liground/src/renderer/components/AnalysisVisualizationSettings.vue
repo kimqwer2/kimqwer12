@@ -28,7 +28,12 @@ export default {
   computed: { cfg () { return this.$store.getters.analysisVisualization } },
   watch: { cfg: { deep: true, immediate: true, handler () { this.local = { ...this.cfg }; this.depthMode = this.cfg.trajectoryUnlimited ? 'unlimited' : String(this.cfg.trajectoryDepth); this.targetDepth = this.cfg.analysisTargetDepth || 'infinite' } } },
   methods: {
-    save () { this.$store.dispatch('analysisVisualization', this.local) },
+    save () {
+      this.$store.dispatch('analysisVisualization', this.local)
+      if (typeof this.local.multiPvCount === 'number' && this.local.multiPvCount > 0) {
+        this.$store.dispatch('setEngineOptions', { MultiPV: this.local.multiPvCount })
+      }
+    },
     saveDepth () { this.local.trajectoryUnlimited = this.depthMode === 'unlimited'; if (!this.local.trajectoryUnlimited) this.local.trajectoryDepth = Number(this.depthMode); this.save() },
     saveTarget () { this.$store.dispatch('analysisVisualization', { analysisTargetDepth: this.targetDepth }) }
   }
