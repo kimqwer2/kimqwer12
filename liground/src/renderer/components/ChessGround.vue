@@ -458,6 +458,23 @@ export default {
       }
       return true
     },
+    isJanggiPvVariant () {
+      return this.variant === 'janggi' || this.variant === 'janggimodern'
+    },
+    cloneSimulatedPiece (piece) {
+      const cloned = this.clonePiece(piece)
+      const color = this.normalizedPieceColor(cloned)
+      if (cloned && color) cloned.color = color
+      return cloned
+    },
+    buildGhostPiece (piece) {
+      const ghostPiece = { role: piece.role, color: this.normalizedPieceColor(piece) }
+      if (piece.promoted !== undefined) ghostPiece.promoted = piece.promoted
+      return ghostPiece
+    },
+    logPvSimulation (ply, move, from, to, piece, captured, resulting) {
+      console.log('[PV SIM]', { ply, move, from, to, piece, captured, resulting })
+    },
     renderAnalysisVisualization () {
       if (this.PvE || this.EvE) return
       if (this.editorMode) {
@@ -489,37 +506,58 @@ export default {
             const move = allMoves[idx]
             try {
               if (move.includes('@')) continue
-              const { orig, dest } = this.toBoardKeys(move)
-              const pieceOnOrig = tempPieces[orig]
-              if (!this.isValidTrajectoryPiece(idx, move, orig, dest, pieceOnOrig)) continue
-              const normalizedColor = this.normalizedPieceColor(pieceOnOrig)
+              const { orig: from, dest: to } = this.toBoardKeys(move)
               const progress = idx / Math.max(1, maxMoves)
               const lineWidth = cfg.orderThickness ? Math.max(1.5, 7 - progress * 5) : 3
               const opacity = cfg.orderOpacity ? Math.max(0.2, 1 - progress * 0.8) : 1
               const circled = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩', '⑪', '⑫', '⑬', '⑭', '⑮', '⑯', '⑰', '⑱', '⑲', '⑳']
               const label = cfg.orderNumbers ? (idx < circled.length ? circled[idx] : String(idx + 1)) : undefined
               const brush = rainbow[idx % rainbow.length]
-              if (cfg.trajectorySideMode !== 'my' || idx % 2 === 0) {
-                if (showTrajectoryArrows) {
-                  trajectoryShapes.push({ orig, dest, brush, label, modifiers: { lineWidth, opacity } })
+              const shouldRenderPly = cfg.trajectorySideMode !== 'my' || idx % 2 === 0
+              const isPassMove = from === to
+              const pieceOnFrom = tempPieces[from]
+              const captured = isPassMove ? undefined : tempPieces[to]
+
+              console.log('[PV SIM DECODE]', {
+                ply: idx,
+                move,
+                from,
+                to,
+                variant: this.variant,
+                dimensionNumber: this.dimensionNumber,
+                isJanggi: this.isJanggiPvVariant()
+              })
+
+              if (shouldRenderPly && showTrajectoryArrows && from && to && !isPassMove) {
+                trajectoryShapes.push({ orig: from, dest: to, brush, label, modifiers: { lineWidth, opacity } })
+              }
+
+              if (!this.isValidTrajectoryPiece(idx, move, from, to, pieceOnFrom)) {
+                this.logPvSimulation(idx, move, from, to, pieceOnFrom, captured, tempPieces[to])
+                continue
+              }
+
+              const simulatedPiece = this.cloneSimulatedPiece(pieceOnFrom)
+              if (shouldRenderPly && !isPassMove && (cfg.visualizationMode === 'ghost' || cfg.visualizationMode === 'hybrid')) {
+                const ghostOpacity = idx === 0 ? 0.65 : (idx === 1 ? 0.45 : 0.25)
+                const ghostShape = {
+                  orig: to,
+                  piece: this.buildGhostPiece(simulatedPiece),
+                  brush: 'paleBlue',
+                  modifiers: { opacity: ghostOpacity, lineWidth: 1.5 }
                 }
-                if (cfg.visualizationMode === 'ghost' || cfg.visualizationMode === 'hybrid') {
-                  const ghostOpacity = idx === 0 ? 0.65 : (idx === 1 ? 0.45 : 0.25)
-                  const ghostShape = {
-                    orig: dest,
-                    piece: { role: pieceOnOrig.role, color: normalizedColor },
-                    brush: 'paleBlue',
-                    modifiers: { opacity: ghostOpacity, lineWidth: 1.5 }
-                  }
-                  if (ghostShape.piece && ghostShape.piece.role && ghostShape.piece.color) {
-                    pieceShapes.push(ghostShape)
-                  } else {
-                    console.warn('[Trajectory] Skipping invalid ghost shape', { index: idx, uci: move, from: orig, to: dest, piece: ghostShape.piece })
-                  }
+                if (ghostShape.piece && ghostShape.piece.role && ghostShape.piece.color) {
+                  pieceShapes.push(ghostShape)
+                } else {
+                  console.warn('[Trajectory] Skipping invalid ghost shape', { index: idx, uci: move, from, to, piece: ghostShape.piece })
                 }
               }
-              tempPieces[dest] = { ...pieceOnOrig, color: normalizedColor }
-              delete tempPieces[orig]
+
+              if (!isPassMove) {
+                tempPieces[to] = simulatedPiece
+                delete tempPieces[from]
+              }
+              this.logPvSimulation(idx, move, from, to, pieceOnFrom, captured, tempPieces[to])
             } catch (moveError) {
               console.warn('[Trajectory] Invalid simulated move', { index: idx, uci: move, error: moveError })
             }
