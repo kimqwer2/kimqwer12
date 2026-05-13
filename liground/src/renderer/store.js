@@ -275,6 +275,7 @@ export const store = new Vuex.Store({
       Makruk: 'makruk',
       Shogi: 'shogi',
       Janggi: 'janggi',
+      'Janggi Modern': 'janggimodern',
       Xiangqi: 'xiangqi',
       Fischerandom: 'fischerandom'
 
@@ -334,6 +335,20 @@ export const store = new Vuex.Store({
     curVar960Fen: '',
     viewAnalysis: true,
     analysisMode: true,
+    editorMode: false,
+    analysisVisualization: {
+      showMultiPvArrows: true,
+      multiPvCount: 3,
+      trajectoryEnabled: false,
+      trajectorySideMode: 'both',
+      trajectoryDepth: 12,
+      trajectoryUnlimited: false,
+      orderNumbers: true,
+      orderThickness: true,
+      orderOpacity: true,
+      analysisTargetDepth: 'infinite',
+      visualizationMode: 'arrow'
+    },
     menuAtMove: null,
     displayMenu: true,
     darkMode: false,
@@ -349,7 +364,7 @@ export const store = new Vuex.Store({
       '+ Add Custom', 'xiangqi'
     ],
     janggiVariants: [
-      '+ Add Custom', 'janggi'
+      '+ Add Custom', 'janggi', 'janggimodern'
     ],
     shogiVariants: [
       '+ Add Custom', 'shogi'
@@ -686,6 +701,12 @@ export const store = new Vuex.Store({
     analysisMode (state, payload) {
       state.analysisMode = payload
     },
+    editorMode (state, payload) {
+      state.editorMode = payload
+    },
+    analysisVisualization (state, payload) {
+      state.analysisVisualization = { ...state.analysisVisualization, ...payload }
+    },
     openedPGN (state, payload) {
       state.openedPGN = payload
     },
@@ -965,8 +986,13 @@ export const store = new Vuex.Store({
     setResized9x10height (context, payload) {
       context.commit('resized9x10height', payload)
     },
-    goEngine (context) {
-      engine.send('go infinite')
+    goEngine (context, payload = {}) {
+      const targetDepth = context.state.analysisVisualization.analysisTargetDepth
+      const goCmd = (payload.depth || (targetDepth !== 'infinite' && Number.isFinite(Number(targetDepth))))
+        ? `go depth ${payload.depth || Number(targetDepth)}`
+        : 'go infinite'
+      console.log('[engine-order] cmd:', goCmd)
+      engine.send(goCmd)
       context.commit('setEngineClock')
       context.commit('active', true)
     },
@@ -1299,6 +1325,7 @@ export const store = new Vuex.Store({
       const normalizedFen = context.getters.normalizedFen
       const engineName = context.getters.engineName
 
+      console.log('[engine-order] cmd: position fen', context.getters.fen)
       engine.send(`position fen ${context.getters.fen}`)
       const eve = new CustomEvent('position', { detail: { fen: context.getters.fen } })
       document.dispatchEvent(eve)
@@ -1609,9 +1636,10 @@ export const store = new Vuex.Store({
       await context.dispatch('initEngineOptions')
     },
     initEngineOptions (context) {
+      const hasVariantOption = context.state.engineInfo.options.some(option => option.name === 'UCI_Variant')
       const options = {
-        // variant & 960 are handled separately and always set
-        UCI_Variant: context.getters.variant,
+        // 960 is always set; UCI_Variant only if engine supports it
+        ...(hasVariantOption ? { UCI_Variant: context.getters.variant } : {}),
         UCI_Chess960: context.state.board.is960(),
 
         // multi pv 5 is default
@@ -1637,6 +1665,9 @@ export const store = new Vuex.Store({
         if (value !== undefined && value !== null) {
           if (!filteredSettings.includes(name)) {
             context.state.engineSettings[name] = value
+          }
+          if (name === 'MultiPV' || name === 'UCI_Variant') {
+            console.log('[engine-cmd] setoption', name, value)
           }
           engine.send(`setoption name ${name} value ${value}`)
         } else {
@@ -1667,6 +1698,12 @@ export const store = new Vuex.Store({
 
       // only update multipv if depth is higher than cached depth
       if (stats.isEvalCached && stats.depth <= stats.cachedDepth) return
+      const targetDepth = context.state.analysisVisualization.analysisTargetDepth
+      if (context.state.active && targetDepth !== 'infinite' && Number.isFinite(Number(targetDepth)) && stats.depth >= Number(targetDepth)) {
+        context.dispatch('stopEngine')
+        context.commit('analysisMode', false)
+        return
+      }
 
       // update pvline
       if ('pv' in payload) {
@@ -1705,6 +1742,9 @@ export const store = new Vuex.Store({
               console.warn('Invalid engine pv move.\nFEN:', board.fen(), '\nPV:', payload.pv)
             }
             multipv[payload.multipv - 1] = pvline
+            if (typeof payload.multipv === 'number' && payload.multipv <= 5) {
+              console.log('[multipv] idx', payload.multipv, 'depth', payload.depth, 'uci', pvline.ucimove, 'pv', payload.pv)
+            }
           }
         }
         context.commit('multipv', multipv)
@@ -1810,6 +1850,36 @@ export const store = new Vuex.Store({
     },
     analysisMode (context, payload) {
       context.commit('analysisMode', payload)
+    },
+    async toggleAnalysisMode (context) {
+      if (context.state.active) {
+        context.dispatch('stopEngine')
+        context.commit('analysisMode', false)
+      } else {
+        // Ensure engine options are sent before position/go so MultiPV activates reliably.
+        const topN = context.state.analysisVisualization.multiPvCount
+        const multiPvValue = typeof topN === 'number' && topN > 0 ? topN : 1
+        await context.dispatch('setEngineOptions', {
+          MultiPV: multiPvValue,
+          UCI_Variant: context.getters.variant
+        })
+        await context.dispatch('position')
+        context.dispatch('goEngine')
+        context.commit('analysisMode', true)
+      }
+    },
+    toggleEditorMode (context) {
+      const enteringEditor = !context.state.editorMode
+      if (enteringEditor && context.state.active) {
+        context.dispatch('stopEngine')
+      }
+      context.commit('editorMode', enteringEditor)
+      if (enteringEditor) {
+        context.commit('analysisMode', false)
+      }
+    },
+    analysisVisualization (context, payload) {
+      context.commit('analysisVisualization', payload)
     },
     openedPGN (context, payload) {
       context.commit('openedPGN', payload)
@@ -2242,7 +2312,7 @@ export const store = new Vuex.Store({
         return 0
       } else {
         const var2Dim = {
-          shogi: 1, xiangqi: 3, janggi: 3, makruk: 0
+          shogi: 1, xiangqi: 3, janggi: 3, janggimodern: 3, makruk: 0
         }
         return var2Dim[state.variant]
       }
@@ -2258,6 +2328,12 @@ export const store = new Vuex.Store({
     },
     analysisMode (state) {
       return state.analysisMode
+    },
+    editorMode (state) {
+      return state.editorMode
+    },
+    analysisVisualization (state) {
+      return state.analysisVisualization
     },
     menuAtMove (state) {
       return state.menuAtMove
@@ -2285,6 +2361,11 @@ ffish.onRuntimeInitialized = () => {
   // setup debug and error output
   engine.on('debug', (...msgs) => console.log('%c[Main Engine] Debug:', 'color: #82aaff; font-weight: 700;', ...msgs))
   engine.on('error', (...msgs) => console.error('%c[Main Engine]', 'color: #82aaff; font-weight: 700;', ...msgs))
+  engine.on('io', line => {
+    if (typeof line === 'string' && line.startsWith('info ') && line.includes(' pv ')) {
+      console.log('[engine-raw-info]', line)
+    }
+  })
   engine.on('eval-debug', (...msgs) => console.log('%c[Eval Engine] Debug:', 'color: #9580ff; font-weight: 700;', ...msgs))
   engine.on('eval-error', (...msgs) => console.error('%c[Eval Engine]', 'color: #9580ff; font-weight: 700;', ...msgs))
 

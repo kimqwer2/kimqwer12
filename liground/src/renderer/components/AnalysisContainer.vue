@@ -69,6 +69,7 @@
         ref="pvlines"
         class="panel-qt"
       />
+      <AnalysisVisualizationSettings />
       <div
         v-if="QuickTourIndex !== 13"
         class="game-window panel noselect"
@@ -126,6 +127,7 @@ import EngineConsole from './EngineConsole'
 import MoveHistoryNode from './MoveHistoryNode'
 import RoundedSwitch from './RoundedSwitch'
 import EngineSelect from './EngineSelect'
+import AnalysisVisualizationSettings from './AnalysisVisualizationSettings.vue'
 import ffish from 'ffish'
 
 export default {
@@ -137,7 +139,8 @@ export default {
     EngineConsole,
     MoveHistoryNode,
     RoundedSwitch,
-    EngineSelect
+    EngineSelect,
+    AnalysisVisualizationSettings
   },
   data () {
     return {
