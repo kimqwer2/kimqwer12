@@ -2707,17 +2707,17 @@ bool Position::is_optional_game_end(Value& result, int ply, int countStarted) co
                   // material-counting scores and illegal perpetual/move
                   // repetition outcomes to the cycle, so their configured
                   // n-fold threshold must remain in force.
-                  int repetitionThreshold =   ply > i
-                                           && var->nFoldValue == VALUE_DRAW
-                                           && !var->nFoldValueAbsolute
-                                           && !var->materialCounting
-                                           && !var->moveRepetitionIllegal
-                                           && !moveRepetition
-                                           && !chaseUs
-                                           && !chaseThem
-                                           && !perpetualUs
-                                           && !perpetualThem
-                                           ? 2 : n_fold_rule();
+                  const bool afterRootDrawShortcut = ply > i
+                                                  && var->nFoldValue == VALUE_DRAW
+                                                  && !var->nFoldValueAbsolute
+                                                  && !var->materialCounting
+                                                  && !var->moveRepetitionIllegal
+                                                  && !moveRepetition
+                                                  && !chaseUs
+                                                  && !chaseThem
+                                                  && !perpetualUs
+                                                  && !perpetualThem;
+                  const int repetitionThreshold = afterRootDrawShortcut ? 2 : n_fold_rule();
 
                   if (cnt + 1 >= repetitionThreshold)
                   {
