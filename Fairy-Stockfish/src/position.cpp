@@ -3128,22 +3128,6 @@ bool Position::has_repeated() const {
 }
 
 
-/// Position::has_repetition_rule_dependency() tests whether repetition adjudication
-/// in the current history can depend on more than just the position key.
-
-bool Position::has_repetition_rule_dependency() const {
-
-    return n_fold_rule()
-        && (   var->nFoldValue != VALUE_DRAW
-            || var->nFoldValueAbsolute
-            || var->perpetualCheckIllegal
-            || var->materialCounting
-            || var->moveRepetitionIllegal
-            || var->chasingRule)
-        && has_repeated();
-}
-
-
 /// Position::has_game_cycle() tests if the position has a move which draws by repetition,
 /// or an earlier position has a move that directly reaches the current position.
 
