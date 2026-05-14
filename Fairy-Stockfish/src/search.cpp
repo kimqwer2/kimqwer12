@@ -689,7 +689,7 @@ namespace {
     Move ttMove, move, excludedMove, bestMove;
     Depth extension, newDepth;
     Value bestValue, value, ttValue, eval, maxValue, probCutBeta;
-    bool givesCheck, improving, didLMR, priorCapture;
+    bool givesCheck, improving, didLMR, priorCapture, repetitionRuleDependency;
     bool captureOrPromotion, doFullDepthSearch, moveCountPruning,
          ttCapture, singularQuietLMR;
     Piece movedPiece;
@@ -718,6 +718,8 @@ namespace {
         if (pos.is_game_end(variantResult, ss->ply))
             return variantResult;
 
+        repetitionRuleDependency = pos.has_repetition_rule_dependency();
+
         // Step 2. Check for aborted search and immediate draw
         if (   Threads.stop.load(std::memory_order_relaxed)
             || ss->ply >= MAX_PLY)
@@ -735,6 +737,8 @@ namespace {
         if (alpha >= beta)
             return alpha;
     }
+    else
+        repetitionRuleDependency = false;
 
     assert(0 <= ss->ply && ss->ply < MAX_PLY);
 
@@ -778,6 +782,7 @@ namespace {
 
     // At non-PV nodes we check for an early TT cutoff
     if (  !PvNode
+        && !repetitionRuleDependency
         && ss->ttHit
         && tte->depth() >= depth
         && ttValue != VALUE_NONE // Possible in case of TT access race
@@ -889,7 +894,8 @@ namespace {
             eval = value_draw(thisThread);
 
         // Can ttValue be used as a better position evaluation?
-        if (    ttValue != VALUE_NONE
+        if (    !repetitionRuleDependency
+            &&  ttValue != VALUE_NONE
             && (tte->bound() & (ttValue > eval ? BOUND_LOWER : BOUND_UPPER)))
             eval = ttValue;
     }
@@ -1498,7 +1504,7 @@ moves_loop: // When in check, search starts from here
         ss->ttPv = ss->ttPv && (ss+1)->ttPv;
 
     // Write gathered information in transposition table
-    if (!excludedMove && !(rootNode && thisThread->pvIdx))
+    if (!excludedMove && !repetitionRuleDependency && !(rootNode && thisThread->pvIdx))
         tte->save(posKey, value_to_tt(bestValue, ss->ply), ss->ttPv,
                   bestValue >= beta ? BOUND_LOWER :
                   PvNode && bestMove ? BOUND_EXACT : BOUND_UPPER,
@@ -1531,7 +1537,7 @@ moves_loop: // When in check, search starts from here
     Move ttMove, move, bestMove;
     Depth ttDepth;
     Value bestValue, value, ttValue, futilityValue, futilityBase, oldAlpha;
-    bool pvHit, givesCheck, captureOrPromotion;
+    bool pvHit, givesCheck, captureOrPromotion, repetitionRuleDependency;
     int moveCount;
 
     if (PvNode)
@@ -1549,6 +1555,8 @@ moves_loop: // When in check, search starts from here
     Value gameResult;
     if (pos.is_game_end(gameResult, ss->ply))
         return gameResult;
+
+    repetitionRuleDependency = pos.has_repetition_rule_dependency();
 
     // Check for maximum ply reached
     if (ss->ply >= MAX_PLY)
@@ -1573,6 +1581,7 @@ moves_loop: // When in check, search starts from here
     pvHit = ss->ttHit && tte->is_pv();
 
     if (  !PvNode
+        && !repetitionRuleDependency
         && ss->ttHit
         && tte->depth() >= ttDepth
         && ttValue != VALUE_NONE // Only in case of TT access race
@@ -1595,7 +1604,8 @@ moves_loop: // When in check, search starts from here
                 ss->staticEval = bestValue = evaluate(pos);
 
             // Can ttValue be used as a better position evaluation?
-            if (    ttValue != VALUE_NONE
+            if (    !repetitionRuleDependency
+                &&  ttValue != VALUE_NONE
                 && (tte->bound() & (ttValue > bestValue ? BOUND_LOWER : BOUND_UPPER)))
                 bestValue = ttValue;
         }
@@ -1610,7 +1620,7 @@ moves_loop: // When in check, search starts from here
         if (bestValue >= beta)
         {
             // Save gathered info in transposition table
-            if (!ss->ttHit)
+            if (!ss->ttHit && !repetitionRuleDependency)
                 tte->save(posKey, value_to_tt(bestValue, ss->ply), false, BOUND_LOWER,
                           DEPTH_NONE, MOVE_NONE, ss->staticEval);
 
@@ -1740,10 +1750,11 @@ moves_loop: // When in check, search starts from here
     }
 
     // Save gathered info in transposition table
-    tte->save(posKey, value_to_tt(bestValue, ss->ply), pvHit,
-              bestValue >= beta ? BOUND_LOWER :
-              PvNode && bestValue > oldAlpha  ? BOUND_EXACT : BOUND_UPPER,
-              ttDepth, bestMove, ss->staticEval);
+    if (!repetitionRuleDependency)
+        tte->save(posKey, value_to_tt(bestValue, ss->ply), pvHit,
+                  bestValue >= beta ? BOUND_LOWER :
+                  PvNode && bestValue > oldAlpha  ? BOUND_EXACT : BOUND_UPPER,
+                  ttDepth, bestMove, ss->staticEval);
 
     assert(bestValue > -VALUE_INFINITE && bestValue < VALUE_INFINITE);
 

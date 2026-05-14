@@ -328,6 +328,7 @@ public:
   bool is_draw(int ply) const;
   bool has_game_cycle(int ply) const;
   bool has_repeated() const;
+  bool has_repetition_rule_dependency() const;
   Bitboard chased() const;
   int count_limit(Color sideToCount) const;
   int board_honor_counting_ply(int countStarted) const;

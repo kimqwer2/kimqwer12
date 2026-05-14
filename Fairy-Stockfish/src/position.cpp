@@ -2698,16 +2698,37 @@ bool Position::is_optional_game_end(Value& result, int ply, int countStarted) co
 
               // Return a draw score if a position repeats once earlier but strictly
               // after the root, or repeats twice before or at the root.
-              if (   stp->key == st->key
-                  && ++cnt + 1 >= (ply > i && !moveRepetition && !chaseUs && !chaseThem && !perpetualUs && !perpetualThem ? 2 : n_fold_rule()))
+              if (stp->key == st->key)
               {
-                  result = convert_mate_value(  (perpetualThem || perpetualUs) ? (!perpetualUs ? VALUE_MATE : !perpetualThem ? -VALUE_MATE : VALUE_DRAW)
-                                              : (chaseThem || chaseUs) ? (!chaseUs ? VALUE_MATE : !chaseThem ? -VALUE_MATE : VALUE_DRAW)
-                                              : var->nFoldValueAbsolute && sideToMove == BLACK ? -var->nFoldValue
-                                              : var->nFoldValue, ply);
-                  if (result == VALUE_DRAW && var->materialCounting)
-                      result = convert_mate_value(material_counting_result(), ply);
-                  return true;
+                  ++cnt;
+
+                  // The after-root shortcut is only safe for path-independent
+                  // draw repetitions. Variants such as janggimodern attach
+                  // material-counting scores and illegal perpetual/move
+                  // repetition outcomes to the cycle, so their configured
+                  // n-fold threshold must remain in force.
+                  int repetitionThreshold =   ply > i
+                                           && var->nFoldValue == VALUE_DRAW
+                                           && !var->nFoldValueAbsolute
+                                           && !var->materialCounting
+                                           && !var->moveRepetitionIllegal
+                                           && !moveRepetition
+                                           && !chaseUs
+                                           && !chaseThem
+                                           && !perpetualUs
+                                           && !perpetualThem
+                                           ? 2 : n_fold_rule();
+
+                  if (cnt + 1 >= repetitionThreshold)
+                  {
+                      result = convert_mate_value(  (perpetualThem || perpetualUs) ? (!perpetualUs ? VALUE_MATE : !perpetualThem ? -VALUE_MATE : VALUE_DRAW)
+                                                  : (chaseThem || chaseUs) ? (!chaseUs ? VALUE_MATE : !chaseThem ? -VALUE_MATE : VALUE_DRAW)
+                                                  : var->nFoldValueAbsolute && sideToMove == BLACK ? -var->nFoldValue
+                                                  : var->nFoldValue, ply);
+                      if (result == VALUE_DRAW && var->materialCounting)
+                          result = convert_mate_value(material_counting_result(), ply);
+                      return true;
+                  }
               }
 
               if (i + 1 <= end)
@@ -3104,6 +3125,22 @@ bool Position::has_repeated() const {
         stc = stc->previous;
     }
     return false;
+}
+
+
+/// Position::has_repetition_rule_dependency() tests whether repetition adjudication
+/// in the current history can depend on more than just the position key.
+
+bool Position::has_repetition_rule_dependency() const {
+
+    return n_fold_rule()
+        && (   var->nFoldValue != VALUE_DRAW
+            || var->nFoldValueAbsolute
+            || var->perpetualCheckIllegal
+            || var->materialCounting
+            || var->moveRepetitionIllegal
+            || var->chasingRule)
+        && has_repeated();
 }
 
 
