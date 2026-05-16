@@ -46,10 +46,15 @@ that module when converting between liground and Fairy-Stockfish conventions.
 ## Interactive sequence review
 
 The renderer keeps temporary sequence-review state under `state.review.sequence`.
-When active, board moves are routed to `addReviewSequenceMove` instead of the
-normal game-history `push` action. The temporary board FEN, legal moves, SAN
-labels, UCI line, and path overlays are updated in the review state only, so the
-actual game tree and engine MultiPV remain untouched.
+When active, `ChessGround.vue` selects a single `BoardInteractionMode` and gives
+`REVIEW_SEQUENCE` its own source-of-truth FEN, side to move, legal move list,
+last-move marker, and overlays. Board moves are routed to
+`addReviewSequenceMove` instead of the normal game-history `push` action. The
+temporary board FEN, legal moves, SAN labels, UCI line, and path overlays are
+updated in the review state only, so the actual game tree and engine MultiPV
+remain untouched. Starting a review sequence temporarily leaves board-editor
+free-move mode and restores the previous editor/analysis flags when review mode
+ends.
 
 Sequence review requests send the sequence base FEN plus the played temporary
 line to `review-analyze`. The review service treats the line as a candidate idea

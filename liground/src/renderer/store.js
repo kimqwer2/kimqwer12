@@ -121,6 +121,21 @@ function reviewMoveToOverlaySquares (move) {
   return { orig: match[1], dest: match[2] }
 }
 
+function normalizeReviewLegalMoves (legalMoves) {
+  if (Array.isArray(legalMoves)) return legalMoves.filter(Boolean)
+  return String(legalMoves || '').split(/\s+/).filter(Boolean)
+}
+
+function resolveReviewSequenceMove (legalMoves, move) {
+  if (!move) return null
+  const candidates = normalizeReviewLegalMoves(legalMoves)
+  if (candidates.includes(move)) return move
+  if (move.includes('@')) return null
+  const promotionMatches = candidates.filter(candidate => candidate && candidate.startsWith(move) && candidate.length > move.length)
+  if (promotionMatches.length === 0) return null
+  return promotionMatches.find(candidate => candidate.endsWith('q')) || promotionMatches[0]
+}
+
 function buildReviewSequenceOverlays (line) {
   const circled = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩', '⑪', '⑫']
   return (Array.isArray(line) ? line : []).map((move, idx) => {
@@ -763,7 +778,14 @@ export const store = new Vuex.Store({
       state.review.active = true
     },
     reviewClear (state) {
+      const previousInteraction = state.review.sequence && state.review.sequence.previousInteraction
       state.review = emptyReviewState()
+      if (previousInteraction && typeof previousInteraction.analysisMode === 'boolean') {
+        state.analysisMode = previousInteraction.analysisMode
+      }
+      if (previousInteraction && typeof previousInteraction.editorMode === 'boolean') {
+        state.editorMode = previousInteraction.editorMode
+      }
     },
     reviewSequenceStart (state, payload) {
       state.review.sequence = {
@@ -772,7 +794,8 @@ export const store = new Vuex.Store({
         baseFen: payload.fen,
         fen: payload.fen,
         turn: payload.turn,
-        legalMoves: payload.legalMoves
+        legalMoves: payload.legalMoves,
+        previousInteraction: payload.previousInteraction || emptyReviewSequenceState().previousInteraction
       }
       state.review.currentResult = null
       state.review.overlays = []
@@ -788,13 +811,21 @@ export const store = new Vuex.Store({
         line: payload.line,
         sans: payload.sans,
         overlays: buildReviewSequenceOverlays(payload.line),
-        lastMove: payload.lastMove
+        lastMove: payload.lastMove,
+        previousInteraction: payload.previousInteraction || state.review.sequence.previousInteraction
       }
       state.review.currentResult = null
       state.review.overlays = []
     },
     reviewSequenceEnd (state) {
+      const previousInteraction = state.review.sequence.previousInteraction
       state.review.sequence = emptyReviewSequenceState()
+      if (previousInteraction && typeof previousInteraction.analysisMode === 'boolean') {
+        state.analysisMode = previousInteraction.analysisMode
+      }
+      if (previousInteraction && typeof previousInteraction.editorMode === 'boolean') {
+        state.editorMode = previousInteraction.editorMode
+      }
     },
     reviewSequenceClear (state) {
       state.review.sequence = {
@@ -1982,13 +2013,21 @@ export const store = new Vuex.Store({
       context.commit('analysisVisualization', payload)
     },
     startReviewSequence (context) {
+      const previousInteraction = {
+        analysisMode: context.state.analysisMode,
+        editorMode: context.state.editorMode
+      }
+      if (context.state.editorMode) {
+        context.commit('editorMode', false)
+      }
       const board = context.getters.is960
         ? new ffish.Board(context.getters.variant, context.getters.fen, true)
         : new ffish.Board(context.getters.variant, context.getters.fen)
       context.commit('reviewSequenceStart', {
         fen: context.getters.fen,
         turn: board.turn(),
-        legalMoves: board.legalMoves()
+        legalMoves: board.legalMoves(),
+        previousInteraction
       })
       if (context.getters.active) {
         context.dispatch('stopEngine')
@@ -2000,15 +2039,16 @@ export const store = new Vuex.Store({
       const board = context.getters.is960
         ? new ffish.Board(context.getters.variant, sequence.fen, true)
         : new ffish.Board(context.getters.variant, sequence.fen)
-      const legalMoves = board.legalMoves().split(' ')
-      if (!legalMoves.includes(move)) {
+      const legalMoves = board.legalMoves()
+      const resolvedMove = resolveReviewSequenceMove(legalMoves, move)
+      if (!resolvedMove) {
         context.commit('reviewSetError', `임시 검토 수순에서 둘 수 없는 수입니다: ${move}`)
         return false
       }
-      let san = move
-      try { san = board.sanMove(move) } catch (err) {}
-      board.push(move)
-      const line = sequence.line.concat(move)
+      let san = resolvedMove
+      try { san = board.sanMove(resolvedMove) } catch (err) {}
+      board.push(resolvedMove)
+      const line = sequence.line.concat(resolvedMove)
       const sans = sequence.sans.concat(san)
       context.commit('reviewSequenceUpdate', {
         fen: board.fen(),
@@ -2016,7 +2056,7 @@ export const store = new Vuex.Store({
         legalMoves: board.legalMoves(),
         line,
         sans,
-        lastMove: move
+        lastMove: resolvedMove
       })
       return true
     },
@@ -2072,7 +2112,8 @@ export const store = new Vuex.Store({
           move: request.move,
           line: request.line,
           depth: request.context && request.context.reviewDepth ? request.context.reviewDepth : 10,
-          multiPv: 3
+          multiPv: 3,
+          variant: request.variant
         })
       } catch (err) {
         request.engineAnalysis = { error: err.message }

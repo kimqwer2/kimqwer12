@@ -267,7 +267,7 @@ export default {
     },
     primaryIntentLabel () {
       const intent = this.result && this.result.ideas && this.result.ideas[0]
-      return intent ? (intent.label || intent.type.replace(/_/g, ' ')) : '아이디어 검토'
+      return intent ? (intent.label || this.intentTypeText(intent.type)) : '아이디어 검토'
     }
   },
   methods: {
@@ -298,6 +298,19 @@ export default {
     confidence (value) {
       if (typeof value !== 'number') return '신뢰도 없음'
       return `신뢰도 ${Math.round(value * 100)}%`
+    },
+    intentTypeText (type) {
+      const labels = {
+        develop_piece: '기물 전개',
+        central_pressure: '중앙 압박',
+        side_attack: '측면 공격',
+        king_safety: '왕 안전',
+        material_gain: '이득 노림',
+        sequence_plan_direction: '수순 방향성',
+        engine_recommendation: '엔진 추천',
+        tactical_warning: '전술 경고'
+      }
+      return labels[type] || '아이디어 검토'
     },
     classificationText (classification) {
       const labels = {
@@ -420,9 +433,13 @@ button:disabled {
 }
 .review-error {
   margin-top: 10px;
-  padding: 8px;
-  border-left: 4px solid #c72634;
-  background: rgba(199, 38, 52, 0.15);
+  padding: 9px;
+  border: 1px solid #ff6b6b;
+  border-left: 5px solid #ff2e3f;
+  border-radius: 5px;
+  background: rgba(199, 38, 52, 0.28);
+  color: #fff1f1;
+  font-weight: 700;
 }
 .review-result {
   margin-top: 10px;
@@ -435,17 +452,23 @@ button:disabled {
   text-transform: capitalize;
 }
 .classification span {
-  margin-left: 6px;
-  padding: 1px 5px;
-  border-radius: 8px;
-  background: rgba(114, 137, 218, 0.25);
-  font-size: 10px;
+  margin-left: 0;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  background: rgba(114, 137, 218, 0.82);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.28);
 }
-.risk-badge.high { background: rgba(199, 38, 52, 0.35); color: #ffb3b3; }
-.risk-badge.medium { background: rgba(242, 153, 74, 0.30); color: #ffd9a8; }
-.risk-badge.low { background: rgba(75, 181, 113, 0.25); color: #bff0cf; }
-.intent-badge { background: rgba(114, 137, 218, 0.25); }
-.cache-badge { background: rgba(127, 127, 127, 0.25); }
+.risk-badge.high { background: #d7263d; color: #fff; border-color: #ffb3b3; }
+.risk-badge.medium { background: #c46b00; color: #fffaf1; border-color: #ffd08a; }
+.risk-badge.low { background: #247a3d; color: #f0fff4; border-color: #9be7b0; }
+.risk-badge.neutral { background: #4d6680; color: #fff; }
+.intent-badge { background: #4158b8; color: #fff; }
+.cache-badge { background: #595f68; color: #fff; }
 .summary {
   margin-top: 6px;
   line-height: 1.4;
@@ -502,8 +525,27 @@ li + li {
 small {
   color: var(--second-text-color, #9aa0a6);
 }
-.danger h4 {
-  color: #e06c75;
+.danger,
+.danger-explain {
+  padding: 8px;
+  border: 1px solid rgba(255, 107, 107, 0.75);
+  border-left: 5px solid #ff2e3f;
+  border-radius: 6px;
+  background: rgba(199, 38, 52, 0.18);
+}
+.danger h4,
+.danger-explain h4 {
+  color: #ff6b6b;
+  font-weight: 900;
+}
+.danger li,
+.danger-explain p {
+  color: var(--main-text-color);
+  font-weight: 700;
+}
+.danger small {
+  color: #ffd0d0;
+  font-weight: 800;
 }
 .review-empty {
   margin-top: 10px;

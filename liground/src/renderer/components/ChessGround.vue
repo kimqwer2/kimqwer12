@@ -65,6 +65,13 @@ import PromotionModal from './PromotionModal.vue'
 const WHITE = true
 const BLACK = false
 
+const BOARD_INTERACTION_MODES = Object.freeze({
+  NORMAL_GAME: 'NORMAL_GAME',
+  ANALYSIS: 'ANALYSIS',
+  BOARD_EDITOR: 'BOARD_EDITOR',
+  REVIEW_SEQUENCE: 'REVIEW_SEQUENCE'
+})
+
 export default {
   name: 'ChessGround',
   components: {
@@ -196,7 +203,52 @@ export default {
       return this.$store.getters.turn ? 'white' : 'black'
     },
     legalMoves () {
-      return this.$store.getters.legalMoves.split(' ')
+      return String(this.$store.getters.legalMoves || '').split(/\s+/).filter(Boolean)
+    },
+    boardInteractionMode () {
+      if (this.reviewSequenceActive) return BOARD_INTERACTION_MODES.REVIEW_SEQUENCE
+      if (this.editorMode) return BOARD_INTERACTION_MODES.BOARD_EDITOR
+      if (this.analysisMode) return BOARD_INTERACTION_MODES.ANALYSIS
+      return BOARD_INTERACTION_MODES.NORMAL_GAME
+    },
+    boardStateSource () {
+      const mode = this.boardInteractionMode
+      if (mode === BOARD_INTERACTION_MODES.REVIEW_SEQUENCE) {
+        const sequence = this.reviewSequence || {}
+        return {
+          mode,
+          fen: sequence.fen || this.fen,
+          turnColor: sequence.turn ? 'white' : 'black',
+          legalMoves: String(sequence.legalMoves || '').split(/\s+/).filter(Boolean),
+          mutableHistory: false,
+          movable: true,
+          free: false,
+          lastMove: sequence.lastMove || null
+        }
+      }
+      if (mode === BOARD_INTERACTION_MODES.BOARD_EDITOR) {
+        return {
+          mode,
+          fen: this.fen,
+          turnColor: this.turn,
+          legalMoves: [],
+          mutableHistory: false,
+          movable: true,
+          free: true,
+          lastMove: this.currentMove && this.currentMove.uci
+        }
+      }
+      const canMoveOnShownFen = this.fen === this.lastFen || mode === BOARD_INTERACTION_MODES.ANALYSIS
+      return {
+        mode,
+        fen: this.fen,
+        turnColor: this.turn,
+        legalMoves: this.legalMoves,
+        mutableHistory: true,
+        movable: canMoveOnShownFen,
+        free: false,
+        lastMove: this.currentMove && this.currentMove.uci
+      }
     },
     promotionPosition () {
       if (this.promotionMove) {
@@ -215,7 +267,7 @@ export default {
       }
     },
     isPlayerTurn () {
-      if (this.reviewSequenceActive) {
+      if (this.boardInteractionMode === BOARD_INTERACTION_MODES.REVIEW_SEQUENCE || this.boardInteractionMode === BOARD_INTERACTION_MODES.BOARD_EDITOR || this.boardInteractionMode === BOARD_INTERACTION_MODES.ANALYSIS) {
         return true
       }
       // In PvE: allow moves only when it's the player's turn
@@ -769,12 +821,12 @@ export default {
     },
     possibleMoves (moves = this.legalMoves) {
       const dests = {}
-      const legalMoves = Array.isArray(moves) ? moves : String(moves || '').split(' ').filter(Boolean)
+      const legalMoves = Array.isArray(moves) ? moves : String(moves || '').split(/\s+/).filter(Boolean)
 
-      let fromSq
-      let toSq
       for (let i = 0; i < legalMoves.length; i++) {
         const Move = legalMoves[i]
+        let fromSq
+        let toSq
         // don't include drops, pass/null moves, or malformed moves in drag destinations
         if (!Move || Move.includes('@') || Move === '0000' || Move.length < 4) {
           continue
@@ -795,13 +847,13 @@ export default {
       }
       return dests
     },
-    isPromotion (uciMove) {
-      for (let i = 0; i < this.legalMoves.length; i++) {
+    isPromotion (uciMove, legalMoves = this.legalMoves) {
+      for (let i = 0; i < legalMoves.length; i++) {
         if (this.dimensionNumber === 3) {
           return false
         }
-        if (this.legalMoves[i].length === 5) {
-          if (this.legalMoves[i].includes(uciMove)) {
+        if (legalMoves[i].length === 5) {
+          if (legalMoves[i].includes(uciMove)) {
             return true
           }
         }
@@ -883,17 +935,20 @@ export default {
     },
     afterDrag () {
       return (role, key) => {
-        if (this.editorMode) {
+        const mode = this.boardInteractionMode
+        if (mode === BOARD_INTERACTION_MODES.REVIEW_SEQUENCE) {
+          const pieces = { 'p-piece': 'P', 'n-piece': 'N', 'b-piece': 'B', 'r-piece': 'R', 'q-piece': 'Q', 's-piece': 'S', 'g-piece': 'G', 'l-piece': 'L' }
+          const move = pieces[role] + '@' + key
+          this.$store.dispatch('addReviewSequenceMove', move).then(() => this.updateBoard())
+          return
+        }
+        if (mode === BOARD_INTERACTION_MODES.BOARD_EDITOR) {
           this.$store.dispatch('fen', this.board.getFen())
           this.$store.dispatch('lastFen', this.board.getFen())
           return
         }
         const pieces = { 'p-piece': 'P', 'n-piece': 'N', 'b-piece': 'B', 'r-piece': 'R', 'q-piece': 'Q', 's-piece': 'S', 'g-piece': 'G', 'l-piece': 'L' }
         const move = pieces[role] + '@' + key
-        if (this.reviewSequenceActive) {
-          this.$store.dispatch('addReviewSequenceMove', move).then(() => this.updateBoard())
-          return
-        }
         const prevMov = this.currentMove
         if (this.$store.getters.legalMoves.includes(move)) {
           this.$store.dispatch('push', { move: move, prev: prevMov })
@@ -905,7 +960,8 @@ export default {
     },
     changeTurn () {
       return (orig, dest, metadata) => {
-        if (this.editorMode) {
+        const mode = this.boardInteractionMode
+        if (mode === BOARD_INTERACTION_MODES.BOARD_EDITOR) {
           const editedFen = this.board.getFen()
           this.$store.dispatch('fen', editedFen)
           this.$store.dispatch('lastFen', editedFen)
@@ -917,11 +973,11 @@ export default {
         if (this.dimensionNumber === 3) {
           uciMove = uciMove.replaceAll(':', '10') // Convert the ':' back to '10'
         }
-        if (this.reviewSequenceActive) {
+        if (mode === BOARD_INTERACTION_MODES.REVIEW_SEQUENCE) {
           this.$store.dispatch('addReviewSequenceMove', uciMove).then(() => this.updateBoard())
           return
         }
-        if (this.isPromotion(uciMove)) {
+        if (this.isPromotion(uciMove, this.boardStateSource.legalMoves)) {
           if (this.variant === 'makruk') {
             const move = uciMove + 'm'
             const prevMov = this.currentMove
@@ -986,18 +1042,16 @@ export default {
       this.$store.dispatch('lastFen', this.fen)
     },
     updateBoard () {
-      const reviewMode = this.reviewSequenceActive
-      const boardFen = reviewMode ? this.reviewSequence.fen : this.fen
-      const boardTurn = reviewMode ? (this.reviewSequence.turn ? 'white' : 'black') : this.turn
-      const boardLegalMoves = reviewMode ? String(this.reviewSequence.legalMoves || '').split(' ').filter(Boolean) : this.legalMoves
+      const source = this.boardStateSource
+      const reviewMode = source.mode === BOARD_INTERACTION_MODES.REVIEW_SEQUENCE
       // logic to find out if a check should be displayed:
       let isCheck = false // ensures that no check is displayed when the current move was not a check
-      if (!reviewMode && this.currentMove !== undefined && (this.currentMove.name.includes('+') || this.currentMove.name.includes('#'))) { // the last move was check iff the san notation of the last move contained a '+'
+      if (!reviewMode && source.mode !== BOARD_INTERACTION_MODES.BOARD_EDITOR && this.currentMove !== undefined && (this.currentMove.name.includes('+') || this.currentMove.name.includes('#'))) { // the last move was check iff the san notation of the last move contained a '+'
         this.moves[this.moves.length - 1].check = this.turn // the check property of the board accepts a color or a boolean
         isCheck = this.currentMove.check
       }
       // logic to find out which move was last and should thus be highlighted:
-      const lastMoveString = reviewMode ? this.reviewSequence.lastMove : (this.currentMove && this.currentMove.uci)
+      const lastMoveString = source.lastMove
       if (!lastMoveString || (!reviewMode && this.moves.length === 0)) {
         this.board.state.lastMove = undefined
       } else {
@@ -1015,37 +1069,33 @@ export default {
           this.board.state.lastMove = [first, second]
         }
       }
+      const movable = source.free
+        ? {
+            free: true,
+            color: 'both',
+            dests: undefined
+          }
+        : source.movable
+        ? {
+            dests: this.possibleMoves(source.legalMoves),
+            color: source.turnColor
+          }
+        : {
+            dests: {},
+            color: source.turnColor
+          }
       this.board.set({
         check: isCheck,
-        fen: boardFen,
-        turnColor: boardTurn,
+        fen: source.fen,
+        turnColor: source.turnColor,
         highlight: {
           lastMove: true,
           check: true
         },
-        movable: this.editorMode
-          ? {
-              free: true,
-              color: 'both',
-              dests: undefined
-            }
-          : reviewMode
-          ? {
-              dests: this.possibleMoves(boardLegalMoves),
-              color: boardTurn
-            }
-          : (this.fen === this.lastFen || this.analysisMode)
-          ? {
-              dests: this.possibleMoves(boardLegalMoves),
-              color: this.turn
-            }
-          : {
-              dests: {},
-              color: this.turn
-            },
+        movable,
         orientation: this.orientation
       })
-      if (this.variant === 'crazyhouse' || this.variant === 'shogi') {
+      if (!reviewMode && (this.variant === 'crazyhouse' || this.variant === 'shogi')) {
         this.updateHand()
       }
     },

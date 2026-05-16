@@ -131,8 +131,9 @@ function collectSearch (positionCommand, goCommand, timeout = 20000) {
       resolve(payload)
     }
     const listener = info => {
-      if ('pv' in info && 'multipv' in info) {
-        lines[info.multipv - 1] = {
+      if ('pv' in info) {
+        const rank = info.multipv || 1
+        lines[rank - 1] = {
           cp: info.cp,
           mate: info.mate,
           pvUCI: info.pv,
@@ -165,6 +166,7 @@ async function reviewAnalyze (payload) {
   }
   const depth = payload.depth || 10
   const multiPv = payload.multiPv || 3
+  const variant = payload.variant
   const fen = payload.fen
   const line = Array.isArray(payload.line) ? payload.line.filter(Boolean) : []
   const firstMove = payload.move || line[0]
@@ -173,6 +175,9 @@ async function reviewAnalyze (payload) {
   const positionAfter = joinedLine ? `position fen ${fen} moves ${joinedLine}` : positionRoot
 
   try {
+    if (variant) {
+      await engine.exec(`setoption name UCI_Variant value ${variant}`)
+    }
     await engine.exec(`setoption name MultiPV value ${multiPv}`)
     await engine.exec('setoption name UCI_ShowWDL value true')
     const root = await collectSearch(positionRoot, `go depth ${depth}`)
@@ -189,7 +194,10 @@ async function reviewAnalyze (payload) {
       root,
       user,
       after,
-      line
+      line,
+      variant,
+      rootFen: fen,
+      finalPositionCommand: positionAfter
     })
   } catch (err) {
     msg.queue('reviewed', { error: err.message })

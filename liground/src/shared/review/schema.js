@@ -32,7 +32,11 @@ export function emptyReviewSequenceState () {
     line: [],
     sans: [],
     overlays: [],
-    lastMove: null
+    lastMove: null,
+    previousInteraction: {
+      analysisMode: null,
+      editorMode: null
+    }
   }
 }
 
