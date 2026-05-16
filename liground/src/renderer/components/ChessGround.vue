@@ -231,7 +231,7 @@ export default {
       // Block mouse input completely when not player's turn
       return this.isPlayerTurn ? 'auto' : 'none'
     },
-    ...mapGetters(['initialized', 'variant', 'multipv', 'hoveredpv', 'redraw', 'pieceStyle', 'boardStyle', 'fen', 'lastFen', 'orientation', 'moves', 'isPast', 'dimensionNumber', 'analysisMode', 'editorMode', 'analysisVisualization', 'reviewOverlays', 'active', 'PvE', 'PvEPlayerIsWhite', 'EvE', 'enginetime', 'resized', 'resized9x9width', 'resized9x9height', 'resized9x10width', 'resized9x10height', 'dimNumber'])
+    ...mapGetters(['initialized', 'variant', 'multipv', 'hoveredpv', 'redraw', 'pieceStyle', 'boardStyle', 'fen', 'lastFen', 'orientation', 'moves', 'isPast', 'dimensionNumber', 'analysisMode', 'editorMode', 'analysisVisualization', 'reviewSequence', 'reviewSequenceActive', 'reviewOverlays', 'active', 'PvE', 'PvEPlayerIsWhite', 'EvE', 'enginetime', 'resized', 'resized9x9width', 'resized9x9height', 'resized9x10width', 'resized9x10height', 'dimNumber'])
   },
   watch: {
     dimensionNumber () {
@@ -294,6 +294,13 @@ export default {
     },
     hoveredpv () { this.renderAnalysisVisualization() },
     reviewOverlays () { this.drawShapes() },
+    reviewSequence: {
+      deep: true,
+      handler () {
+        this.updateBoard()
+        this.drawShapes()
+      }
+    },
     editorMode () {
       this.updateBoard()
       this.renderAnalysisVisualization()
@@ -684,6 +691,10 @@ export default {
     closePromotionModal (value) {
       this.isPromotionModalVisible = false
       this.promotionMove = this.promotionMove + value
+      if (this.reviewSequenceActive) {
+        this.$store.dispatch('addReviewSequenceMove', this.promotionMove)
+        return
+      }
       this.lastMoveSan = this.$store.getters.sanMove(this.promotionMove)
       const prevMov = this.currentMove
       this.$store.dispatch('push', { move: this.promotionMove, prev: prevMov })
@@ -753,15 +764,16 @@ export default {
       const ret = letters.join('')
       return ret
     },
-    possibleMoves () {
+    possibleMoves (moves = this.legalMoves) {
       const dests = {}
+      const legalMoves = Array.isArray(moves) ? moves : String(moves || '').split(' ').filter(Boolean)
 
       let fromSq
       let toSq
-      for (let i = 0; i < this.legalMoves.length; i++) {
+      for (let i = 0; i < legalMoves.length; i++) {
         // don't include dropping moves
-        if (this.legalMoves[i].length !== 3) {
-          const Move = this.legalMoves[i]
+        if (legalMoves[i].length !== 3) {
+          const Move = legalMoves[i]
           fromSq = Move.substring(0, 2)
           toSq = Move.substring(2, 4)
           if (this.dimensionNumber === 3) {
@@ -873,6 +885,11 @@ export default {
         }
         const pieces = { 'p-piece': 'P', 'n-piece': 'N', 'b-piece': 'B', 'r-piece': 'R', 'q-piece': 'Q', 's-piece': 'S', 'g-piece': 'G', 'l-piece': 'L' }
         const move = pieces[role] + '@' + key
+        if (this.reviewSequenceActive) {
+          this.$store.dispatch('addReviewSequenceMove', move)
+          this.updateBoard()
+          return
+        }
         const prevMov = this.currentMove
         if (this.$store.getters.legalMoves.includes(move)) {
           this.$store.dispatch('push', { move: move, prev: prevMov })
@@ -895,6 +912,10 @@ export default {
         let uciMove = orig + dest
         if (this.dimensionNumber === 3) {
           uciMove = uciMove.replaceAll(':', '10') // Convert the ':' back to '10'
+        }
+        if (this.reviewSequenceActive) {
+          this.$store.dispatch('addReviewSequenceMove', uciMove)
+          return
         }
         if (this.isPromotion(uciMove)) {
           if (this.variant === 'makruk') {
@@ -961,17 +982,22 @@ export default {
       this.$store.dispatch('lastFen', this.fen)
     },
     updateBoard () {
+      const reviewMode = this.reviewSequenceActive
+      const boardFen = reviewMode ? this.reviewSequence.fen : this.fen
+      const boardTurn = reviewMode ? (this.reviewSequence.turn ? 'white' : 'black') : this.turn
+      const boardLegalMoves = reviewMode ? String(this.reviewSequence.legalMoves || '').split(' ').filter(Boolean) : this.legalMoves
       // logic to find out if a check should be displayed:
       let isCheck = false // ensures that no check is displayed when the current move was not a check
-      if (this.currentMove !== undefined && (this.currentMove.name.includes('+') || this.currentMove.name.includes('#'))) { // the last move was check iff the san notation of the last move contained a '+'
+      if (!reviewMode && this.currentMove !== undefined && (this.currentMove.name.includes('+') || this.currentMove.name.includes('#'))) { // the last move was check iff the san notation of the last move contained a '+'
         this.moves[this.moves.length - 1].check = this.turn // the check property of the board accepts a color or a boolean
         isCheck = this.currentMove.check
       }
       // logic to find out which move was last and should thus be highlighted:
-      if (this.currentMove === undefined || this.moves.length === 0) {
+      const lastMoveString = reviewMode ? this.reviewSequence.lastMove : (this.currentMove && this.currentMove.uci)
+      if (!lastMoveString || (!reviewMode && this.moves.length === 0)) {
         this.board.state.lastMove = undefined
       } else {
-        const string = String(this.currentMove.uci)
+        const string = String(lastMoveString)
         let first = string.substring(0, 2)
         let second = string.substring(2, 4)
         if (this.dimensionNumber === 3) {
@@ -987,8 +1013,8 @@ export default {
       }
       this.board.set({
         check: isCheck,
-        fen: this.fen,
-        turnColor: this.turn,
+        fen: boardFen,
+        turnColor: boardTurn,
         highlight: {
           lastMove: true,
           check: true
@@ -999,9 +1025,14 @@ export default {
               color: 'both',
               dests: undefined
             }
+          : reviewMode
+          ? {
+              dests: this.possibleMoves(boardLegalMoves),
+              color: boardTurn
+            }
           : (this.fen === this.lastFen || this.analysisMode)
           ? {
-              dests: this.possibleMoves(),
+              dests: this.possibleMoves(boardLegalMoves),
               color: this.turn
             }
           : {

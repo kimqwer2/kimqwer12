@@ -3,7 +3,7 @@ import Vuex from 'vuex'
 import ffish from 'ffish'
 import { engine, Engine } from './engine'
 import allEngines from './store/engines'
-import { createReviewRequest, emptyReviewState, REVIEW_MODES } from '../shared/review/schema'
+import { createReviewRequest, emptyReviewState, emptyReviewSequenceState, REVIEW_MODES } from '../shared/review/schema'
 import { analyzeReviewRequest } from '../shared/review/reviewService'
 
 import moveAudio from './assets/audio/Move.mp3'
@@ -108,6 +108,36 @@ function normalizeFen (fen) {
     return parts.slice(0, parts.length - 2).join(' ')
   }
   return parts.join(' ')
+}
+
+function reviewMoveToOverlaySquares (move) {
+  if (typeof move !== 'string') return null
+  if (move.includes('@')) {
+    const dest = move.split('@')[1]
+    return dest ? { square: dest } : null
+  }
+  const match = move.match(/^([a-i]\d{1,2})([a-i]\d{1,2})/)
+  if (!match) return null
+  return { orig: match[1], dest: match[2] }
+}
+
+function buildReviewSequenceOverlays (line) {
+  const circled = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩', '⑪', '⑫']
+  return (Array.isArray(line) ? line : []).map((move, idx) => {
+    const sq = reviewMoveToOverlaySquares(move)
+    if (!sq) return null
+    const base = {
+      id: `review-sequence-${idx}`,
+      kind: sq.orig && sq.dest ? 'arrow' : 'highlight',
+      brush: idx % 2 === 0 ? 'orange' : 'blue',
+      label: circled[idx] || String(idx + 1),
+      modifiers: { lineWidth: Math.max(2, 6 - idx * 0.4), opacity: Math.max(0.35, 0.85 - idx * 0.04) },
+      explanationId: 'sequence-path',
+      priority: 20,
+      source: 'review-sequence'
+    }
+    return sq.orig && sq.dest ? { ...base, orig: sq.orig, dest: sq.dest } : { ...base, square: sq.square }
+  }).filter(Boolean)
 }
 
 /**
@@ -734,6 +764,47 @@ export const store = new Vuex.Store({
     },
     reviewClear (state) {
       state.review = emptyReviewState()
+    },
+    reviewSequenceStart (state, payload) {
+      state.review.sequence = {
+        ...emptyReviewSequenceState(),
+        active: true,
+        baseFen: payload.fen,
+        fen: payload.fen,
+        turn: payload.turn,
+        legalMoves: payload.legalMoves
+      }
+      state.review.currentResult = null
+      state.review.overlays = []
+      state.review.error = null
+      state.review.active = true
+    },
+    reviewSequenceUpdate (state, payload) {
+      state.review.sequence = {
+        ...state.review.sequence,
+        fen: payload.fen,
+        turn: payload.turn,
+        legalMoves: payload.legalMoves,
+        line: payload.line,
+        sans: payload.sans,
+        overlays: buildReviewSequenceOverlays(payload.line),
+        lastMove: payload.lastMove
+      }
+      state.review.currentResult = null
+      state.review.overlays = []
+    },
+    reviewSequenceEnd (state) {
+      state.review.sequence = emptyReviewSequenceState()
+    },
+    reviewSequenceClear (state) {
+      state.review.sequence = {
+        ...state.review.sequence,
+        fen: state.review.sequence.baseFen,
+        line: [],
+        sans: [],
+        overlays: [],
+        lastMove: null
+      }
     },
     openedPGN (state, payload) {
       state.openedPGN = payload
@@ -1910,6 +1981,81 @@ export const store = new Vuex.Store({
     analysisVisualization (context, payload) {
       context.commit('analysisVisualization', payload)
     },
+    startReviewSequence (context) {
+      const board = context.getters.is960
+        ? new ffish.Board(context.getters.variant, context.getters.fen, true)
+        : new ffish.Board(context.getters.variant, context.getters.fen)
+      context.commit('reviewSequenceStart', {
+        fen: context.getters.fen,
+        turn: board.turn(),
+        legalMoves: board.legalMoves()
+      })
+      if (context.getters.active) {
+        context.dispatch('stopEngine')
+      }
+    },
+    addReviewSequenceMove (context, move) {
+      if (!context.state.review.sequence.active || !move) return
+      const sequence = context.state.review.sequence
+      const board = context.getters.is960
+        ? new ffish.Board(context.getters.variant, sequence.fen, true)
+        : new ffish.Board(context.getters.variant, sequence.fen)
+      const legalMoves = board.legalMoves().split(' ')
+      if (!legalMoves.includes(move)) {
+        context.commit('reviewSetError', `Illegal review-sequence move: ${move}`)
+        return
+      }
+      let san = move
+      try { san = board.sanMove(move) } catch (err) {}
+      board.push(move)
+      const line = sequence.line.concat(move)
+      const sans = sequence.sans.concat(san)
+      context.commit('reviewSequenceUpdate', {
+        fen: board.fen(),
+        turn: board.turn(),
+        legalMoves: board.legalMoves(),
+        line,
+        sans,
+        lastMove: move
+      })
+    },
+    clearReviewSequence (context) {
+      if (!context.state.review.sequence.active) return
+      const board = context.getters.is960
+        ? new ffish.Board(context.getters.variant, context.state.review.sequence.baseFen, true)
+        : new ffish.Board(context.getters.variant, context.state.review.sequence.baseFen)
+      context.commit('reviewSequenceClear')
+      context.commit('reviewSequenceUpdate', {
+        fen: board.fen(),
+        turn: board.turn(),
+        legalMoves: board.legalMoves(),
+        line: [],
+        sans: [],
+        lastMove: null
+      })
+    },
+    cancelReviewSequence (context) {
+      context.commit('reviewSequenceEnd')
+    },
+    reviewCurrentSequence (context) {
+      const sequence = context.state.review.sequence
+      if (!sequence.active || sequence.line.length === 0) {
+        context.commit('reviewSetError', 'Play a temporary sequence on the board before requesting sequence review.')
+        return Promise.resolve(null)
+      }
+      return context.dispatch('requestReview', {
+        mode: REVIEW_MODES.LINE,
+        fen: sequence.baseFen,
+        move: sequence.line[0],
+        moveSan: sequence.sans[0],
+        line: sequence.line,
+        context: {
+          sequenceSans: sequence.sans,
+          finalFen: sequence.fen,
+          temporary: true
+        }
+      })
+    },
     async requestReview (context, payload) {
       const request = createReviewRequest({
         ...payload,
@@ -2444,8 +2590,17 @@ export const store = new Vuex.Store({
     reviewResult (state) {
       return state.review.currentResult
     },
+    reviewSequence (state) {
+      return state.review.sequence
+    },
+    reviewSequenceActive (state) {
+      return state.review.sequence.active
+    },
     reviewOverlays (state) {
-      return state.review.overlays
+      const resultOverlays = Array.isArray(state.review.overlays) ? state.review.overlays : []
+      const sequenceOverlays = Array.isArray(state.review.sequence.overlays) ? state.review.sequence.overlays : []
+      if (!state.review.sequence.active) return resultOverlays
+      return resultOverlays.length > 0 ? resultOverlays : sequenceOverlays
     },
     menuAtMove (state) {
       return state.menuAtMove

@@ -42,3 +42,15 @@ Overlays are UI-neutral objects:
 Janggi coordinate conversion belongs in `janggiCoordinates.js`, not in the
 engine and not duplicated in UI components. Future feature analyzers should use
 that module when converting between liground and Fairy-Stockfish conventions.
+
+## Interactive sequence review
+
+The renderer keeps temporary sequence-review state under `state.review.sequence`.
+When active, board moves are routed to `addReviewSequenceMove` instead of the
+normal game-history `push` action. The temporary board FEN, legal moves, SAN
+labels, UCI line, and path overlays are updated in the review state only, so the
+actual game tree and engine MultiPV remain untouched.
+
+Sequence review requests send the sequence base FEN plus the played temporary
+line to `review-analyze`. The review service treats the line as a candidate idea
+and returns path overlays, feature-derived intent, risk labels, and key moments.

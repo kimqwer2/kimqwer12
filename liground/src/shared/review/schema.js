@@ -22,6 +22,20 @@ export const REVIEW_BRUSHES = Object.freeze({
   NEUTRAL: 'paleBlue'
 })
 
+export function emptyReviewSequenceState () {
+  return {
+    active: false,
+    baseFen: '',
+    fen: '',
+    turn: true,
+    legalMoves: '',
+    line: [],
+    sans: [],
+    overlays: [],
+    lastMove: null
+  }
+}
+
 export function emptyReviewState () {
   return {
     active: false,
@@ -30,7 +44,8 @@ export function emptyReviewState () {
     currentResult: null,
     resultsById: {},
     overlays: [],
-    lastRequestId: null
+    lastRequestId: null,
+    sequence: emptyReviewSequenceState()
   }
 }
 
