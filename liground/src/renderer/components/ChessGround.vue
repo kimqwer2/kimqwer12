@@ -72,6 +72,8 @@ const BOARD_INTERACTION_MODES = Object.freeze({
   REVIEW_SEQUENCE: 'REVIEW_SEQUENCE'
 })
 
+const SAFE_SHAPE_BRUSHES = Object.freeze(['red', 'green', 'blue', 'yellow', 'paleBlue', 'paleGreen', 'paleRed'])
+
 export default {
   name: 'ChessGround',
   components: {
@@ -348,12 +350,13 @@ export default {
       }
     },
     hoveredpv () { this.renderAnalysisVisualization() },
-    reviewOverlays () { this.drawShapes() },
+    reviewOverlays () {
+      this.scheduleBoardInteractionSync('reviewOverlays')
+    },
     reviewSequence: {
       deep: true,
       handler () {
-        this.updateBoard()
-        this.drawShapes()
+        this.scheduleBoardInteractionSync('reviewSequence')
       }
     },
     editorMode () {
@@ -487,23 +490,79 @@ export default {
       }
       return { orig, dest }
     },
+    isReviewDebugEnabled () {
+      return Boolean(typeof window !== 'undefined' && (window.__LIGROUND_REVIEW_DEBUG__ || (window.localStorage && window.localStorage.reviewDebug === '1')))
+    },
+    debugBoardInteraction (stage, extra = {}) {
+      if (!this.isReviewDebugEnabled()) return
+      const source = this.boardStateSource
+      const movable = this.board && this.board.state ? this.board.state.movable : null
+      const wrap = this.$refs.board && this.$refs.board.querySelector ? this.$refs.board.querySelector('.cg-wrap') : null
+      const bounds = wrap && wrap.getBoundingClientRect ? wrap.getBoundingClientRect() : null
+      console.debug('[review-sequence-board]', stage, {
+        mode: source.mode,
+        pointerEvents: this.boardPointerEvents,
+        fen: source.fen,
+        turnColor: source.turnColor,
+        legalMoveCount: source.legalMoves.length,
+        movableConfig: extra.movableConfig,
+        boardMovable: movable && {
+          color: movable.color,
+          free: movable.free,
+          destCount: movable.dests ? Object.keys(movable.dests).length : 0,
+          hasAfter: Boolean(movable.events && movable.events.after),
+          hasAfterNewPiece: Boolean(movable.events && movable.events.afterNewPiece)
+        },
+        bounds: bounds && { width: bounds.width, height: bounds.height, top: bounds.top, left: bounds.left },
+        reviewLineLength: this.reviewSequence && this.reviewSequence.line ? this.reviewSequence.line.length : 0,
+        ...extra
+      })
+    },
+    scheduleBoardInteractionSync (reason) {
+      if (!this.board) return
+      this.updateBoard()
+      this.$nextTick(() => {
+        document.body.dispatchEvent(new Event('chessground.resize'))
+        this.updateBoard()
+        this.drawShapes()
+        this.debugBoardInteraction(`synced:${reason}`)
+      })
+    },
+    stableShapeBrush (brush, fallback = 'blue') {
+      return SAFE_SHAPE_BRUSHES.includes(brush) ? brush : fallback
+    },
+    stableShapeModifiers (modifiers) {
+      if (!modifiers) return undefined
+      const lineWidth = Number(modifiers.lineWidth)
+      if (Number.isFinite(lineWidth) && lineWidth > 0) {
+        return { lineWidth: Math.max(2, Math.min(8, lineWidth)) }
+      }
+      return undefined
+    },
     reviewOverlayToShape (overlay) {
       if (!overlay) return null
-      const modifiers = overlay.modifiers || {}
+      const brush = this.stableShapeBrush(overlay.brush, overlay.kind === 'danger' ? 'red' : 'blue')
+      const modifiers = this.stableShapeModifiers(overlay.modifiers)
       if ((overlay.kind === 'arrow' || !overlay.kind) && overlay.orig && overlay.dest) {
         const orig = this.toBoardKeys(`${overlay.orig}${overlay.dest}`).orig
         const dest = this.toBoardKeys(`${overlay.orig}${overlay.dest}`).dest
-        return { orig, dest, brush: overlay.brush || 'red', label: overlay.label, modifiers }
+        return { orig, dest, brush, label: overlay.label, modifiers }
       }
       const square = overlay.square || overlay.orig || overlay.dest
       if (square) {
         const key = this.toBoardKeys(`${square}${square}`).orig
-        return { orig: key, brush: overlay.brush || 'red', label: overlay.label, modifiers }
+        return { orig: key, brush, label: overlay.label, modifiers }
       }
       return null
     },
     renderAnalysisVisualization () {
       if (this.PvE || this.EvE) return
+      if (this.reviewSequenceActive) {
+        this.shapes = []
+        this.pieceShapes = []
+        this.drawShapes()
+        return
+      }
       if (this.editorMode) {
         // preserve analysis overlays while editing; don't recompute/clear them
         this.drawShapes()
@@ -525,7 +584,7 @@ export default {
         }
       }
       if (cfg.trajectoryEnabled && this.multipv[0] && this.multipv[0].pvUCI) {
-        const rainbow = ['red', 'orange', 'yellow', 'green', 'blue', 'purple', 'pink']
+        const trajectoryBrushes = ['red', 'yellow', 'green', 'blue', 'paleBlue']
         const allMoves = this.multipv[0].pvUCI.split(/\s+/).filter(Boolean)
         const maxMoves = cfg.trajectoryUnlimited ? allMoves.length : Math.min(allMoves.length, cfg.trajectoryDepth)
         const tempPieces = { ...(this.board && this.board.state && this.board.state.pieces ? this.board.state.pieces : {}) }
@@ -536,18 +595,17 @@ export default {
           const { orig, dest } = this.toBoardKeys(move)
           const progress = idx / Math.max(1, maxMoves)
           const lineWidth = cfg.orderThickness ? Math.max(1.5, 7 - progress * 5) : 3
-          const opacity = cfg.orderOpacity ? Math.max(0.2, 1 - progress * 0.8) : 1
           const circled = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩', '⑪', '⑫', '⑬', '⑭', '⑮', '⑯', '⑰', '⑱', '⑲', '⑳']
           const label = cfg.orderNumbers ? (idx < circled.length ? circled[idx] : String(idx + 1)) : undefined
-          const brush = rainbow[idx % rainbow.length]
+          const brush = trajectoryBrushes[idx % trajectoryBrushes.length]
           if (showTrajectoryArrows) {
-            trajectoryShapes.push({ orig, dest, brush, label, modifiers: { lineWidth, opacity } })
+            trajectoryShapes.push({ orig, dest, brush, label, modifiers: { lineWidth } })
           }
           if (cfg.visualizationMode === 'ghost' || cfg.visualizationMode === 'hybrid') {
             const pieceOnOrig = tempPieces[orig]
             const normalizedColor = pieceOnOrig && (pieceOnOrig.color === 'white' || pieceOnOrig.color === true ? 'white' : (pieceOnOrig.color === 'black' || pieceOnOrig.color === false ? 'black' : null))
             if (!pieceOnOrig || !pieceOnOrig.role || !normalizedColor) {
-              console.warn('[viz] invalid ghost piece', { idx, orig, dest, pieceOnOrig })
+              if (this.isReviewDebugEnabled()) console.warn('[viz] invalid ghost piece', { idx, orig, dest, pieceOnOrig })
             } else {
               const ghostOpacity = idx === 0 ? 0.65 : (idx === 1 ? 0.45 : 0.25)
               const ghostShape = {
@@ -569,7 +627,7 @@ export default {
       }
       this.shapes = [...multipvShapes, ...trajectoryShapes]
       this.pieceShapes = pieceShapes
-      console.log('[viz] multipvShapes=', multipvShapes.length, 'trajectoryShapes=', trajectoryShapes.length, 'ghostShapes=', pieceShapes.length, 'cfg=', cfg, 'multipvRaw=', this.multipv)
+      if (this.isReviewDebugEnabled()) console.debug('[viz] multipvShapes=', multipvShapes.length, 'trajectoryShapes=', trajectoryShapes.length, 'ghostShapes=', pieceShapes.length, 'cfg=', cfg, 'multipvRaw=', this.multipv)
       this.drawShapes()
     },
     closeCursorHand () {
@@ -747,7 +805,7 @@ export default {
       this.isPromotionModalVisible = false
       this.promotionMove = this.promotionMove + value
       if (this.reviewSequenceActive) {
-        this.$store.dispatch('addReviewSequenceMove', this.promotionMove).then(() => this.updateBoard())
+        this.handleReviewSequenceMove(this.promotionMove, 'promotion')
         return
       }
       this.lastMoveSan = this.$store.getters.sanMove(this.promotionMove)
@@ -939,7 +997,7 @@ export default {
         if (mode === BOARD_INTERACTION_MODES.REVIEW_SEQUENCE) {
           const pieces = { 'p-piece': 'P', 'n-piece': 'N', 'b-piece': 'B', 'r-piece': 'R', 'q-piece': 'Q', 's-piece': 'S', 'g-piece': 'G', 'l-piece': 'L' }
           const move = pieces[role] + '@' + key
-          this.$store.dispatch('addReviewSequenceMove', move).then(() => this.updateBoard())
+          this.handleReviewSequenceMove(move, 'drop')
           return
         }
         if (mode === BOARD_INTERACTION_MODES.BOARD_EDITOR) {
@@ -974,7 +1032,7 @@ export default {
           uciMove = uciMove.replaceAll(':', '10') // Convert the ':' back to '10'
         }
         if (mode === BOARD_INTERACTION_MODES.REVIEW_SEQUENCE) {
-          this.$store.dispatch('addReviewSequenceMove', uciMove).then(() => this.updateBoard())
+          this.handleReviewSequenceMove(uciMove, 'move')
           return
         }
         if (this.isPromotion(uciMove, this.boardStateSource.legalMoves)) {
@@ -995,6 +1053,20 @@ export default {
           this.afterMove()
         }
       }
+    },
+
+    handleReviewSequenceMove (move, source) {
+      this.debugBoardInteraction(`review-${source}:before`, { move })
+      this.$store.dispatch('addReviewSequenceMove', move).then(accepted => {
+        if (!accepted) {
+          this.updateBoard()
+          this.drawShapes()
+        }
+        this.$nextTick(() => {
+          document.body.dispatchEvent(new Event('chessground.resize'))
+          this.debugBoardInteraction(`review-${source}:after`, { move, accepted })
+        })
+      })
     },
     updatePocket (pocket, pocketPieces, color) {
       for (let idx = 0; idx < pocketPieces.length; ++idx) {
@@ -1069,21 +1141,29 @@ export default {
           this.board.state.lastMove = [first, second]
         }
       }
+      const movableEvents = { after: this.changeTurn(), afterNewPiece: this.afterDrag() }
       const movable = source.free
         ? {
             free: true,
             color: 'both',
-            dests: undefined
+            dests: undefined,
+            events: movableEvents
           }
         : source.movable
         ? {
+            free: false,
             dests: this.possibleMoves(source.legalMoves),
-            color: source.turnColor
+            color: reviewMode ? 'both' : source.turnColor,
+            events: movableEvents,
+            rookCastle: true
           }
         : {
+            free: false,
             dests: {},
-            color: source.turnColor
+            color: source.turnColor,
+            events: movableEvents
           }
+      this.debugBoardInteraction('updateBoard:before', { movableConfig: movable })
       this.board.set({
         check: isCheck,
         fen: source.fen,
@@ -1093,8 +1173,14 @@ export default {
           check: true
         },
         movable,
+        drawable: {
+          enabled: !reviewMode,
+          visible: true,
+          eraseOnClick: false
+        },
         orientation: this.orientation
       })
+      this.debugBoardInteraction('updateBoard:after', { movableConfig: movable })
       if (!reviewMode && (this.variant === 'crazyhouse' || this.variant === 'shogi')) {
         this.updateHand()
       }
@@ -1102,11 +1188,21 @@ export default {
     drawShapes () {
       if (this.board !== null) {
         const reviewShapes = (this.reviewOverlays || []).map(this.reviewOverlayToShape).filter(Boolean)
-        const combinedShapes = [...this.shapes, ...this.pieceShapes, ...reviewShapes]
+        const baseShapes = this.reviewSequenceActive ? [] : this.shapes
+        const basePieceShapes = this.reviewSequenceActive ? [] : this.pieceShapes
+        const combinedShapes = [...baseShapes, ...basePieceShapes, ...reviewShapes].map(shape => {
+          if (!shape) return null
+          return {
+            ...shape,
+            brush: this.stableShapeBrush(shape.brush, 'blue'),
+            modifiers: this.stableShapeModifiers(shape.modifiers)
+          }
+        }).filter(Boolean)
         if (this.board.state.lastMove && this.board.state.lastMove.length === 2) {
           combinedShapes.push({ orig: this.board.state.lastMove[0], dest: this.board.state.lastMove[1], brush: 'green' })
         }
         this.board.setAutoShapes(combinedShapes)
+        this.debugBoardInteraction('drawShapes', { shapeCount: combinedShapes.length, reviewShapeCount: reviewShapes.length })
       }
     },
     removeFocusFromInputs () {
