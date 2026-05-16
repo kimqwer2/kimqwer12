@@ -60,6 +60,28 @@ Sequence review requests send the sequence base FEN plus the played temporary
 line to `review-analyze`. The review service treats the line as a candidate idea
 and returns path overlays, feature-derived intent, risk labels, and key moments.
 
+## Marker modes and per-move review
+
+The review request carries `markerMode`, defaulting to `MY_MOVES_ONLY`. The
+review service still preserves the full temporary line, but it also returns:
+
+- `moves`: one structured review object for every move in the submitted line.
+- `markerMoves`: the subset selected by the marker mode.
+- `classificationLabel`, `loss`, `intent`, `risks`, `practical`, and `overlays`
+  per move.
+
+Marker modes are:
+
+- `FIRST_MOVE_ONLY`: only the first entered move is marked.
+- `MY_MOVES_ONLY`: odd plies are treated as the user side and marked.
+- `OPPONENT_MOVES_ONLY`: even plies are marked.
+- `BOTH_SIDES`: every move is marked.
+
+The classification layer intentionally softens engine-only judgments. Moderate
+eval loss with attacking chances, initiative, or increased practical complexity
+can be labelled as a practical or attacking try instead of an immediate warning.
+High-severity labels are reserved for concrete eval loss or punishment evidence.
+
 ## Engine-backed evidence
 
 Before a review request is sent to the shared review service, the renderer asks

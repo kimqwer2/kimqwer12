@@ -115,6 +115,11 @@ function normalizeReviewLine (line) {
   return Array.isArray(line) ? line.filter(Boolean).join(' ') : ''
 }
 
+function positionForReviewPrefix (fen, line, count) {
+  const prefix = normalizeReviewLine(line.slice(0, count))
+  return prefix ? `position fen ${fen} moves ${prefix}` : `position fen ${fen}`
+}
+
 function collectSearch (positionCommand, goCommand, timeout = 20000) {
   return new Promise(resolve => {
     const lines = []
@@ -188,12 +193,36 @@ async function reviewAnalyze (payload) {
       await engine.exec(`setoption name MultiPV value ${multiPv}`)
     }
     const after = joinedLine ? await collectSearch(positionAfter, `go depth ${depth}`) : null
+    const moves = []
+    const perMoveDepth = Math.max(4, Math.min(depth, payload.perMoveDepth || depth))
+    const maxReviewMoves = Math.min(line.length, payload.maxReviewMoves || 20)
+    for (let idx = 0; idx < maxReviewMoves; idx++) {
+      const move = line[idx]
+      const before = positionForReviewPrefix(fen, line, idx)
+      const afterMove = positionForReviewPrefix(fen, line, idx + 1)
+      await engine.exec(`setoption name MultiPV value ${Math.min(2, multiPv)}`)
+      const moveRoot = await collectSearch(before, `go depth ${perMoveDepth}`, 16000)
+      await engine.exec('setoption name MultiPV value 1')
+      const moveUser = await collectSearch(before, `go depth ${perMoveDepth} searchmoves ${move}`, 16000)
+      const moveAfter = await collectSearch(afterMove, `go depth ${Math.max(4, perMoveDepth - 1)}`, 16000)
+      moves.push({
+        ply: idx + 1,
+        move,
+        positionBefore: before,
+        positionAfter: afterMove,
+        root: moveRoot,
+        user: moveUser,
+        after: moveAfter
+      })
+    }
+    await engine.exec(`setoption name MultiPV value ${multiPv}`)
     msg.queue('reviewed', {
       depth,
       multiPv,
       root,
       user,
       after,
+      moves,
       line,
       variant,
       rootFen: fen,

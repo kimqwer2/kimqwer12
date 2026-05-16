@@ -1,4 +1,4 @@
-import { REVIEW_BRUSHES, REVIEW_MODES, REVIEW_OVERLAY_KINDS, REVIEW_SCHEMA_VERSION, REVIEW_SERVICE_VERSION } from './schema'
+import { REVIEW_BRUSHES, REVIEW_MARKER_MODES, REVIEW_MODES, REVIEW_OVERLAY_KINDS, REVIEW_SCHEMA_VERSION, REVIEW_SERVICE_VERSION } from './schema'
 import { splitUciMove } from './janggiCoordinates'
 
 function scoreToText (score) {
@@ -249,12 +249,222 @@ function buildOverlays ({ reviewedMove, reviewedLine, bestLine, punishmentLine, 
   return overlays
 }
 
-function buildSummary ({ reviewedMove, moveSan, reviewedLine, bestLine, classification, candidateLine, intent, features, evalLoss, punishmentLine }) {
+
+function markerModeLabel (mode) {
+  const labels = {
+    [REVIEW_MARKER_MODES.FIRST_MOVE_ONLY]: '첫 수만 보기',
+    [REVIEW_MARKER_MODES.MY_MOVES_ONLY]: '내 수만 보기',
+    [REVIEW_MARKER_MODES.OPPONENT_MOVES_ONLY]: '상대 수만 보기',
+    [REVIEW_MARKER_MODES.BOTH_SIDES]: '양쪽 모두 보기'
+  }
+  return labels[mode] || labels[REVIEW_MARKER_MODES.MY_MOVES_ONLY]
+}
+
+function shouldDisplayMoveForMarkerMode (ply, markerMode) {
+  if (markerMode === REVIEW_MARKER_MODES.FIRST_MOVE_ONLY) return ply === 1
+  if (markerMode === REVIEW_MARKER_MODES.OPPONENT_MOVES_ONLY) return ply % 2 === 0
+  if (markerMode === REVIEW_MARKER_MODES.BOTH_SIDES) return true
+  return ply % 2 === 1
+}
+
+function practicalSignalsFromFeatures (features) {
+  const has = type => features.some(feature => feature.type === type)
+  return {
+    attackChances: has('attack_side_concentration') || has('palace_pressure') || has('opened_attack_line'),
+    complexityIncrease: has('overextension_check') || has('opened_attack_line') || has('palace_pressure'),
+    initiative: has('central_pressure') || has('piece_activation') || has('attack_side_concentration'),
+    defensiveConcern: has('exposed_king_lane') || has('overextension_check'),
+    tacticalSharpness: has('palace_pressure') || has('opened_attack_line') || has('exposed_king_lane')
+  }
+}
+
+function practicalLabel (signals) {
+  if (signals.attackChances && signals.initiative) return '공격 기회'
+  if (signals.complexityIncrease) return '복잡성 증가'
+  if (signals.initiative) return '주도권 유지'
+  if (signals.defensiveConcern) return '수비 확인'
+  return '안정성'
+}
+
+function classifyHumanMove ({ move, bestLine, candidateLine, features, evalLoss }) {
+  if (!move) return { key: 'no_move', label: '수 없음', severity: 'neutral', tone: 'neutral' }
+  const signals = practicalSignalsFromFeatures(features || [])
+  const bestMove = bestLine && bestLine.move
+  const moveIsBest = Boolean(bestMove && bestMove === move)
+  const loss = typeof evalLoss === 'number' ? evalLoss : null
+
+  if (moveIsBest && (loss === null || loss <= 20)) return { key: 'excellent', label: '훌륭한 수', severity: 'excellent', tone: 'positive' }
+  if (loss !== null && loss >= 420) return { key: 'blunder', label: '큰 실수', severity: 'blunder', tone: 'critical' }
+  if (loss !== null && loss >= 280) return { key: 'mistake', label: '실수', severity: 'mistake', tone: 'critical' }
+  if (loss !== null && loss >= 180) return { key: 'inaccuracy', label: '부정확한 수', severity: 'inaccuracy', tone: 'caution' }
+  if (loss !== null && loss >= 110) {
+    if (signals.attackChances || signals.complexityIncrease) return { key: 'interesting_risk', label: '위험하지만 흥미로운 수', severity: 'risky', tone: 'practical' }
+    return { key: 'needs_care', label: '주의가 필요한 수', severity: 'caution', tone: 'caution' }
+  }
+  if (loss !== null && loss >= 65) {
+    if (signals.attackChances) return { key: 'attacking_try', label: '공격적인 시도', severity: 'practical', tone: 'practical' }
+    if (signals.complexityIncrease) return { key: 'complexity', label: '복잡성을 높이는 수', severity: 'practical', tone: 'practical' }
+    return { key: 'practical', label: '실전적인 수', severity: 'practical', tone: 'practical' }
+  }
+  if (loss !== null && loss >= 30) return { key: signals.attackChances ? 'attacking_try' : 'practical', label: signals.attackChances ? '공격적인 시도' : '실전적인 수', severity: 'good', tone: 'positive' }
+  if (bestMove && bestMove !== move && !candidateLine && loss === null) return { key: 'natural', label: '자연스러운 수', severity: 'natural', tone: 'positive' }
+  if (signals.initiative || signals.attackChances) return { key: 'good', label: '좋은 수', severity: 'good', tone: 'positive' }
+  return { key: 'natural', label: '자연스러운 수', severity: 'natural', tone: 'positive' }
+}
+
+function summaryForMoveReview ({ ply, sideLabel, move, classification, intent, evalLoss, practical }) {
+  const lossText = typeof evalLoss === 'number' && evalLoss >= 65 ? ` 엔진상 약 ${Math.round(evalLoss)}cp 정도의 차이는 있습니다.` : ''
+  const practicalText = practical ? ` ${practicalLabel(practical)} 관점에서 의미가 있습니다.` : ''
+  if (classification.tone === 'critical') return `${ply}수 ${sideLabel} ${move}: ${classification.label}입니다. 구체적인 전술 손실 가능성이 보여 먼저 확인해야 합니다.${lossText}`
+  if (classification.tone === 'caution') return `${ply}수 ${sideLabel} ${move}: ${classification.label}입니다. 바로 나쁜 수라기보다 응수와 수비 균형을 확인해야 합니다.${lossText}`
+  if (classification.tone === 'practical') return `${ply}수 ${sideLabel} ${move}: ${classification.label}입니다. 엔진 1순위가 아니어도 사람 입장에서는 압박과 선택지를 만드는 수입니다.${practicalText}`
+  return `${ply}수 ${sideLabel} ${move}: ${classification.label}입니다. ${intent.text}`
+}
+
+function risksForMove ({ features, classification, punishmentLine, move, evalLoss }) {
+  const risks = []
+  const serious = ['inaccuracy', 'mistake', 'blunder', 'needs_care', 'interesting_risk'].includes(classification.key)
+  for (const feature of (features || []).filter(feature => ['overextension_check', 'exposed_king_lane'].includes(feature.type)).slice(0, 1)) {
+    risks.push({ id: `${feature.id}-move`, type: feature.type, severity: feature.type === 'exposed_king_lane' && serious ? 'high' : 'medium', confidence: feature.confidence, text: feature.text })
+  }
+  if (serious && punishmentLine && punishmentLine.move && punishmentLine.move !== move) {
+    risks.push({
+      id: `punishment-${move}`,
+      type: 'tactical_counterplay',
+      severity: classification.key === 'blunder' || classification.key === 'mistake' ? 'high' : 'medium',
+      confidence: typeof evalLoss === 'number' && evalLoss >= 180 ? 0.76 : 0.58,
+      move: punishmentLine.move,
+      text: `${punishmentLine.move} 응수가 후보로 보입니다. 이 수가 실제로 가능한지 먼저 확인하면 판단이 훨씬 명확해집니다.`
+    })
+  }
+  return risks
+}
+
+function overlaysForReviewedMove ({ move, ply, classification, features, punishmentLine }) {
+  const overlays = []
+  const split = splitUciMove(move)
+  const brush = classification.tone === 'critical' ? REVIEW_BRUSHES.DANGER : (classification.tone === 'practical' ? REVIEW_BRUSHES.ATTACK : REVIEW_BRUSHES.SUPPORT)
+  if (split) {
+    overlays.push(makeOverlay({
+      id: `move-marker-${ply}`,
+      kind: REVIEW_OVERLAY_KINDS.ARROW,
+      orig: split.orig,
+      dest: split.dest,
+      brush,
+      label: String(ply),
+      modifiers: { lineWidth: classification.tone === 'critical' ? 6 : 4 },
+      explanationId: `move-${ply}`,
+      priority: 50 - ply
+    }))
+  }
+  const hotspot = (features || []).find(feature => feature.square)
+  if (hotspot) {
+    overlays.push(makeOverlay({
+      id: `move-hotspot-${ply}`,
+      kind: hotspot.type.includes('exposed') ? REVIEW_OVERLAY_KINDS.DANGER : REVIEW_OVERLAY_KINDS.HIGHLIGHT,
+      square: hotspot.square,
+      brush: hotspot.type.includes('exposed') ? REVIEW_BRUSHES.DANGER : REVIEW_BRUSHES.ATTACK,
+      label: hotspot.type.includes('exposed') ? '!' : '•',
+      modifiers: { lineWidth: 3 },
+      explanationId: hotspot.id,
+      priority: 45 - ply
+    }))
+  }
+  if (classification.tone === 'critical' && punishmentLine && punishmentLine.move && punishmentLine.move !== move) {
+    const punish = splitUciMove(punishmentLine.move)
+    if (punish) {
+      overlays.push(makeOverlay({
+        id: `move-punishment-${ply}`,
+        kind: REVIEW_OVERLAY_KINDS.ARROW,
+        orig: punish.orig,
+        dest: punish.dest,
+        brush: REVIEW_BRUSHES.DANGER,
+        label: '!',
+        modifiers: { lineWidth: 7 },
+        explanationId: `risk-${ply}`,
+        priority: 80 - ply
+      }))
+    }
+  }
+  return overlays
+}
+
+function perMoveAnalysisFromEngine (engineAnalysis, idx) {
+  return engineAnalysis && Array.isArray(engineAnalysis.moves) ? engineAnalysis.moves[idx] : null
+}
+
+function buildMoveReviews ({ reviewedLine, markerMode, engineAnalysis, fallbackMultipv }) {
+  const allMoves = []
+  const markerMoves = []
+  for (const [idx, move] of (reviewedLine || []).entries()) {
+    const ply = idx + 1
+    const side = ply % 2 === 1 ? 'user' : 'opponent'
+    const sideLabel = side === 'user' ? '내 수' : '상대 수'
+    const moveEngine = perMoveAnalysisFromEngine(engineAnalysis, idx)
+    const rootCandidates = moveEngine && moveEngine.root && Array.isArray(moveEngine.root.candidates)
+      ? moveEngine.root.candidates.map(normalizeEngineCandidate).filter(Boolean)
+      : (idx === 0 ? fallbackMultipv : [])
+    const userCandidate = moveEngine && moveEngine.user && Array.isArray(moveEngine.user.candidates) ? normalizeEngineCandidate(moveEngine.user.candidates[0], 0) : null
+    const afterCandidate = moveEngine && moveEngine.after && Array.isArray(moveEngine.after.candidates) ? normalizeEngineCandidate(moveEngine.after.candidates[0], 0) : null
+    const bestLine = rootCandidates[0] || null
+    const candidateLine = rootCandidates.find(line => line.move === move) || userCandidate
+    const evalLoss = bestLine && candidateLine && typeof bestLine.cp === 'number' && typeof candidateLine.cp === 'number' ? Math.max(0, bestLine.cp - candidateLine.cp) : null
+    const features = extractMoveFeatures(move, idx)
+    const intent = summarizeIntentFromFeatures(features)
+    const practical = practicalSignalsFromFeatures(features)
+    const classification = classifyHumanMove({ move, bestLine, candidateLine, features, evalLoss })
+    const risks = risksForMove({ features, classification, punishmentLine: afterCandidate, move, evalLoss })
+    const moveReview = {
+      ply,
+      side,
+      sideLabel,
+      move,
+      classification: classification.key,
+      classificationLabel: classification.label,
+      severity: classification.severity,
+      tone: classification.tone,
+      evalBefore: bestLine ? bestLine.cp : null,
+      evalAfter: candidateLine ? candidateLine.cp : null,
+      loss: evalLoss,
+      bestMove: bestLine ? bestLine.move : '',
+      bestPv: bestLine ? bestLine.pvUCI : '',
+      punishmentMove: afterCandidate ? afterCandidate.move : '',
+      intent: buildIdeas({ intent, features }).slice(0, 3),
+      risks,
+      practical,
+      summary: summaryForMoveReview({ ply, sideLabel, move, classification, intent, evalLoss, practical }),
+      overlays: overlaysForReviewedMove({ move, ply, classification, features, punishmentLine: afterCandidate }),
+      confidence: typeof evalLoss === 'number' ? Math.max(0.48, Math.min(0.92, 0.84 - Math.min(evalLoss, 260) / 1000)) : 0.56
+    }
+    allMoves.push(moveReview)
+    if (shouldDisplayMoveForMarkerMode(ply, markerMode)) markerMoves.push(moveReview)
+  }
+  return { allMoves, markerMoves }
+}
+
+function overallFromMoveReviews (markerMoves, fallbackClassification) {
+  if (!markerMoves.length) return { classification: fallbackClassification, label: '리뷰', summaryMove: null }
+  const order = ['blunder', 'mistake', 'inaccuracy', 'needs_care', 'interesting_risk', 'attacking_try', 'complexity', 'practical', 'natural', 'good', 'excellent']
+  const sorted = markerMoves.slice().sort((a, b) => order.indexOf(a.classification) - order.indexOf(b.classification))
+  const critical = sorted.find(move => ['blunder', 'mistake', 'inaccuracy', 'needs_care'].includes(move.classification))
+  const positive = markerMoves.find(move => ['excellent', 'good', 'natural', 'practical', 'attacking_try'].includes(move.classification))
+  const summaryMove = critical || positive || markerMoves[0]
+  return { classification: summaryMove.classification, label: summaryMove.classificationLabel, summaryMove }
+}
+
+function buildSummary ({ reviewedMove, moveSan, reviewedLine, bestLine, classification, candidateLine, intent, features, evalLoss, punishmentLine, markerMode, markerMoves, overallMove }) {
   const displayMove = moveSan || reviewedMove || '이 수'
   const bestMove = bestLine && bestLine.move
   const candidateText = candidateLine ? scoreToText(candidateLine.cp) : null
   const featureText = features && features[0] ? features[0].text : intent.text
   const sequencePrefix = reviewedLine && reviewedLine.length > 1 ? `이 ${reviewedLine.length}수 임시 수순은` : `${displayMove}는`
+  if (markerMoves && markerMoves.length) {
+    const modeText = markerModeLabel(markerMode)
+    const headline = overallMove ? `${overallMove.ply}수 ${overallMove.sideLabel} ${overallMove.move}는 ${overallMove.classificationLabel}입니다.` : ''
+    const practicalCount = markerMoves.filter(move => ['excellent', 'good', 'natural', 'practical', 'attacking_try', 'complexity'].includes(move.classification)).length
+    const cautionCount = markerMoves.length - practicalCount
+    return `${sequencePrefix} ${modeText} 기준으로 ${markerMoves.length}개의 수를 나누어 보았습니다. ${headline} 무난하거나 실전적인 수는 ${practicalCount}개, 추가 확인이 필요한 수는 ${cautionCount}개입니다. 평가는 엔진 수치보다 실제 계획과 대응 난이도를 함께 반영했습니다.`
+  }
   const evalHint = typeof evalLoss === 'number' ? `엔진 비교상 약 ${Math.round(evalLoss)}cp의 차이가 있어 전술 확인이 필요합니다.` : ''
   const punishmentHint = punishmentLine && punishmentLine.move ? `특히 ${punishmentLine.move} 응수가 실제 반격 후보로 잡힙니다.` : ''
 
@@ -262,7 +472,7 @@ function buildSummary ({ reviewedMove, moveSan, reviewedLine, bestLine, classifi
     return `${sequencePrefix} 전략적으로도 자연스럽고 엔진도 지지하는 아이디어입니다. ${intent.text}`
   }
   if (classification === 'high_risk') {
-    return `${sequencePrefix} 의도는 분명하지만 위험도가 높습니다. ${featureText} ${punishmentHint || evalHint} 빨간 화살표의 응징 루트를 먼저 확인해야 합니다.`
+    return `${sequencePrefix} 의도는 분명하지만 구체적인 확인이 필요합니다. ${featureText} ${punishmentHint || evalHint} 표시된 반격 후보를 먼저 확인해 보세요.`
   }
   if (classification === 'practical_but_risky' || classification === 'risky_practical_try') {
     return `${sequencePrefix} 실전적인 찬스를 만드는 시도입니다. ${intent.text} 다만 같은 방향성이 상대의 반격 경로나 과확장을 허용할 수 있습니다. ${punishmentHint}`
@@ -271,7 +481,7 @@ function buildSummary ({ reviewedMove, moveSan, reviewedLine, bestLine, classifi
     return `${sequencePrefix} 엔진 1순위는 아니어도 사람이 이해할 수 있는 계획을 가진 대안입니다. ${intent.text}`
   }
   if (bestMove && bestMove !== reviewedMove) {
-    return `${sequencePrefix} 전술 검토가 필요한 후보입니다. ${featureText} 추천수와 비교해 계획이 실제로 성립하는지 확인해야 합니다.`
+    return `${sequencePrefix} 조금 더 확인하면 좋은 후보입니다. ${featureText} 추천수와 비교해 계획이 실제로 성립하는지 확인해야 합니다.`
   }
   if (candidateText) {
     return `${sequencePrefix} ${candidateText}로 이어집니다. 하지만 핵심은 수치보다 계획입니다. ${intent.text}`
@@ -342,7 +552,10 @@ export function buildReviewCacheKey (request) {
   const engineRoot = request.engineAnalysis && request.engineAnalysis.root && Array.isArray(request.engineAnalysis.root.candidates)
     ? request.engineAnalysis.root.candidates.slice(0, 3).map(entry => [entry && entry.ucimove, entry && entry.cp, entry && entry.mate, entry && entry.depth].join(':')).join(',')
     : ''
-  return [REVIEW_SERVICE_VERSION, request.variant, request.fen, request.move, line, request.engineName, multipv, engineRoot].join('|')
+  const engineMoves = request.engineAnalysis && Array.isArray(request.engineAnalysis.moves)
+    ? request.engineAnalysis.moves.slice(0, 12).map(entry => entry && entry.user && entry.user.candidates && entry.user.candidates[0] ? [entry.user.candidates[0].ucimove, entry.user.candidates[0].cp, entry.user.candidates[0].mate, entry.user.candidates[0].depth].join(':') : '').join(',')
+    : ''
+  return [REVIEW_SERVICE_VERSION, request.variant, request.fen, request.move, line, request.markerMode, request.engineName, multipv, engineRoot, engineMoves].join('|')
 }
 
 /**
@@ -364,20 +577,32 @@ export function analyzeReviewRequest (request) {
   const candidateLine = multipv.find(line => line.move === reviewedMove) || userCandidateFromAnalysis(engineAnalysis)
   const punishmentLine = punishmentFromAnalysis(engineAnalysis)
   const evalLoss = bestLine && candidateLine && typeof bestLine.cp === 'number' && typeof candidateLine.cp === 'number' ? Math.max(0, bestLine.cp - candidateLine.cp) : null
-  const classification = classifyMove({ reviewedMove, bestLine, candidateLine, features, evalLoss })
-  const overlays = buildOverlays({ reviewedMove, reviewedLine, bestLine, punishmentLine, classification, features })
+  const legacyClassification = classifyMove({ reviewedMove, bestLine, candidateLine, features, evalLoss })
+  const markerMode = request.markerMode || (request.context && request.context.markerMode) || REVIEW_MARKER_MODES.MY_MOVES_ONLY
+  const { allMoves, markerMoves } = buildMoveReviews({ reviewedLine, markerMode, engineAnalysis, fallbackMultipv: multipv })
+  const overall = overallFromMoveReviews(markerMoves, legacyClassification)
+  const classification = overall.classification
+  const overlays = markerMoves.length > 0
+    ? markerMoves.slice(0, 6).flatMap(move => move.overlays || [])
+    : buildOverlays({ reviewedMove, reviewedLine, bestLine, punishmentLine, classification: legacyClassification, features })
+  const risks = markerMoves.length > 0
+    ? markerMoves.flatMap(move => move.risks || []).slice(0, 4)
+    : buildRisks({ bestLine, punishmentLine, reviewedMove, classification: legacyClassification, features })
 
   return {
     id: request.id,
     schemaVersion: REVIEW_SCHEMA_VERSION,
     serviceVersion: REVIEW_SERVICE_VERSION,
     mode: request.mode || REVIEW_MODES.MOVE,
+    markerMode,
+    markerModeLabel: markerModeLabel(markerMode),
     variant: request.variant,
     fen: request.fen,
     reviewedMove,
     reviewedLine,
     classification,
-    summary: buildSummary({ reviewedMove, moveSan: request.moveSan, reviewedLine, bestLine, classification, candidateLine, intent, features, evalLoss, punishmentLine }),
+    classificationLabel: overall.label,
+    summary: buildSummary({ reviewedMove, moveSan: request.moveSan, reviewedLine, bestLine, classification: legacyClassification, candidateLine, intent, features, evalLoss, punishmentLine, markerMode, markerMoves, overallMove: overall.summaryMove }),
     engineEvidence: {
       engineName: request.engineName || '',
       bestMove: bestLine ? bestLine.move : '',
@@ -387,12 +612,15 @@ export function analyzeReviewRequest (request) {
       evalLoss,
       bestPv: bestLine ? bestLine.pvUCI : '',
       punishmentMove: punishmentLine ? punishmentLine.move : '',
+      perMoveCount: allMoves.length,
       engineError: engineAnalysis && engineAnalysis.error ? engineAnalysis.error : null
     },
     features,
     engineRecommendations,
     ideas: buildIdeas({ intent, features }),
-    risks: buildRisks({ bestLine, punishmentLine, reviewedMove, classification, features }),
+    risks,
+    moves: allMoves,
+    markerMoves,
     keyMoments: buildKeyMoments(reviewedLine, features),
     alternatives: bestLine && bestLine.move && bestLine.move !== reviewedMove
       ? [{ id: 'engine-main-candidate', move: bestLine.move, text: '이 구체적인 추천수와 사람의 아이디어를 비교해 보세요.' }]

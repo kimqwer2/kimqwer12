@@ -30,6 +30,25 @@
       </div>
     </div>
 
+    <div class="marker-mode-control">
+      <label for="review-marker-mode">표시할 수</label>
+      <select
+        id="review-marker-mode"
+        :value="review.markerMode"
+        :disabled="review.loading"
+        @change="setMarkerMode($event.target.value)"
+      >
+        <option
+          v-for="mode in markerModes"
+          :key="mode.value"
+          :value="mode.value"
+        >
+          {{ mode.label }}
+        </option>
+      </select>
+      <small>{{ markerModeHelp }}</small>
+    </div>
+
     <div class="review-actions">
       <button
         v-if="!review.sequence.active"
@@ -127,6 +146,52 @@
       <p class="summary">
         {{ result.summary }}
       </p>
+
+      <div
+        v-if="reviewedMoves.length"
+        class="move-timeline review-section"
+      >
+        <div class="section-heading">
+          <h4>수별 리뷰</h4>
+          <small>{{ result.markerModeLabel || markerModeLabel(review.markerMode) }}</small>
+        </div>
+        <div class="move-chip-list">
+          <button
+            v-for="move in reviewedMoves"
+            :key="move.ply"
+            type="button"
+            :class="['move-chip', severityClassForMove(move), { active: selectedMove && selectedMove.ply === move.ply }]"
+            @click="selectMove(move)"
+            @mouseenter="hoveredMove = move"
+            @mouseleave="hoveredMove = null"
+          >
+            <span class="move-ply">{{ move.ply }}</span>
+            <span class="move-main">{{ move.move }}</span>
+            <span class="move-label">{{ move.classificationLabel }}</span>
+          </button>
+        </div>
+        <div
+          v-if="focusedMove"
+          class="move-detail"
+        >
+          <strong>{{ focusedMove.ply }}수 · {{ focusedMove.sideLabel }} · {{ focusedMove.classificationLabel }}</strong>
+          <p>{{ focusedMove.summary }}</p>
+          <div class="move-meta">
+            <span>{{ evalDeltaText(focusedMove) }}</span>
+            <span>{{ practicalText(focusedMove) }}</span>
+            <span>{{ confidence(focusedMove.confidence) }}</span>
+          </div>
+          <ul v-if="focusedMove.risks && focusedMove.risks.length">
+            <li
+              v-for="risk in focusedMove.risks"
+              :key="risk.id"
+            >
+              {{ risk.text }}
+            </li>
+          </ul>
+        </div>
+      </div>
+
 
       <div
         v-if="result.engineRecommendations && result.engineRecommendations.length"
@@ -241,7 +306,15 @@ export default {
   data () {
     return {
       customMove: '',
-      customLine: ''
+      customLine: '',
+      selectedPly: null,
+      hoveredMove: null,
+      markerModes: [
+        { value: 'FIRST_MOVE_ONLY', label: '첫 수만', help: '첫 번째 수만 빠르게 확인합니다.' },
+        { value: 'MY_MOVES_ONLY', label: '내 수만', help: '첫 수를 내 수로 보고 내 수마다 표시합니다.' },
+        { value: 'OPPONENT_MOVES_ONLY', label: '상대 수만', help: '상대 응수만 따로 확인합니다.' },
+        { value: 'BOTH_SIDES', label: '양쪽 모두', help: '수순의 모든 수를 차례대로 표시합니다.' }
+      ]
     }
   },
   computed: {
@@ -249,21 +322,37 @@ export default {
     result () {
       return this.review.currentResult
     },
+    reviewedMoves () {
+      if (!this.result) return []
+      if (Array.isArray(this.result.markerMoves) && this.result.markerMoves.length) return this.result.markerMoves
+      return Array.isArray(this.result.moves) ? this.result.moves : []
+    },
+    selectedMove () {
+      if (!this.reviewedMoves.length) return null
+      return this.reviewedMoves.find(move => move.ply === this.selectedPly) || this.reviewedMoves[0]
+    },
+    focusedMove () {
+      return this.hoveredMove || this.selectedMove
+    },
+    markerModeHelp () {
+      const mode = this.markerModes.find(mode => mode.value === this.review.markerMode)
+      return mode ? mode.help : '첫 수를 내 수로 보고 표시합니다.'
+    },
     classificationLabel () {
       if (!this.result || !this.result.classification) return '리뷰'
       return this.classificationText(this.result.classification)
     },
     severityLabel () {
       if (!this.result) return '준비됨'
-      if (this.result.risks && this.result.risks.find(risk => risk.severity === 'high')) return '위험도 높음'
-      if (this.result.risks && this.result.risks.length) return '주의 필요'
+      if (this.result.classificationLabel) return this.result.classificationLabel
+      if (this.result.risks && this.result.risks.find(risk => risk.severity === 'high')) return '확인 필요'
+      if (this.result.risks && this.result.risks.length) return '검토 포인트'
       return this.classificationLabel
     },
     severityClass () {
-      if (!this.result || !this.result.risks) return 'neutral'
-      if (this.result.risks.find(risk => risk.severity === 'high')) return 'high'
-      if (this.result.risks.length) return 'medium'
-      return 'low'
+      if (!this.result) return 'neutral'
+      if (this.result.classification) return this.result.classification
+      return 'neutral'
     },
     primaryIntentLabel () {
       const intent = this.result && this.result.ideas && this.result.ideas[0]
@@ -271,6 +360,34 @@ export default {
     }
   },
   methods: {
+    setMarkerMode (mode) {
+      this.selectedPly = null
+      this.$store.dispatch('setReviewMarkerMode', mode)
+    },
+    markerModeLabel (mode) {
+      const found = this.markerModes.find(item => item.value === mode)
+      return found ? found.label : '내 수만'
+    },
+    selectMove (move) {
+      this.selectedPly = move && move.ply
+    },
+    severityClassForMove (move) {
+      return move && move.severity ? move.severity : 'neutral'
+    },
+    evalDeltaText (move) {
+      if (!move || typeof move.loss !== 'number') return '평가 차이 없음'
+      if (move.loss < 30) return '엔진 차이 거의 없음'
+      return `평가 차이 약 ${Math.round(move.loss)}cp`
+    },
+    practicalText (move) {
+      if (!move || !move.practical) return '실전 요소 보통'
+      const parts = []
+      if (move.practical.attackChances) parts.push('공격 기회')
+      if (move.practical.complexityIncrease) parts.push('복잡성')
+      if (move.practical.initiative) parts.push('주도권')
+      if (move.practical.defensiveConcern) parts.push('수비 확인')
+      return parts.length ? parts.join(' · ') : '안정성'
+    },
     startReviewSequence () {
       this.$store.dispatch('startReviewSequence')
     },
@@ -314,12 +431,23 @@ export default {
     },
     classificationText (classification) {
       const labels = {
+        excellent: '훌륭한 수',
+        good: '좋은 수',
+        natural: '자연스러운 수',
+        practical: '실전적인 수',
+        complexity: '복잡성을 높이는 수',
+        attacking_try: '공격적인 시도',
+        interesting_risk: '위험하지만 흥미로운 수',
+        needs_care: '주의가 필요한 수',
+        inaccuracy: '부정확한 수',
+        mistake: '실수',
+        blunder: '큰 실수',
         engine_supported_idea: '엔진도 지지',
-        high_risk: '위험한 시도',
-        practical_but_risky: '실전적이나 위험',
-        risky_practical_try: '위험한 실전 승부수',
+        high_risk: '확인 필요',
+        practical_but_risky: '실전적 시도',
+        risky_practical_try: '복잡한 실전 수',
         playable_alternative: '둘 만한 대안',
-        needs_tactical_check: '전술 확인 필요',
+        needs_tactical_check: '확인할 후보',
         idea_review: '아이디어 검토',
         no_move: '수 없음'
       }
@@ -381,6 +509,97 @@ h3, h4, p {
   border-radius: 4px;
   background: rgba(0, 0, 0, 0.18);
   font-family: monospace;
+}
+
+.marker-mode-control {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 10px;
+  padding: 8px;
+  border-radius: 6px;
+  background: rgba(127, 127, 127, 0.10);
+}
+.marker-mode-control label {
+  font-weight: 800;
+}
+.marker-mode-control select {
+  padding: 5px;
+  border: 1px solid var(--main-border-color);
+  border-radius: 4px;
+  background: var(--second-bg-color);
+  color: var(--main-text-color);
+}
+.move-timeline {
+  padding: 8px;
+  border-radius: 6px;
+  background: rgba(127, 127, 127, 0.08);
+}
+.section-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+}
+.move-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+.move-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(77, 102, 128, 0.7);
+  color: #fff;
+  font-size: 11px;
+}
+.move-chip.active {
+  outline: 2px solid #fff;
+}
+.move-chip.excellent { background: #2f855a; }
+.move-chip.good,
+.move-chip.natural { background: #3f6fb5; }
+.move-chip.practical,
+.move-chip.attacking_try,
+.move-chip.complexity,
+.move-chip.interesting_risk,
+.move-chip.risky { background: #a05f00; }
+.move-chip.needs_care,
+.move-chip.caution,
+.move-chip.inaccuracy { background: #9a6700; }
+.move-chip.mistake,
+.move-chip.blunder { background: #b42336; }
+.move-ply {
+  font-weight: 900;
+}
+.move-label {
+  opacity: 0.95;
+}
+.move-detail {
+  margin-top: 8px;
+  padding: 8px;
+  border-left: 4px solid #7289da;
+  border-radius: 4px;
+  background: rgba(114, 137, 218, 0.12);
+}
+.move-detail p {
+  margin-top: 4px;
+  line-height: 1.35;
+}
+.move-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 5px;
+}
+.move-meta span {
+  padding: 2px 5px;
+  border-radius: 999px;
+  background: rgba(127, 127, 127, 0.20);
+  font-size: 10px;
 }
 .review-actions {
   display: flex;
@@ -463,6 +682,19 @@ button:disabled {
   letter-spacing: 0.01em;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.28);
 }
+.risk-badge.excellent { background: #2f855a; color: #fff; border-color: #9be7b0; }
+.risk-badge.good,
+.risk-badge.natural { background: #3f6fb5; color: #fff; border-color: #aac7ff; }
+.risk-badge.practical,
+.risk-badge.attacking_try,
+.risk-badge.complexity,
+.risk-badge.interesting_risk,
+.risk-badge.risky { background: #a05f00; color: #fffaf1; border-color: #ffd08a; }
+.risk-badge.needs_care,
+.risk-badge.caution,
+.risk-badge.inaccuracy { background: #9a6700; color: #fffaf1; border-color: #ffd08a; }
+.risk-badge.mistake,
+.risk-badge.blunder,
 .risk-badge.high { background: #d7263d; color: #fff; border-color: #ffb3b3; }
 .risk-badge.medium { background: #c46b00; color: #fffaf1; border-color: #ffd08a; }
 .risk-badge.low { background: #247a3d; color: #f0fff4; border-color: #9be7b0; }

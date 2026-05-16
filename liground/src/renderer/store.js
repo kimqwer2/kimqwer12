@@ -3,7 +3,7 @@ import Vuex from 'vuex'
 import ffish from 'ffish'
 import { engine, Engine } from './engine'
 import allEngines from './store/engines'
-import { createReviewRequest, emptyReviewState, emptyReviewSequenceState, REVIEW_MODES } from '../shared/review/schema'
+import { createReviewRequest, emptyReviewState, emptyReviewSequenceState, REVIEW_MARKER_MODES, REVIEW_MODES } from '../shared/review/schema'
 import { analyzeReviewRequest } from '../shared/review/reviewService'
 
 import moveAudio from './assets/audio/Move.mp3'
@@ -758,6 +758,13 @@ export const store = new Vuex.Store({
     analysisVisualization (state, payload) {
       state.analysisVisualization = { ...state.analysisVisualization, ...payload }
     },
+    reviewMarkerMode (state, payload) {
+      const mode = Object.values(REVIEW_MARKER_MODES).includes(payload) ? payload : REVIEW_MARKER_MODES.MY_MOVES_ONLY
+      state.review.markerMode = mode
+      if (typeof localStorage !== 'undefined') {
+        localStorage.reviewMarkerMode = mode
+      }
+    },
     reviewSetRequest (state, payload) {
       state.review.lastRequestId = payload
       state.review.loading = true
@@ -779,7 +786,9 @@ export const store = new Vuex.Store({
     },
     reviewClear (state) {
       const previousInteraction = state.review.sequence && state.review.sequence.previousInteraction
+      const markerMode = state.review.markerMode
       state.review = emptyReviewState()
+      state.review.markerMode = markerMode
       if (previousInteraction && typeof previousInteraction.analysisMode === 'boolean') {
         state.analysisMode = previousInteraction.analysisMode
       }
@@ -1004,6 +1013,9 @@ export const store = new Vuex.Store({
       }
       if (localStorage.variant) {
         context.commit('variant', localStorage.variant)
+      }
+      if (localStorage.reviewMarkerMode && Object.values(REVIEW_MARKER_MODES).includes(localStorage.reviewMarkerMode)) {
+        context.commit('reviewMarkerMode', localStorage.reviewMarkerMode)
       }
       if (localStorage.engines) {
         try {
@@ -2012,6 +2024,9 @@ export const store = new Vuex.Store({
     analysisVisualization (context, payload) {
       context.commit('analysisVisualization', payload)
     },
+    setReviewMarkerMode (context, payload) {
+      context.commit('reviewMarkerMode', payload)
+    },
     startReviewSequence (context) {
       const previousInteraction = {
         analysisMode: context.state.analysisMode,
@@ -2090,7 +2105,9 @@ export const store = new Vuex.Store({
         move: sequence.line[0],
         moveSan: sequence.sans[0],
         line: sequence.line,
+        markerMode: context.state.review.markerMode,
         context: {
+          markerMode: context.state.review.markerMode,
           sequenceSans: sequence.sans,
           finalFen: sequence.fen,
           temporary: true
@@ -2103,7 +2120,8 @@ export const store = new Vuex.Store({
         id: payload.id || `review-${Date.now()}-${Math.random().toString(36).slice(2)}`,
         variant: payload.variant || context.getters.variant,
         engineName: payload.engineName || context.getters.engineName,
-        multipv: payload.multipv || context.getters.multipv
+        multipv: payload.multipv || context.getters.multipv,
+        markerMode: payload.markerMode || context.state.review.markerMode
       })
       context.commit('reviewSetRequest', request.id)
       try {
@@ -2113,6 +2131,8 @@ export const store = new Vuex.Store({
           line: request.line,
           depth: request.context && request.context.reviewDepth ? request.context.reviewDepth : 10,
           multiPv: 3,
+          perMoveDepth: request.context && request.context.reviewDepth ? request.context.reviewDepth : 8,
+          maxReviewMoves: 20,
           variant: request.variant
         })
       } catch (err) {
@@ -2147,7 +2167,9 @@ export const store = new Vuex.Store({
         moveSan: move.name,
         line: [move.uci],
         multipv: [],
+        markerMode: context.state.review.markerMode,
         context: {
+          markerMode: context.state.review.markerMode,
           currentFen: context.getters.fen,
           ply: move.ply
         }
@@ -2163,7 +2185,8 @@ export const store = new Vuex.Store({
         fen: context.getters.fen,
         move,
         line: [move],
-        context: { currentFen: context.getters.fen }
+        markerMode: context.state.review.markerMode,
+        context: { markerMode: context.state.review.markerMode, currentFen: context.getters.fen }
       })
     },
     reviewLine (context, line) {
@@ -2177,7 +2200,8 @@ export const store = new Vuex.Store({
         fen: context.getters.fen,
         move: cleanLine[0],
         line: cleanLine,
-        context: { currentFen: context.getters.fen }
+        markerMode: context.state.review.markerMode,
+        context: { markerMode: context.state.review.markerMode, currentFen: context.getters.fen }
       })
     },
     clearReview (context) {
@@ -2639,6 +2663,9 @@ export const store = new Vuex.Store({
     },
     review (state) {
       return state.review
+    },
+    reviewMarkerMode (state) {
+      return state.review.markerMode
     },
     reviewResult (state) {
       return state.review.currentResult
