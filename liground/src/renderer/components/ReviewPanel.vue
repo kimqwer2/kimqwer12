@@ -138,23 +138,30 @@
       v-if="result"
       class="review-result"
     >
-      <div class="classification">
-        <span :class="['risk-badge', severityClass]">{{ severityLabel }}</span>
-        <span class="intent-badge">{{ primaryIntentLabel }}</span>
-        <span v-if="result.cached" class="cache-badge">캐시</span>
+      <div class="review-summary-card">
+        <div class="section-heading">
+          <h4>요약</h4>
+          <small>보드를 보면서 읽을 수 있도록 고정됩니다.</small>
+        </div>
+        <div class="classification">
+          <span :class="['risk-badge', severityClass]">{{ severityLabel }}</span>
+          <span class="intent-badge">{{ primaryIntentLabel }}</span>
+          <span v-if="result.cached" class="cache-badge">캐시</span>
+        </div>
+        <p class="summary">
+          {{ result.summary }}
+        </p>
       </div>
-      <p class="summary">
-        {{ result.summary }}
-      </p>
 
-      <div
+      <details
         v-if="reviewedMoves.length"
         class="move-timeline review-section"
+        open
       >
-        <div class="section-heading">
-          <h4>수별 리뷰</h4>
+        <summary>
+          <strong>수순별 평가</strong>
           <small>{{ result.markerModeLabel || markerModeLabel(review.markerMode) }}</small>
-        </div>
+        </summary>
         <div class="move-chip-list">
           <button
             v-for="move in reviewedMoves"
@@ -162,8 +169,10 @@
             type="button"
             :class="['move-chip', severityClassForMove(move), { active: selectedMove && selectedMove.ply === move.ply }]"
             @click="selectMove(move)"
-            @mouseenter="hoveredMove = move"
-            @mouseleave="hoveredMove = null"
+            @mouseenter="previewMove(move)"
+            @mouseleave="clearPreview"
+            @focus="previewMove(move)"
+            @blur="clearPreview"
           >
             <span class="move-ply">{{ move.ply }}</span>
             <span class="move-main">{{ move.move }}</span>
@@ -190,14 +199,40 @@
             </li>
           </ul>
         </div>
-      </div>
+      </details>
+
+      <details
+        v-if="responseMoves.length"
+        class="review-section response-section"
+        open
+      >
+        <summary>추천 응수</summary>
+        <div class="response-list">
+          <button
+            v-for="move in responseMoves"
+            :key="`response-${move.ply}`"
+            type="button"
+            class="response-card"
+            @mouseenter="previewMove(move)"
+            @mouseleave="clearPreview"
+            @focus="previewMove(move)"
+            @blur="clearPreview"
+            @click="selectMove(move)"
+          >
+            <strong>{{ move.move }}</strong>
+            <span v-if="move.punishmentMove">{{ move.punishmentMove }} 응수 확인</span>
+            <span v-else-if="move.bestMove">{{ move.bestMove }}와 비교</span>
+            <small>{{ move.summary }}</small>
+          </button>
+        </div>
+      </details>
 
 
-      <div
+      <details
         v-if="result.engineRecommendations && result.engineRecommendations.length"
         class="review-section recommendations"
       >
-        <h4>엔진 추천수</h4>
+        <summary>엔진 추천</summary>
         <ol>
           <li
             v-for="rec in result.engineRecommendations.slice(0, 3)"
@@ -208,7 +243,7 @@
             <small>{{ rec.meaning }}</small>
           </li>
         </ol>
-      </div>
+      </details>
 
       <div class="review-grid">
         <div>
@@ -221,11 +256,11 @@
         </div>
       </div>
 
-      <div
+      <details
         v-if="result.ideas && result.ideas.length"
         class="review-section"
       >
-        <h4>의도 해석</h4>
+        <summary>전략 의도</summary>
         <ul>
           <li
             v-for="idea in result.ideas"
@@ -234,13 +269,14 @@
             {{ idea.text }} <small>({{ confidence(idea.confidence) }})</small>
           </li>
         </ul>
-      </div>
+      </details>
 
-      <div
+      <details
         v-if="result.risks && result.risks.length"
         class="review-section danger"
+        open
       >
-        <h4>주의할 점</h4>
+        <summary>핵심 위험</summary>
         <ul>
           <li
             v-for="risk in result.risks"
@@ -249,21 +285,21 @@
             {{ risk.text }} <small>{{ severityText(risk.severity) }} · {{ confidence(risk.confidence) }}</small>
           </li>
         </ul>
-      </div>
+      </details>
 
-      <div
+      <details
         v-if="result.risks && result.risks.length"
         class="review-section danger-explain"
       >
-        <h4>왜 위험한가?</h4>
+        <summary>상대 응징/전술 설명</summary>
         <p>{{ result.risks[0].text }}</p>
-      </div>
+      </details>
 
-      <div
+      <details
         v-if="result.keyMoments && result.keyMoments.length"
         class="review-section"
       >
-        <h4>핵심 장면</h4>
+        <summary>핵심 장면</summary>
         <ol>
           <li
             v-for="moment in result.keyMoments"
@@ -273,7 +309,7 @@
             <small>{{ moment.text }}</small>
           </li>
         </ol>
-      </div>
+      </details>
 
       <div class="overlay-legend">
         <span><i class="legend-red" /> 위험 / 응징</span>
@@ -303,6 +339,9 @@ import { mapGetters } from 'vuex'
 
 export default {
   name: 'ReviewPanel',
+  beforeDestroy () {
+    this.$store.dispatch('clearReviewPreview')
+  },
   data () {
     return {
       customMove: '',
@@ -326,6 +365,11 @@ export default {
       if (!this.result) return []
       if (Array.isArray(this.result.markerMoves) && this.result.markerMoves.length) return this.result.markerMoves
       return Array.isArray(this.result.moves) ? this.result.moves : []
+    },
+    responseMoves () {
+      return this.reviewedMoves
+        .filter(move => move && (move.punishmentMove || move.bestMove || (move.risks && move.risks.length)))
+        .slice(0, 4)
     },
     selectedMove () {
       if (!this.reviewedMoves.length) return null
@@ -370,6 +414,17 @@ export default {
     },
     selectMove (move) {
       this.selectedPly = move && move.ply
+      this.previewMove(move)
+    },
+    previewMove (move) {
+      this.hoveredMove = move
+      if (move && move.previewFen) {
+        this.$store.dispatch('previewReviewMove', move)
+      }
+    },
+    clearPreview () {
+      this.hoveredMove = null
+      this.$store.dispatch('clearReviewPreview')
     },
     severityClassForMove (move) {
       return move && move.severity ? move.severity : 'neutral'
@@ -471,19 +526,30 @@ export default {
 
 <style scoped>
 .review-panel {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 95px);
   margin: 10px 0;
-  padding: 10px;
+  padding: 0;
   background: var(--second-bg-color);
   border: 1px solid var(--main-border-color);
   border-radius: 6px;
   color: var(--main-text-color);
   font-size: 12px;
   text-align: left;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .review-header {
+  position: sticky;
+  top: 0;
+  z-index: 3;
   display: flex;
   justify-content: space-between;
   gap: 8px;
+  padding: 10px;
+  background: var(--second-bg-color);
+  border-bottom: 1px solid var(--main-border-color);
 }
 h3, h4, p {
   margin: 0;
@@ -511,6 +577,14 @@ h3, h4, p {
   font-family: monospace;
 }
 
+.sequence-banner,
+.marker-mode-control,
+.review-actions,
+.review-error,
+.review-empty {
+  margin-left: 10px;
+  margin-right: 10px;
+}
 .marker-mode-control {
   display: flex;
   flex-direction: column;
@@ -551,6 +625,7 @@ h3, h4, p {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  max-width: 100%;
   border: 1px solid rgba(255, 255, 255, 0.25);
   background: rgba(77, 102, 128, 0.7);
   color: #fff;
@@ -558,6 +633,11 @@ h3, h4, p {
 }
 .move-chip.active {
   outline: 2px solid #fff;
+}
+.move-chip:focus,
+.response-card:focus {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
 }
 .move-chip.excellent { background: #2f855a; }
 .move-chip.good,
@@ -600,6 +680,32 @@ h3, h4, p {
   border-radius: 999px;
   background: rgba(127, 127, 127, 0.20);
   font-size: 10px;
+}
+
+.response-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 6px;
+  margin-top: 6px;
+}
+.response-card {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  border: 1px solid rgba(242, 201, 76, 0.55);
+  background: rgba(242, 201, 76, 0.12);
+  color: var(--main-text-color);
+  text-align: left;
+}
+.response-card strong {
+  color: #ffd86b;
+}
+.response-card small {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
 }
 .review-actions {
   display: flex;
@@ -662,6 +768,39 @@ button:disabled {
 }
 .review-result {
   margin-top: 10px;
+  padding: 0 10px 10px;
+  overflow: visible;
+}
+.review-summary-card {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 8px;
+  border: 1px solid rgba(114, 137, 218, 0.35);
+  border-radius: 6px;
+  background: var(--second-bg-color);
+  box-shadow: 0 6px 12px rgba(0, 0, 0, 0.18);
+}
+.review-result details {
+  margin-top: 8px;
+  border-radius: 6px;
+  background: rgba(127, 127, 127, 0.08);
+}
+.review-result summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+  padding: 7px;
+  font-weight: 800;
+}
+.review-result details > *:not(summary) {
+  margin-left: 8px;
+  margin-right: 8px;
+}
+.review-result details[open] {
+  padding-bottom: 8px;
 }
 .classification {
   display: flex;
@@ -783,4 +922,14 @@ small {
   margin-top: 10px;
   line-height: 1.4;
 }
+@media (max-width: 780px) {
+  .review-panel {
+    max-height: 48vh;
+  }
+  .review-grid,
+  .response-list {
+    grid-template-columns: 1fr;
+  }
+}
+
 </style>

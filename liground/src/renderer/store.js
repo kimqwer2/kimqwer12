@@ -136,6 +136,84 @@ function resolveReviewSequenceMove (legalMoves, move) {
   return promotionMatches.find(candidate => candidate.endsWith('q')) || promotionMatches[0]
 }
 
+
+function enrichReviewMovePreviewFens (result, variant, is960) {
+  if (!result || !Array.isArray(result.moves) || !result.fen) return result
+  let board
+  try {
+    board = is960 ? new ffish.Board(variant, result.fen, true) : new ffish.Board(variant, result.fen)
+  } catch (err) {
+    return result
+  }
+  const previewByPly = {}
+  for (const move of result.moves) {
+    if (!move || !move.move) continue
+    try {
+      board.push(move.move)
+      previewByPly[move.ply] = board.fen()
+    } catch (err) {
+      break
+    }
+  }
+  const enrich = move => move && previewByPly[move.ply] ? { ...move, previewFen: previewByPly[move.ply] } : move
+  return {
+    ...result,
+    moves: result.moves.map(enrich),
+    markerMoves: Array.isArray(result.markerMoves) ? result.markerMoves.map(enrich) : result.markerMoves
+  }
+}
+
+function previewOverlaysForMove (move) {
+  if (!move) return []
+  const overlays = Array.isArray(move.overlays) ? move.overlays.slice(0, 6).map(overlay => ({ ...overlay, source: 'review-preview' })) : []
+  const sq = reviewMoveToOverlaySquares(move.move)
+  if (sq && sq.orig && sq.dest) {
+    overlays.push({
+      id: `hover-preview-move-${move.ply}`,
+      kind: 'arrow',
+      orig: sq.orig,
+      dest: sq.dest,
+      brush: move.tone === 'critical' ? 'red' : (move.tone === 'practical' ? 'yellow' : 'green'),
+      label: move.classificationLabel,
+      modifiers: { lineWidth: move.tone === 'critical' ? 7 : 5 },
+      source: 'review-preview'
+    })
+    overlays.push({
+      id: `hover-preview-target-${move.ply}`,
+      kind: 'highlight',
+      square: sq.dest,
+      brush: move.tone === 'critical' ? 'red' : (move.tone === 'practical' ? 'yellow' : 'green'),
+      label: '착점',
+      modifiers: { lineWidth: 4 },
+      source: 'review-preview'
+    })
+  }
+  const responseMove = move.punishmentMove || (typeof move.bestPv === 'string' ? move.bestPv.split(/\s+/).filter(Boolean)[0] : '')
+  const response = responseMove && responseMove !== move.move ? reviewMoveToOverlaySquares(responseMove) : null
+  if (response && response.orig && response.dest) {
+    overlays.push({
+      id: `hover-preview-response-${move.ply}`,
+      kind: 'arrow',
+      orig: response.orig,
+      dest: response.dest,
+      brush: move.tone === 'critical' || move.severity === 'blunder' || move.severity === 'mistake' ? 'red' : 'yellow',
+      label: move.punishmentMove ? '응징' : '응수',
+      modifiers: { lineWidth: move.tone === 'critical' ? 8 : 6 },
+      source: 'review-preview'
+    })
+    overlays.push({
+      id: `hover-preview-response-target-${move.ply}`,
+      kind: 'danger',
+      square: response.dest,
+      brush: move.tone === 'critical' ? 'red' : 'yellow',
+      label: '압박',
+      modifiers: { lineWidth: 4 },
+      source: 'review-preview'
+    })
+  }
+  return overlays
+}
+
 function buildReviewSequenceOverlays (line) {
   const circled = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩', '⑪', '⑫']
   return (Array.isArray(line) ? line : []).map((move, idx) => {
@@ -144,7 +222,7 @@ function buildReviewSequenceOverlays (line) {
     const base = {
       id: `review-sequence-${idx}`,
       kind: sq.orig && sq.dest ? 'arrow' : 'highlight',
-      brush: idx % 2 === 0 ? 'orange' : 'blue',
+      brush: idx % 2 === 0 ? 'yellow' : 'blue',
       label: circled[idx] || String(idx + 1),
       modifiers: { lineWidth: Math.max(2, 6 - idx * 0.4), opacity: Math.max(0.35, 0.85 - idx * 0.04) },
       explanationId: 'sequence-path',
@@ -761,6 +839,7 @@ export const store = new Vuex.Store({
     reviewMarkerMode (state, payload) {
       const mode = Object.values(REVIEW_MARKER_MODES).includes(payload) ? payload : REVIEW_MARKER_MODES.MY_MOVES_ONLY
       state.review.markerMode = mode
+      state.review.preview = { active: false, fen: '', move: null, overlays: [] }
       if (typeof localStorage !== 'undefined') {
         localStorage.reviewMarkerMode = mode
       }
@@ -769,15 +848,29 @@ export const store = new Vuex.Store({
       state.review.lastRequestId = payload
       state.review.loading = true
       state.review.error = null
+      state.review.preview = { active: false, fen: '', move: null, overlays: [] }
       state.review.active = true
     },
     reviewSetResult (state, payload) {
+      const result = enrichReviewMovePreviewFens(payload, state.variant, state.board && state.board.is960 && state.board.is960())
       state.review.loading = false
       state.review.error = null
-      state.review.currentResult = payload
-      state.review.overlays = Array.isArray(payload.overlays) ? payload.overlays : []
+      state.review.preview = { active: false, fen: '', move: null, overlays: [] }
+      state.review.currentResult = result
+      state.review.overlays = Array.isArray(result.overlays) ? result.overlays : []
       state.review.active = true
-      Vue.set(state.review.resultsById, payload.id, payload)
+      Vue.set(state.review.resultsById, result.id, result)
+    },
+    reviewPreviewSet (state, payload) {
+      state.review.preview = {
+        active: Boolean(payload && payload.previewFen),
+        fen: payload && payload.previewFen ? payload.previewFen : '',
+        move: payload || null,
+        overlays: previewOverlaysForMove(payload)
+      }
+    },
+    reviewPreviewClear (state) {
+      state.review.preview = { active: false, fen: '', move: null, overlays: [] }
     },
     reviewSetError (state, payload) {
       state.review.loading = false
@@ -808,6 +901,7 @@ export const store = new Vuex.Store({
       }
       state.review.currentResult = null
       state.review.overlays = []
+      state.review.preview = { active: false, fen: '', move: null, overlays: [] }
       state.review.error = null
       state.review.active = true
     },
@@ -825,10 +919,12 @@ export const store = new Vuex.Store({
       }
       state.review.currentResult = null
       state.review.overlays = []
+      state.review.preview = { active: false, fen: '', move: null, overlays: [] }
     },
     reviewSequenceEnd (state) {
       const previousInteraction = state.review.sequence.previousInteraction
       state.review.sequence = emptyReviewSequenceState()
+      state.review.preview = { active: false, fen: '', move: null, overlays: [] }
       if (previousInteraction && typeof previousInteraction.analysisMode === 'boolean') {
         state.analysisMode = previousInteraction.analysisMode
       }
@@ -2027,6 +2123,12 @@ export const store = new Vuex.Store({
     setReviewMarkerMode (context, payload) {
       context.commit('reviewMarkerMode', payload)
     },
+    previewReviewMove (context, payload) {
+      context.commit('reviewPreviewSet', payload)
+    },
+    clearReviewPreview (context) {
+      context.commit('reviewPreviewClear')
+    },
     startReviewSequence (context) {
       const previousInteraction = {
         analysisMode: context.state.analysisMode,
@@ -2676,7 +2778,16 @@ export const store = new Vuex.Store({
     reviewSequenceActive (state) {
       return state.review.sequence.active
     },
+    reviewPreview (state) {
+      return state.review.preview
+    },
+    reviewPreviewActive (state) {
+      return Boolean(state.review.preview && state.review.preview.active)
+    },
     reviewOverlays (state) {
+      if (state.review.preview && state.review.preview.active) {
+        return Array.isArray(state.review.preview.overlays) ? state.review.preview.overlays : []
+      }
       const resultOverlays = Array.isArray(state.review.overlays) ? state.review.overlays : []
       const sequenceOverlays = Array.isArray(state.review.sequence.overlays) ? state.review.sequence.overlays : []
       if (!state.review.sequence.active) return resultOverlays

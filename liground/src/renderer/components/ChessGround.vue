@@ -69,7 +69,8 @@ const BOARD_INTERACTION_MODES = Object.freeze({
   NORMAL_GAME: 'NORMAL_GAME',
   ANALYSIS: 'ANALYSIS',
   BOARD_EDITOR: 'BOARD_EDITOR',
-  REVIEW_SEQUENCE: 'REVIEW_SEQUENCE'
+  REVIEW_SEQUENCE: 'REVIEW_SEQUENCE',
+  REVIEW_PREVIEW: 'REVIEW_PREVIEW'
 })
 
 const SAFE_SHAPE_BRUSHES = Object.freeze(['red', 'green', 'blue', 'yellow', 'paleBlue', 'paleGreen', 'paleRed'])
@@ -189,6 +190,7 @@ export default {
       promotionMove: undefined,
       pieceStyleEl: null,
       boardStyleEl: null,
+      boardSyncFrame: null,
       start: true
     }
   },
@@ -208,6 +210,7 @@ export default {
       return String(this.$store.getters.legalMoves || '').split(/\s+/).filter(Boolean)
     },
     boardInteractionMode () {
+      if (this.reviewPreviewActive) return BOARD_INTERACTION_MODES.REVIEW_PREVIEW
       if (this.reviewSequenceActive) return BOARD_INTERACTION_MODES.REVIEW_SEQUENCE
       if (this.editorMode) return BOARD_INTERACTION_MODES.BOARD_EDITOR
       if (this.analysisMode) return BOARD_INTERACTION_MODES.ANALYSIS
@@ -215,6 +218,20 @@ export default {
     },
     boardStateSource () {
       const mode = this.boardInteractionMode
+      if (mode === BOARD_INTERACTION_MODES.REVIEW_PREVIEW) {
+        const preview = this.reviewPreview || {}
+        const move = preview.move || {}
+        return {
+          mode,
+          fen: preview.fen || (this.reviewSequenceActive ? this.reviewSequence.fen : this.fen),
+          turnColor: move.side === 'opponent' ? 'white' : 'black',
+          legalMoves: [],
+          mutableHistory: false,
+          movable: false,
+          free: false,
+          lastMove: move.move || null
+        }
+      }
       if (mode === BOARD_INTERACTION_MODES.REVIEW_SEQUENCE) {
         const sequence = this.reviewSequence || {}
         return {
@@ -269,7 +286,7 @@ export default {
       }
     },
     isPlayerTurn () {
-      if (this.boardInteractionMode === BOARD_INTERACTION_MODES.REVIEW_SEQUENCE || this.boardInteractionMode === BOARD_INTERACTION_MODES.BOARD_EDITOR || this.boardInteractionMode === BOARD_INTERACTION_MODES.ANALYSIS) {
+      if (this.boardInteractionMode === BOARD_INTERACTION_MODES.REVIEW_PREVIEW || this.boardInteractionMode === BOARD_INTERACTION_MODES.REVIEW_SEQUENCE || this.boardInteractionMode === BOARD_INTERACTION_MODES.BOARD_EDITOR || this.boardInteractionMode === BOARD_INTERACTION_MODES.ANALYSIS) {
         return true
       }
       // In PvE: allow moves only when it's the player's turn
@@ -288,7 +305,7 @@ export default {
       // Block mouse input completely when not player's turn
       return this.isPlayerTurn ? 'auto' : 'none'
     },
-    ...mapGetters(['initialized', 'variant', 'multipv', 'hoveredpv', 'redraw', 'pieceStyle', 'boardStyle', 'fen', 'lastFen', 'orientation', 'moves', 'isPast', 'dimensionNumber', 'analysisMode', 'editorMode', 'analysisVisualization', 'reviewSequence', 'reviewSequenceActive', 'reviewOverlays', 'active', 'PvE', 'PvEPlayerIsWhite', 'EvE', 'enginetime', 'resized', 'resized9x9width', 'resized9x9height', 'resized9x10width', 'resized9x10height', 'dimNumber'])
+    ...mapGetters(['initialized', 'variant', 'multipv', 'hoveredpv', 'redraw', 'pieceStyle', 'boardStyle', 'fen', 'lastFen', 'orientation', 'moves', 'isPast', 'dimensionNumber', 'analysisMode', 'editorMode', 'analysisVisualization', 'reviewSequence', 'reviewSequenceActive', 'reviewPreview', 'reviewPreviewActive', 'reviewOverlays', 'active', 'PvE', 'PvEPlayerIsWhite', 'EvE', 'enginetime', 'resized', 'resized9x9width', 'resized9x9height', 'resized9x10width', 'resized9x10height', 'dimNumber'])
   },
   watch: {
     dimensionNumber () {
@@ -359,6 +376,17 @@ export default {
         this.scheduleBoardInteractionSync('reviewSequence')
       }
     },
+    reviewPreview: {
+      deep: true,
+      handler () {
+        this.scheduleBoardInteractionSync('reviewPreview')
+      }
+    },
+    resized () { this.scheduleBoardInteractionSync('resized') },
+    resized9x9width () { this.scheduleBoardInteractionSync('resized9x9width') },
+    resized9x9height () { this.scheduleBoardInteractionSync('resized9x9height') },
+    resized9x10width () { this.scheduleBoardInteractionSync('resized9x10width') },
+    resized9x10height () { this.scheduleBoardInteractionSync('resized9x10height') },
     editorMode () {
       this.updateBoard()
       this.renderAnalysisVisualization()
@@ -410,6 +438,17 @@ export default {
       this.updateBoard()
       this.isPromotionModalVisible = false
     }
+  },
+  beforeDestroy () {
+    if (this.boardSyncFrame) {
+      const caf = window.cancelAnimationFrame || window.clearTimeout
+      caf(this.boardSyncFrame)
+      this.boardSyncFrame = null
+    }
+    window.removeEventListener('mouseup', this.stopDragging)
+    window.removeEventListener('mousemove', this.doResize)
+    window.removeEventListener('wheel', this.reRender)
+    window.removeEventListener('mouseup', this.reRender)
   },
   mounted () {
     if (!isNaN(Number(localStorage.resized))) {
@@ -520,15 +559,24 @@ export default {
     },
     scheduleBoardInteractionSync (reason) {
       if (!this.board) return
-      this.updateBoard()
-      this.$nextTick(() => {
+      if (this.boardSyncFrame) {
+        const caf = window.cancelAnimationFrame || window.clearTimeout
+        caf(this.boardSyncFrame)
+      }
+      const raf = window.requestAnimationFrame || (callback => window.setTimeout(callback, 16))
+      this.boardSyncFrame = raf(() => {
+        this.boardSyncFrame = null
         document.body.dispatchEvent(new Event('chessground.resize'))
         this.updateBoard()
-        this.drawShapes()
-        this.debugBoardInteraction(`synced:${reason}`)
+        this.$nextTick(() => {
+          document.body.dispatchEvent(new Event('chessground.resize'))
+          this.drawShapes()
+          this.debugBoardInteraction(`synced:${reason}`)
+        })
       })
     },
     stableShapeBrush (brush, fallback = 'blue') {
+      if (brush === 'orange') return 'yellow'
       return SAFE_SHAPE_BRUSHES.includes(brush) ? brush : fallback
     },
     stableShapeModifiers (modifiers) {
@@ -1115,7 +1163,7 @@ export default {
     },
     updateBoard () {
       const source = this.boardStateSource
-      const reviewMode = source.mode === BOARD_INTERACTION_MODES.REVIEW_SEQUENCE
+      const reviewMode = source.mode === BOARD_INTERACTION_MODES.REVIEW_SEQUENCE || source.mode === BOARD_INTERACTION_MODES.REVIEW_PREVIEW
       // logic to find out if a check should be displayed:
       let isCheck = false // ensures that no check is displayed when the current move was not a check
       if (!reviewMode && source.mode !== BOARD_INTERACTION_MODES.BOARD_EDITOR && this.currentMove !== undefined && (this.currentMove.name.includes('+') || this.currentMove.name.includes('#'))) { // the last move was check iff the san notation of the last move contained a '+'
@@ -1188,8 +1236,8 @@ export default {
     drawShapes () {
       if (this.board !== null) {
         const reviewShapes = (this.reviewOverlays || []).map(this.reviewOverlayToShape).filter(Boolean)
-        const baseShapes = this.reviewSequenceActive ? [] : this.shapes
-        const basePieceShapes = this.reviewSequenceActive ? [] : this.pieceShapes
+        const baseShapes = (this.reviewSequenceActive || this.reviewPreviewActive) ? [] : this.shapes
+        const basePieceShapes = (this.reviewSequenceActive || this.reviewPreviewActive) ? [] : this.pieceShapes
         const combinedShapes = [...baseShapes, ...basePieceShapes, ...reviewShapes].map(shape => {
           if (!shape) return null
           return {
@@ -1264,6 +1312,18 @@ export default {
 }
 .cg-board-wrap {
   position: relative;
+}
+.cg-wrap svg {
+  overflow: visible;
+  opacity: 0.88;
+  z-index: 6;
+  pointer-events: none;
+}
+.cg-wrap svg .brush-red,
+.cg-wrap svg .brush-yellow,
+.cg-wrap svg .brush-green,
+.cg-wrap svg .brush-blue {
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.65));
 }
 .koth cg-container::before {
   width: 25%;

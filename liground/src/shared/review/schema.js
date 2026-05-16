@@ -1,5 +1,5 @@
 export const REVIEW_SCHEMA_VERSION = 1
-export const REVIEW_SERVICE_VERSION = 'human-review-v3'
+export const REVIEW_SERVICE_VERSION = 'human-review-v4'
 
 export const REVIEW_MODES = Object.freeze({
   MOVE: 'move',
@@ -56,6 +56,12 @@ export function emptyReviewState () {
     currentResult: null,
     resultsById: {},
     overlays: [],
+    preview: {
+      active: false,
+      fen: '',
+      move: null,
+      overlays: []
+    },
     lastRequestId: null,
     sequence: emptyReviewSequenceState()
   }
