@@ -527,8 +527,10 @@ export default {
 <style scoped>
 .review-panel {
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
-  max-height: calc(100vh - 95px);
+  min-height: 0;
+  max-height: none;
   margin: 10px 0;
   padding: 0;
   background: var(--second-bg-color);
@@ -924,6 +926,7 @@ small {
 }
 @media (max-width: 780px) {
   .review-panel {
+    flex: 0 1 auto;
     max-height: 48vh;
   }
   .review-grid,
