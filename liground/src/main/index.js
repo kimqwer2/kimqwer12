@@ -4,6 +4,8 @@ import { app, BrowserWindow, dialog, ipcMain, Menu } from 'electron'
 import path from 'path'
 import { addGamePath, removeGamePath, getAllSavedGamePaths, clearAllGamePaths } from './gameStorage'
 import { createSchema, insertEval, getEvals } from './evalCache'
+import { createReviewSchema, getReviewResult, insertReviewResult } from './reviewCache'
+import { analyzeReviewRequest, buildReviewCacheKey } from '../shared/review/reviewService'
 // IPC handler to clear all saved game paths
 ipcMain.handle('clear-all-game-paths', async () => {
   try {
@@ -77,6 +79,7 @@ function createWindow () {
 }
 app.whenReady().then(() => {
   createSchema()
+  createReviewSchema()
   createWindow()
 })
 
@@ -89,6 +92,38 @@ app.on('window-all-closed', () => {
 app.on('activate', () => {
   if (mainWindow === null) {
     createWindow()
+  }
+})
+
+
+ipcMain.handle('review-analyze', async (_event, payload) => {
+  try {
+    if (!payload || !payload.id) {
+      return { error: 'Invalid review request' }
+    }
+    const requestKey = buildReviewCacheKey(payload)
+    if (!payload.noCache) {
+      const cached = getReviewResult(requestKey)
+      if (cached) {
+        return { ...cached, cached: true }
+      }
+    }
+    const result = analyzeReviewRequest(payload)
+    insertReviewResult(requestKey, result)
+    return result
+  } catch (err) {
+    console.error('[review-analyze] failed', err)
+    return { error: err.message }
+  }
+})
+
+ipcMain.handle('review-cache-get', async (_event, payload) => {
+  try {
+    if (!payload) return null
+    return getReviewResult(buildReviewCacheKey(payload))
+  } catch (err) {
+    console.error('[review-cache-get] failed', err)
+    return null
   }
 })
 

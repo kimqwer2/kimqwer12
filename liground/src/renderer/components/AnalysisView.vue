@@ -14,6 +14,7 @@
       @move-forward-one="$emit('move-forward-one', 0)"
       @move-to-end="$emit('move-to-end', 0)"
     />
+    <ReviewPanel />
     <div class="b">
       <button
         class="buttonRed"
@@ -34,12 +35,14 @@
 <script>
 import AnalysisHead from './AnalysisHead'
 import AnalysisContainer from './AnalysisContainer.vue'
+import ReviewPanel from './ReviewPanel.vue'
 
 export default {
   name: 'AnalysisView',
   components: {
     AnalysisHead,
-    AnalysisContainer
+    AnalysisContainer,
+    ReviewPanel
   },
   data () {
     return {

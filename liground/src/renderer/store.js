@@ -3,6 +3,8 @@ import Vuex from 'vuex'
 import ffish from 'ffish'
 import { engine, Engine } from './engine'
 import allEngines from './store/engines'
+import { createReviewRequest, emptyReviewState, REVIEW_MODES } from '../shared/review/schema'
+import { analyzeReviewRequest } from '../shared/review/reviewService'
 
 import moveAudio from './assets/audio/Move.mp3'
 import captureAudio from './assets/audio/Capture.mp3'
@@ -336,6 +338,7 @@ export const store = new Vuex.Store({
     viewAnalysis: true,
     analysisMode: true,
     editorMode: false,
+    review: emptyReviewState(),
     analysisVisualization: {
       showMultiPvArrows: true,
       multiPvCount: 3,
@@ -385,6 +388,9 @@ export const store = new Vuex.Store({
     fen (state, payload) {
       state.fen = payload
       state.normalizedFen = normalizeFen(payload)
+      if (state.review && state.review.currentResult && state.review.currentResult.fen !== payload) {
+        state.review.overlays = []
+      }
     },
     engineIndex (state, payload) {
       state.engineIndex = payload
@@ -707,6 +713,28 @@ export const store = new Vuex.Store({
     analysisVisualization (state, payload) {
       state.analysisVisualization = { ...state.analysisVisualization, ...payload }
     },
+    reviewSetRequest (state, payload) {
+      state.review.lastRequestId = payload
+      state.review.loading = true
+      state.review.error = null
+      state.review.active = true
+    },
+    reviewSetResult (state, payload) {
+      state.review.loading = false
+      state.review.error = null
+      state.review.currentResult = payload
+      state.review.overlays = Array.isArray(payload.overlays) ? payload.overlays : []
+      state.review.active = true
+      Vue.set(state.review.resultsById, payload.id, payload)
+    },
+    reviewSetError (state, payload) {
+      state.review.loading = false
+      state.review.error = payload
+      state.review.active = true
+    },
+    reviewClear (state) {
+      state.review = emptyReviewState()
+    },
     openedPGN (state, payload) {
       state.openedPGN = payload
     },
@@ -823,6 +851,7 @@ export const store = new Vuex.Store({
         selectedGame: null,
         allEngines: allEngines,
         activeEngine: null,
+        review: emptyReviewState(),
         active: false
       }
 
@@ -1881,6 +1910,80 @@ export const store = new Vuex.Store({
     analysisVisualization (context, payload) {
       context.commit('analysisVisualization', payload)
     },
+    async requestReview (context, payload) {
+      const request = createReviewRequest({
+        ...payload,
+        id: payload.id || `review-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        variant: payload.variant || context.getters.variant,
+        engineName: payload.engineName || context.getters.engineName,
+        multipv: payload.multipv || context.getters.multipv
+      })
+      context.commit('reviewSetRequest', request.id)
+      let result
+      if (ipcRenderer && ipcRenderer.invoke) {
+        result = await ipcRenderer.invoke('review-analyze', request)
+      } else {
+        result = analyzeReviewRequest(request)
+      }
+      if (context.state.review.lastRequestId !== request.id) {
+        return null
+      }
+      if (!result || result.error) {
+        context.commit('reviewSetError', result && result.error ? result.error : 'Review failed')
+        return null
+      }
+      context.commit('reviewSetResult', result)
+      return result
+    },
+    reviewCurrentMove (context) {
+      const move = context.getters.currentMove[0]
+      if (!move) {
+        context.commit('reviewSetError', 'Select a move from the move list before requesting a move review.')
+        return Promise.resolve(null)
+      }
+      return context.dispatch('requestReview', {
+        mode: REVIEW_MODES.MOVE,
+        fen: move.prev ? move.prev.fen : context.getters.startFen,
+        move: move.uci,
+        moveSan: move.name,
+        line: [move.uci],
+        multipv: [],
+        context: {
+          currentFen: context.getters.fen,
+          ply: move.ply
+        }
+      })
+    },
+    reviewCustomMove (context, move) {
+      if (!move) {
+        context.commit('reviewSetError', 'Enter a move before requesting a custom review.')
+        return Promise.resolve(null)
+      }
+      return context.dispatch('requestReview', {
+        mode: REVIEW_MODES.CUSTOM_MOVE,
+        fen: context.getters.fen,
+        move,
+        line: [move],
+        context: { currentFen: context.getters.fen }
+      })
+    },
+    reviewLine (context, line) {
+      const cleanLine = Array.isArray(line) ? line.filter(Boolean) : []
+      if (cleanLine.length === 0) {
+        context.commit('reviewSetError', 'Enter at least one move before requesting a line review.')
+        return Promise.resolve(null)
+      }
+      return context.dispatch('requestReview', {
+        mode: REVIEW_MODES.LINE,
+        fen: context.getters.fen,
+        move: cleanLine[0],
+        line: cleanLine,
+        context: { currentFen: context.getters.fen }
+      })
+    },
+    clearReview (context) {
+      context.commit('reviewClear')
+    },
     openedPGN (context, payload) {
       context.commit('openedPGN', payload)
     },
@@ -2334,6 +2437,15 @@ export const store = new Vuex.Store({
     },
     analysisVisualization (state) {
       return state.analysisVisualization
+    },
+    review (state) {
+      return state.review
+    },
+    reviewResult (state) {
+      return state.review.currentResult
+    },
+    reviewOverlays (state) {
+      return state.review.overlays
     },
     menuAtMove (state) {
       return state.menuAtMove

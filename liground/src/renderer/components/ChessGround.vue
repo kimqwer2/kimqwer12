@@ -231,7 +231,7 @@ export default {
       // Block mouse input completely when not player's turn
       return this.isPlayerTurn ? 'auto' : 'none'
     },
-    ...mapGetters(['initialized', 'variant', 'multipv', 'hoveredpv', 'redraw', 'pieceStyle', 'boardStyle', 'fen', 'lastFen', 'orientation', 'moves', 'isPast', 'dimensionNumber', 'analysisMode', 'editorMode', 'analysisVisualization', 'active', 'PvE', 'PvEPlayerIsWhite', 'EvE', 'enginetime', 'resized', 'resized9x9width', 'resized9x9height', 'resized9x10width', 'resized9x10height', 'dimNumber'])
+    ...mapGetters(['initialized', 'variant', 'multipv', 'hoveredpv', 'redraw', 'pieceStyle', 'boardStyle', 'fen', 'lastFen', 'orientation', 'moves', 'isPast', 'dimensionNumber', 'analysisMode', 'editorMode', 'analysisVisualization', 'reviewOverlays', 'active', 'PvE', 'PvEPlayerIsWhite', 'EvE', 'enginetime', 'resized', 'resized9x9width', 'resized9x9height', 'resized9x10width', 'resized9x10height', 'dimNumber'])
   },
   watch: {
     dimensionNumber () {
@@ -293,6 +293,7 @@ export default {
       }
     },
     hoveredpv () { this.renderAnalysisVisualization() },
+    reviewOverlays () { this.drawShapes() },
     editorMode () {
       this.updateBoard()
       this.renderAnalysisVisualization()
@@ -423,6 +424,21 @@ export default {
         dest = extract[1].replace('10', ':')
       }
       return { orig, dest }
+    },
+    reviewOverlayToShape (overlay) {
+      if (!overlay) return null
+      const modifiers = overlay.modifiers || {}
+      if ((overlay.kind === 'arrow' || !overlay.kind) && overlay.orig && overlay.dest) {
+        const orig = this.toBoardKeys(`${overlay.orig}${overlay.dest}`).orig
+        const dest = this.toBoardKeys(`${overlay.orig}${overlay.dest}`).dest
+        return { orig, dest, brush: overlay.brush || 'red', label: overlay.label, modifiers }
+      }
+      const square = overlay.square || overlay.orig || overlay.dest
+      if (square) {
+        const key = this.toBoardKeys(`${square}${square}`).orig
+        return { orig: key, brush: overlay.brush || 'red', label: overlay.label, modifiers }
+      }
+      return null
     },
     renderAnalysisVisualization () {
       if (this.PvE || this.EvE) return
@@ -1000,7 +1016,8 @@ export default {
     },
     drawShapes () {
       if (this.board !== null) {
-        const combinedShapes = [...this.shapes, ...this.pieceShapes]
+        const reviewShapes = (this.reviewOverlays || []).map(this.reviewOverlayToShape).filter(Boolean)
+        const combinedShapes = [...this.shapes, ...this.pieceShapes, ...reviewShapes]
         if (this.board.state.lastMove && this.board.state.lastMove.length === 2) {
           combinedShapes.push({ orig: this.board.state.lastMove[0], dest: this.board.state.lastMove[1], brush: 'green' })
         }
