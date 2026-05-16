@@ -54,3 +54,15 @@ actual game tree and engine MultiPV remain untouched.
 Sequence review requests send the sequence base FEN plus the played temporary
 line to `review-analyze`. The review service treats the line as a candidate idea
 and returns path overlays, feature-derived intent, risk labels, and key moments.
+
+## Engine-backed evidence
+
+Before a review request is sent to the shared review service, the renderer asks
+the existing eval worker for a bounded review search. The worker searches the
+review root FEN, optionally searches the user's first move with `searchmoves`,
+and searches the final temporary-sequence position for an opponent reply. The
+returned evidence is attached as `engineAnalysis` and used by the review service
+for recommendation lists, eval-loss estimates, and punishment arrows.
+
+The engine remains a pure UCI search provider; all commentary, intent labels,
+risk summaries, and overlays are produced in the review layer.

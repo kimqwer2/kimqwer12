@@ -215,6 +215,9 @@ export default {
       }
     },
     isPlayerTurn () {
+      if (this.reviewSequenceActive) {
+        return true
+      }
       // In PvE: allow moves only when it's the player's turn
       if (this.PvE) {
         const playerCanMove = (this.turn === 'white') === this.PvEPlayerIsWhite
@@ -692,7 +695,7 @@ export default {
       this.isPromotionModalVisible = false
       this.promotionMove = this.promotionMove + value
       if (this.reviewSequenceActive) {
-        this.$store.dispatch('addReviewSequenceMove', this.promotionMove)
+        this.$store.dispatch('addReviewSequenceMove', this.promotionMove).then(() => this.updateBoard())
         return
       }
       this.lastMoveSan = this.$store.getters.sanMove(this.promotionMove)
@@ -771,17 +774,19 @@ export default {
       let fromSq
       let toSq
       for (let i = 0; i < legalMoves.length; i++) {
-        // don't include dropping moves
-        if (legalMoves[i].length !== 3) {
-          const Move = legalMoves[i]
-          fromSq = Move.substring(0, 2)
-          toSq = Move.substring(2, 4)
-          if (this.dimensionNumber === 3) {
-            const extract = this.extractMoves(Move)
-            fromSq = extract[0].replace('10', ':')
-            toSq = extract[1].replace('10', ':')
-          }
+        const Move = legalMoves[i]
+        // don't include drops, pass/null moves, or malformed moves in drag destinations
+        if (!Move || Move.includes('@') || Move === '0000' || Move.length < 4) {
+          continue
         }
+        fromSq = Move.substring(0, 2)
+        toSq = Move.substring(2, 4)
+        if (this.dimensionNumber === 3) {
+          const extract = this.extractMoves(Move)
+          fromSq = extract[0].replace('10', ':')
+          toSq = extract[1].replace('10', ':')
+        }
+        if (!fromSq || !toSq) continue
         if (fromSq in dests) {
           dests[fromSq].push(toSq)
         } else {
@@ -886,8 +891,7 @@ export default {
         const pieces = { 'p-piece': 'P', 'n-piece': 'N', 'b-piece': 'B', 'r-piece': 'R', 'q-piece': 'Q', 's-piece': 'S', 'g-piece': 'G', 'l-piece': 'L' }
         const move = pieces[role] + '@' + key
         if (this.reviewSequenceActive) {
-          this.$store.dispatch('addReviewSequenceMove', move)
-          this.updateBoard()
+          this.$store.dispatch('addReviewSequenceMove', move).then(() => this.updateBoard())
           return
         }
         const prevMov = this.currentMove
@@ -914,7 +918,7 @@ export default {
           uciMove = uciMove.replaceAll(':', '10') // Convert the ':' back to '10'
         }
         if (this.reviewSequenceActive) {
-          this.$store.dispatch('addReviewSequenceMove', uciMove)
+          this.$store.dispatch('addReviewSequenceMove', uciMove).then(() => this.updateBoard())
           return
         }
         if (this.isPromotion(uciMove)) {

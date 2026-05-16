@@ -2,8 +2,8 @@
   <section class="review-panel panel">
     <div class="review-header">
       <div>
-        <h3>Human Review</h3>
-        <p>Coach-style idea review, separate from engine MultiPV.</p>
+        <h3>수순 리뷰</h3>
+        <p>엔진 추천과 사람의 아이디어를 함께 보는 코치형 검토입니다.</p>
       </div>
       <button
         type="button"
@@ -11,7 +11,7 @@
         :disabled="!review.currentResult && !review.error && !(review.sequence && review.sequence.active)"
         @click="clearReview"
       >
-        Clear
+        닫기
       </button>
     </div>
 
@@ -19,9 +19,9 @@
       v-if="review.sequence && review.sequence.active"
       class="sequence-banner"
     >
-      <strong>Review Mode Active</strong>
-      <span>Temporary line: {{ review.sequence.line.length }} move{{ review.sequence.line.length === 1 ? '' : 's' }}</span>
-      <small>The real game history is not being modified.</small>
+      <strong>임시 수순 검토 모드</strong>
+      <span>임시 수순: {{ review.sequence.line.length }}수</span>
+      <small>실제 기보와 분석 가지는 변경되지 않습니다.</small>
       <div
         v-if="review.sequence.sans.length"
         class="sequence-line"
@@ -38,7 +38,7 @@
         :disabled="review.loading"
         @click="startReviewSequence"
       >
-        Start Sequence Review
+        수순 검토 시작
       </button>
       <template v-else>
         <button
@@ -47,7 +47,7 @@
           :disabled="review.loading || review.sequence.line.length === 0"
           @click="reviewCurrentSequence"
         >
-          {{ review.loading ? 'Reviewing…' : 'Review Sequence' }}
+          {{ review.loading ? '검토 중…' : '수순 검토하기' }}
         </button>
         <div class="review-row">
           <button
@@ -55,13 +55,13 @@
             :disabled="review.sequence.line.length === 0"
             @click="clearReviewSequence"
           >
-            Clear temporary line
+            임시 수순 지우기
           </button>
           <button
             type="button"
             @click="cancelReviewSequence"
           >
-            Exit review mode
+            검토 모드 종료
           </button>
         </div>
       </template>
@@ -71,15 +71,15 @@
         :disabled="review.loading"
         @click="reviewCurrentMove"
       >
-        Review selected move
+        선택한 수 검토
       </button>
       <details class="manual-review">
-        <summary>Manual UCI fallback</summary>
+        <summary>좌표 입력 보조 기능</summary>
         <div class="custom-review">
           <input
             v-model.trim="customMove"
             type="text"
-            placeholder="custom UCI move, e.g. e3e4"
+            placeholder="좌표 수 입력 예: e3e4"
             @keyup.enter="reviewCustomMove"
           >
           <button
@@ -87,14 +87,14 @@
             :disabled="review.loading || !customMove"
             @click="reviewCustomMove"
           >
-            Review idea
+            아이디어 검토
           </button>
         </div>
         <div class="custom-review">
           <input
             v-model.trim="customLine"
             type="text"
-            placeholder="short line, e.g. e3e4 e6e5"
+            placeholder="짧은 수순 예: e3e4 e6e5"
             @keyup.enter="reviewLine"
           >
           <button
@@ -102,7 +102,7 @@
             :disabled="review.loading || !customLine"
             @click="reviewLine"
           >
-            Review typed line
+            입력 수순 검토
           </button>
         </div>
       </details>
@@ -122,19 +122,36 @@
       <div class="classification">
         <span :class="['risk-badge', severityClass]">{{ severityLabel }}</span>
         <span class="intent-badge">{{ primaryIntentLabel }}</span>
-        <span v-if="result.cached" class="cache-badge">cached</span>
+        <span v-if="result.cached" class="cache-badge">캐시</span>
       </div>
       <p class="summary">
         {{ result.summary }}
       </p>
 
+      <div
+        v-if="result.engineRecommendations && result.engineRecommendations.length"
+        class="review-section recommendations"
+      >
+        <h4>엔진 추천수</h4>
+        <ol>
+          <li
+            v-for="rec in result.engineRecommendations.slice(0, 3)"
+            :key="rec.rank"
+          >
+            <strong>추천수 {{ rec.rank }}: {{ rec.move }}</strong>
+            <span>{{ evalText(rec) }}</span>
+            <small>{{ rec.meaning }}</small>
+          </li>
+        </ol>
+      </div>
+
       <div class="review-grid">
         <div>
-          <strong>Reviewed</strong>
+          <strong>검토 수</strong>
           <span>{{ result.reviewedMove || '—' }}</span>
         </div>
         <div>
-          <strong>Best candidate</strong>
+          <strong>엔진 1순위</strong>
           <span>{{ result.engineEvidence && result.engineEvidence.bestMove ? result.engineEvidence.bestMove : '—' }}</span>
         </div>
       </div>
@@ -143,7 +160,7 @@
         v-if="result.ideas && result.ideas.length"
         class="review-section"
       >
-        <h4>Likely idea</h4>
+        <h4>의도 해석</h4>
         <ul>
           <li
             v-for="idea in result.ideas"
@@ -158,22 +175,30 @@
         v-if="result.risks && result.risks.length"
         class="review-section danger"
       >
-        <h4>Risks</h4>
+        <h4>주의할 점</h4>
         <ul>
           <li
             v-for="risk in result.risks"
             :key="risk.id"
           >
-            {{ risk.text }} <small>{{ risk.severity }} · {{ confidence(risk.confidence) }}</small>
+            {{ risk.text }} <small>{{ severityText(risk.severity) }} · {{ confidence(risk.confidence) }}</small>
           </li>
         </ul>
+      </div>
+
+      <div
+        v-if="result.risks && result.risks.length"
+        class="review-section danger-explain"
+      >
+        <h4>왜 위험한가?</h4>
+        <p>{{ result.risks[0].text }}</p>
       </div>
 
       <div
         v-if="result.keyMoments && result.keyMoments.length"
         class="review-section"
       >
-        <h4>Key moments</h4>
+        <h4>핵심 장면</h4>
         <ol>
           <li
             v-for="moment in result.keyMoments"
@@ -186,16 +211,16 @@
       </div>
 
       <div class="overlay-legend">
-        <span><i class="legend-red" /> danger / punishment</span>
-        <span><i class="legend-orange" /> attacking idea</span>
-        <span><i class="legend-blue" /> sequence reply</span>
+        <span><i class="legend-red" /> 위험 / 응징</span>
+        <span><i class="legend-orange" /> 공격 아이디어</span>
+        <span><i class="legend-blue" /> 수순 진행</span>
       </div>
 
       <div
         v-if="result.overlays && result.overlays.length"
         class="overlay-note"
       >
-        {{ result.overlays.length }} review overlay{{ result.overlays.length === 1 ? '' : 's' }} shown on the board.
+        {{ result.overlays.length }}개의 리뷰 표시가 보드에 표시됩니다.
       </div>
     </div>
 
@@ -203,7 +228,7 @@
       v-else-if="!review.error"
       class="review-empty"
     >
-      Start Sequence Review, play a temporary line directly on the board, then ask for coach-style feedback. You can also review the selected historical move.
+      수순 검토 시작을 누른 뒤 보드에서 직접 임시 수순을 진행해 주세요. 실제 기보는 바뀌지 않으며, 선택한 기보의 한 수도 따로 검토할 수 있습니다.
     </div>
   </section>
 </template>
@@ -225,13 +250,13 @@ export default {
       return this.review.currentResult
     },
     classificationLabel () {
-      if (!this.result || !this.result.classification) return 'Review'
-      return this.result.classification.replace(/_/g, ' ')
+      if (!this.result || !this.result.classification) return '리뷰'
+      return this.classificationText(this.result.classification)
     },
     severityLabel () {
-      if (!this.result) return 'Ready'
-      if (this.result.risks && this.result.risks.find(risk => risk.severity === 'high')) return 'High risk'
-      if (this.result.risks && this.result.risks.length) return 'Watch closely'
+      if (!this.result) return '준비됨'
+      if (this.result.risks && this.result.risks.find(risk => risk.severity === 'high')) return '위험도 높음'
+      if (this.result.risks && this.result.risks.length) return '주의 필요'
       return this.classificationLabel
     },
     severityClass () {
@@ -242,7 +267,7 @@ export default {
     },
     primaryIntentLabel () {
       const intent = this.result && this.result.ideas && this.result.ideas[0]
-      return intent ? intent.type.replace(/_/g, ' ') : 'idea review'
+      return intent ? (intent.label || intent.type.replace(/_/g, ' ')) : '아이디어 검토'
     }
   },
   methods: {
@@ -271,8 +296,33 @@ export default {
       this.$store.dispatch('clearReview')
     },
     confidence (value) {
-      if (typeof value !== 'number') return 'confidence n/a'
-      return `${Math.round(value * 100)}% confidence`
+      if (typeof value !== 'number') return '신뢰도 없음'
+      return `신뢰도 ${Math.round(value * 100)}%`
+    },
+    classificationText (classification) {
+      const labels = {
+        engine_supported_idea: '엔진도 지지',
+        high_risk: '위험한 시도',
+        practical_but_risky: '실전적이나 위험',
+        risky_practical_try: '위험한 실전 승부수',
+        playable_alternative: '둘 만한 대안',
+        needs_tactical_check: '전술 확인 필요',
+        idea_review: '아이디어 검토',
+        no_move: '수 없음'
+      }
+      return labels[classification] || '리뷰'
+    },
+    severityText (severity) {
+      if (severity === 'high') return '위험 높음'
+      if (severity === 'medium') return '주의'
+      if (severity === 'low') return '낮음'
+      return severity || '정보 없음'
+    },
+    evalText (rec) {
+      if (rec && typeof rec.mate === 'number') return `메이트 ${rec.mate}`
+      if (!rec || typeof rec.cp !== 'number') return '평가 없음'
+      const pawns = (rec.cp / 100).toFixed(2)
+      return `${rec.cp >= 0 ? '+' : ''}${pawns}`
     }
   }
 }

@@ -1,5 +1,5 @@
 export const REVIEW_SCHEMA_VERSION = 1
-export const REVIEW_SERVICE_VERSION = 'human-review-v1'
+export const REVIEW_SERVICE_VERSION = 'human-review-v2'
 
 export const REVIEW_MODES = Object.freeze({
   MOVE: 'move',
@@ -49,7 +49,7 @@ export function emptyReviewState () {
   }
 }
 
-export function createReviewRequest ({ id, mode, variant, fen, move, moveSan, line, multipv, engineName, context }) {
+export function createReviewRequest ({ id, mode, variant, fen, move, moveSan, line, multipv, engineName, engineAnalysis, context }) {
   return {
     id,
     schemaVersion: REVIEW_SCHEMA_VERSION,
@@ -62,6 +62,7 @@ export function createReviewRequest ({ id, mode, variant, fen, move, moveSan, li
     line: Array.isArray(line) ? line : (move ? [move] : []),
     multipv: Array.isArray(multipv) ? multipv : [],
     engineName: engineName || '',
+    engineAnalysis: engineAnalysis || null,
     context: context || {},
     createdAt: Date.now()
   }

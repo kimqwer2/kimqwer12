@@ -110,6 +110,92 @@ function evalPos (fen, depth) {
   }
 }
 
+
+function normalizeReviewLine (line) {
+  return Array.isArray(line) ? line.filter(Boolean).join(' ') : ''
+}
+
+function collectSearch (positionCommand, goCommand, timeout = 20000) {
+  return new Promise(resolve => {
+    const lines = []
+    let done = false
+    const cleanup = () => {
+      engine.events.off('info', listener)
+      engine.events.off('bestmove', bestmoveListener)
+      clearTimeout(timer)
+    }
+    const finish = payload => {
+      if (done) return
+      done = true
+      cleanup()
+      resolve(payload)
+    }
+    const listener = info => {
+      if ('pv' in info && 'multipv' in info) {
+        lines[info.multipv - 1] = {
+          cp: info.cp,
+          mate: info.mate,
+          pvUCI: info.pv,
+          ucimove: typeof info.pv === 'string' ? info.pv.split(/\s+/)[0] : '',
+          depth: info.depth,
+          seldepth: info.seldepth,
+          wdl: info.wdl,
+          wdlWin: info.wdlWin,
+          wdlDraw: info.wdlDraw,
+          wdlLoss: info.wdlLoss
+        }
+      }
+    }
+    const bestmoveListener = bestmove => finish({ bestmove, candidates: lines.filter(Boolean) })
+    const timer = setTimeout(() => {
+      try { engine.exec('stop') } catch (err) {}
+      finish({ error: 'review search timeout', candidates: lines.filter(Boolean) })
+    }, timeout)
+    engine.events.on('info', listener)
+    engine.events.once('bestmove', bestmoveListener)
+    engine.exec(positionCommand)
+    engine.exec(goCommand)
+  })
+}
+
+async function reviewAnalyze (payload) {
+  if (!engine) {
+    msg.error('Engine not running')
+    return
+  }
+  const depth = payload.depth || 10
+  const multiPv = payload.multiPv || 3
+  const fen = payload.fen
+  const line = Array.isArray(payload.line) ? payload.line.filter(Boolean) : []
+  const firstMove = payload.move || line[0]
+  const joinedLine = normalizeReviewLine(line)
+  const positionRoot = `position fen ${fen}`
+  const positionAfter = joinedLine ? `position fen ${fen} moves ${joinedLine}` : positionRoot
+
+  try {
+    await engine.exec(`setoption name MultiPV value ${multiPv}`)
+    await engine.exec('setoption name UCI_ShowWDL value true')
+    const root = await collectSearch(positionRoot, `go depth ${depth}`)
+    let user = null
+    if (firstMove) {
+      await engine.exec('setoption name MultiPV value 1')
+      user = await collectSearch(positionRoot, `go depth ${depth} searchmoves ${firstMove}`)
+      await engine.exec(`setoption name MultiPV value ${multiPv}`)
+    }
+    const after = joinedLine ? await collectSearch(positionAfter, `go depth ${depth}`) : null
+    msg.queue('reviewed', {
+      depth,
+      multiPv,
+      root,
+      user,
+      after,
+      line
+    })
+  } catch (err) {
+    msg.queue('reviewed', { error: err.message })
+  }
+}
+
 self.addEventListener('message', ({ data: { type, payload } }) => {
   switch (type) {
     case 'run':
@@ -123,5 +209,8 @@ self.addEventListener('message', ({ data: { type, payload } }) => {
       evalPos(fen, depth)
       break
     }
+    case 'review':
+      reviewAnalyze(payload)
+      break
   }
 })

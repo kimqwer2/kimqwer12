@@ -2002,8 +2002,8 @@ export const store = new Vuex.Store({
         : new ffish.Board(context.getters.variant, sequence.fen)
       const legalMoves = board.legalMoves().split(' ')
       if (!legalMoves.includes(move)) {
-        context.commit('reviewSetError', `Illegal review-sequence move: ${move}`)
-        return
+        context.commit('reviewSetError', `임시 검토 수순에서 둘 수 없는 수입니다: ${move}`)
+        return false
       }
       let san = move
       try { san = board.sanMove(move) } catch (err) {}
@@ -2018,6 +2018,7 @@ export const store = new Vuex.Store({
         sans,
         lastMove: move
       })
+      return true
     },
     clearReviewSequence (context) {
       if (!context.state.review.sequence.active) return
@@ -2040,7 +2041,7 @@ export const store = new Vuex.Store({
     reviewCurrentSequence (context) {
       const sequence = context.state.review.sequence
       if (!sequence.active || sequence.line.length === 0) {
-        context.commit('reviewSetError', 'Play a temporary sequence on the board before requesting sequence review.')
+        context.commit('reviewSetError', '검토할 임시 수순을 먼저 보드에서 직접 진행해 주세요.')
         return Promise.resolve(null)
       }
       return context.dispatch('requestReview', {
@@ -2065,6 +2066,17 @@ export const store = new Vuex.Store({
         multipv: payload.multipv || context.getters.multipv
       })
       context.commit('reviewSetRequest', request.id)
+      try {
+        request.engineAnalysis = await engine.reviewAnalysis({
+          fen: request.fen,
+          move: request.move,
+          line: request.line,
+          depth: request.context && request.context.reviewDepth ? request.context.reviewDepth : 10,
+          multiPv: 3
+        })
+      } catch (err) {
+        request.engineAnalysis = { error: err.message }
+      }
       let result
       if (ipcRenderer && ipcRenderer.invoke) {
         result = await ipcRenderer.invoke('review-analyze', request)
@@ -2084,7 +2096,7 @@ export const store = new Vuex.Store({
     reviewCurrentMove (context) {
       const move = context.getters.currentMove[0]
       if (!move) {
-        context.commit('reviewSetError', 'Select a move from the move list before requesting a move review.')
+        context.commit('reviewSetError', '검토할 기보의 수를 먼저 선택해 주세요.')
         return Promise.resolve(null)
       }
       return context.dispatch('requestReview', {
@@ -2102,7 +2114,7 @@ export const store = new Vuex.Store({
     },
     reviewCustomMove (context, move) {
       if (!move) {
-        context.commit('reviewSetError', 'Enter a move before requesting a custom review.')
+        context.commit('reviewSetError', '검토할 수를 먼저 입력해 주세요.')
         return Promise.resolve(null)
       }
       return context.dispatch('requestReview', {
@@ -2116,7 +2128,7 @@ export const store = new Vuex.Store({
     reviewLine (context, line) {
       const cleanLine = Array.isArray(line) ? line.filter(Boolean) : []
       if (cleanLine.length === 0) {
-        context.commit('reviewSetError', 'Enter at least one move before requesting a line review.')
+        context.commit('reviewSetError', '검토할 수순을 한 수 이상 입력해 주세요.')
         return Promise.resolve(null)
       }
       return context.dispatch('requestReview', {

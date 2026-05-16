@@ -3,12 +3,12 @@ import { splitUciMove } from './janggiCoordinates'
 
 function scoreToText (score) {
   if (typeof score !== 'number' || Number.isNaN(score)) return null
-  if (Math.abs(score) >= 10000) return score > 0 ? 'winning attack' : 'serious defensive danger'
-  if (score > 120) return 'comfortable position'
-  if (score > 40) return 'slightly preferable position'
-  if (score < -120) return 'difficult position'
-  if (score < -40) return 'slightly uncomfortable position'
-  return 'balanced position'
+  if (Math.abs(score) >= 10000) return score > 0 ? '공격이 크게 성공한 형세' : '수비가 크게 위험한 형세'
+  if (score > 120) return '편안한 형세'
+  if (score > 40) return '약간 편한 형세'
+  if (score < -120) return '어려운 형세'
+  if (score < -40) return '조금 불편한 형세'
+  return '균형 잡힌 형세'
 }
 
 function normalizePvLine (line) {
@@ -59,25 +59,25 @@ function extractMoveFeatures (move, idx = 0) {
   const side = sideName(dest.file)
 
   if (side !== 'center') {
-    features.push(makeFeature('attack_side_concentration', `The move shifts attention toward the ${side}, which often signals a flank attack or pressure-building plan.`, 0.58, { side, move, idx }))
+    features.push(makeFeature('attack_side_concentration', `이 수는 ${side === 'right side' ? '우측' : '좌측'}으로 힘을 모읍니다. 측면 공격이나 압박을 쌓으려는 의도가 보입니다.`, 0.58, { side, move, idx }))
   }
   if (dest.file >= 3 && dest.file <= 5) {
-    features.push(makeFeature('central_pressure', 'The destination points into the central files, so the idea is likely connected to central pressure or palace access.', 0.62, { move, idx }))
+    features.push(makeFeature('central_pressure', '착점이 중앙 파일과 연결되어 중앙 압박 또는 궁성 진입 의도가 강합니다.', 0.62, { move, idx }))
   }
   if (inPalace(dest)) {
-    features.push(makeFeature('palace_pressure', 'The move enters or targets palace geometry, creating king-safety questions rather than just material questions.', 0.70, { square: dest.square, move, idx }))
+    features.push(makeFeature('palace_pressure', '궁성 구조를 직접 건드리는 수입니다. 단순한 기물 이동보다 왕 안전 문제가 커집니다.', 0.70, { square: dest.square, move, idx }))
   }
   if ((sameFile || sameRank) && distance >= 3) {
-    features.push(makeFeature('opened_attack_line', 'The long straight move suggests line pressure: rook/cannon style activity, file opening, or a direct route for punishment.', 0.64, { move, idx }))
+    features.push(makeFeature('opened_attack_line', '긴 직선 이동은 차/포 계열의 라인 압박, 길 열기, 직접적인 응징 루트를 의미할 수 있습니다.', 0.64, { move, idx }))
   }
   if (sameFile && dest.file >= 3 && dest.file <= 5 && distance >= 2) {
-    features.push(makeFeature('exposed_king_lane', 'A central-file move can create an exposed king lane if the opponent can answer along the same file.', 0.54, { move, idx }))
+    features.push(makeFeature('exposed_king_lane', '중앙 파일이 열리면 상대가 같은 선으로 반격할 때 왕 노출이 생길 수 있습니다.', 0.54, { move, idx }))
   }
   if (distance >= 4) {
-    features.push(makeFeature('piece_activation', 'This is an activating move: it changes the piece from local defense into a more active attacking or counterattacking role.', 0.56, { move, idx }))
+    features.push(makeFeature('piece_activation', '기물을 활성화하는 수입니다. 수비에 머물던 기물이 공격 또는 반격 역할로 전환됩니다.', 0.56, { move, idx }))
   }
   if (Math.abs(dy) >= 3 && Math.abs(dx) <= 1) {
-    features.push(makeFeature('overextension_check', 'The move gains space quickly, but fast forward movement can leave support behind if the tactic does not work.', 0.46, { move, idx }))
+    features.push(makeFeature('overextension_check', '공간을 빠르게 얻는 대신, 전술이 맞지 않으면 지원이 끊긴 과확장이 될 수 있습니다.', 0.46, { move, idx }))
   }
 
   return features
@@ -92,7 +92,7 @@ function extractLineFeatures (line) {
     const sides = line.map(move => splitUciMove(move)).filter(Boolean).map(split => parseSquare(split.dest)).filter(Boolean).map(sq => sideName(sq.file))
     const dominantSide = ['left side', 'right side', 'center'].find(side => sides.filter(s => s === side).length >= Math.ceil(line.length / 2))
     if (dominantSide) {
-      features.push(makeFeature('sequence_plan_direction', `Across the sequence, the play repeatedly points toward the ${dominantSide}. That gives the line a recognizable plan rather than isolated moves.`, 0.66, { side: dominantSide }))
+      features.push(makeFeature('sequence_plan_direction', `이 수순은 반복해서 ${dominantSide === 'right side' ? '우측' : dominantSide === 'left side' ? '좌측' : '중앙'}을 향합니다. 개별 수가 아니라 하나의 계획으로 볼 수 있습니다.`, 0.66, { side: dominantSide }))
     }
   }
   return features
@@ -100,17 +100,56 @@ function extractLineFeatures (line) {
 
 function summarizeIntentFromFeatures (features) {
   const has = type => features.some(feature => feature.type === type)
-  if (has('palace_pressure') || has('exposed_king_lane')) return { type: 'central_pressure_plan', text: 'The main human idea looks like central or palace pressure: create threats near the king before the opponent fully coordinates.', confidence: 0.72 }
+  if (has('palace_pressure') || has('exposed_king_lane')) return { type: 'central_pressure_plan', label: '중앙 압박', text: '핵심 의도는 중앙 또는 궁성 압박으로 보입니다. 상대가 정비하기 전에 왕 주변에 위협을 만들려는 계획입니다.', confidence: 0.72 }
   const sideFeature = features.find(feature => feature.type === 'attack_side_concentration')
-  if (sideFeature) return { type: sideFeature.side === 'right side' ? 'right_side_attack_attempt' : 'left_side_attack_attempt', text: `The move sequence looks like a ${sideFeature.side} attack attempt: build activity on one wing and ask the opponent to prove the defense.`, confidence: 0.65 }
-  if (has('opened_attack_line')) return { type: 'line_opening_plan', text: 'The human idea appears to be opening or occupying a line so heavier pieces can create direct pressure.', confidence: 0.61 }
-  if (has('piece_activation')) return { type: 'piece_activation', text: 'The move is best understood as piece activation: improving activity and practical options rather than chasing an immediate tactic.', confidence: 0.57 }
-  return { type: 'candidate_intent', text: 'The move is treated as a human candidate idea: the first pass looks at direction, destination, and practical consequences before engine numbers.', confidence: 0.48 }
+  if (sideFeature) return { type: sideFeature.side === 'right side' ? 'right_side_attack_attempt' : 'left_side_attack_attempt', label: sideFeature.side === 'right side' ? '우측 공격' : '좌측 공격', text: `${sideFeature.side === 'right side' ? '우측' : '좌측'} 공격 의도가 보입니다. 한쪽 날개에 활동성을 모아 상대 수비를 시험하는 수순입니다.`, confidence: 0.65 }
+  if (has('opened_attack_line')) return { type: 'line_opening_plan', label: '라인 개방', text: '차나 포가 압박할 수 있는 길을 열거나 점유하려는 의도가 보입니다.', confidence: 0.61 }
+  if (has('piece_activation')) return { type: 'piece_activation', label: '기물 활성화', text: '즉각적인 전술보다 기물 활동성과 선택지를 늘리는 활성화 수로 이해할 수 있습니다.', confidence: 0.57 }
+  return { type: 'candidate_intent', label: '아이디어 검토', text: '엔진 수치보다 먼저 방향, 착점, 실전적 의미를 기준으로 후보 아이디어를 검토합니다.', confidence: 0.48 }
 }
 
-function classifyMove ({ reviewedMove, bestLine, candidateLine, features }) {
+
+function normalizeEngineCandidate (candidate, idx = 0) {
+  if (!candidate) return null
+  const move = candidate.ucimove || candidate.move || candidate.bestmove || ''
+  return {
+    rank: idx + 1,
+    move,
+    cp: typeof candidate.cp === 'number' ? candidate.cp : null,
+    mate: typeof candidate.mate === 'number' ? candidate.mate : null,
+    pvUCI: candidate.pvUCI || candidate.pv || '',
+    depth: candidate.depth || null,
+    meaning: engineMoveMeaning(move, idx)
+  }
+}
+
+function engineMoveMeaning (move, idx) {
+  const features = extractMoveFeatures(move, idx)
+  const intent = summarizeIntentFromFeatures(features)
+  return intent.label || intent.text
+}
+
+function engineCandidatesFromAnalysis (engineAnalysis) {
+  const rootCandidates = engineAnalysis && engineAnalysis.root && Array.isArray(engineAnalysis.root.candidates)
+    ? engineAnalysis.root.candidates.map(normalizeEngineCandidate).filter(Boolean)
+    : []
+  return rootCandidates
+}
+
+function userCandidateFromAnalysis (engineAnalysis) {
+  const candidate = engineAnalysis && engineAnalysis.user && Array.isArray(engineAnalysis.user.candidates) ? engineAnalysis.user.candidates[0] : null
+  return normalizeEngineCandidate(candidate, 0)
+}
+
+function punishmentFromAnalysis (engineAnalysis) {
+  const candidate = engineAnalysis && engineAnalysis.after && Array.isArray(engineAnalysis.after.candidates) ? engineAnalysis.after.candidates[0] : null
+  return normalizeEngineCandidate(candidate, 0)
+}
+
+function classifyMove ({ reviewedMove, bestLine, candidateLine, features, evalLoss }) {
   if (!reviewedMove) return 'no_move'
   if (bestLine && bestLine.move === reviewedMove) return 'engine_supported_idea'
+  if (typeof evalLoss === 'number' && evalLoss >= 180) return 'high_risk'
   if (features && features.some(feature => feature.type === 'overextension_check' || feature.type === 'exposed_king_lane')) return 'practical_but_risky'
   if (candidateLine && bestLine && typeof bestLine.cp === 'number' && typeof candidateLine.cp === 'number') {
     const loss = bestLine.cp - candidateLine.cp
@@ -170,7 +209,7 @@ function buildFeatureOverlays (features) {
   }))
 }
 
-function buildOverlays ({ reviewedMove, reviewedLine, bestLine, classification, features }) {
+function buildOverlays ({ reviewedMove, reviewedLine, bestLine, punishmentLine, classification, features }) {
   const overlays = []
   overlays.push(...buildLineOverlays(reviewedLine && reviewedLine.length ? reviewedLine : [reviewedMove]))
   overlays.push(...buildFeatureOverlays(features || []))
@@ -189,8 +228,9 @@ function buildOverlays ({ reviewedMove, reviewedLine, bestLine, classification, 
     }))
   }
 
-  if (bestLine && bestLine.move && bestLine.move !== reviewedMove) {
-    const best = splitUciMove(bestLine.move)
+  const warningLine = punishmentLine && punishmentLine.move ? punishmentLine : bestLine
+  if (warningLine && warningLine.move && warningLine.move !== reviewedMove) {
+    const best = splitUciMove(warningLine.move)
     if (best) {
       overlays.push(makeOverlay({
         id: 'engine-punishment-candidate',
@@ -209,58 +249,76 @@ function buildOverlays ({ reviewedMove, reviewedLine, bestLine, classification, 
   return overlays
 }
 
-function buildSummary ({ reviewedMove, moveSan, reviewedLine, bestLine, classification, candidateLine, intent, features }) {
-  const displayMove = moveSan || reviewedMove || 'this move'
+function buildSummary ({ reviewedMove, moveSan, reviewedLine, bestLine, classification, candidateLine, intent, features, evalLoss, punishmentLine }) {
+  const displayMove = moveSan || reviewedMove || '이 수'
   const bestMove = bestLine && bestLine.move
   const candidateText = candidateLine ? scoreToText(candidateLine.cp) : null
   const featureText = features && features[0] ? features[0].text : intent.text
-  const sequencePrefix = reviewedLine && reviewedLine.length > 1 ? `This ${reviewedLine.length}-move sequence` : displayMove
+  const sequencePrefix = reviewedLine && reviewedLine.length > 1 ? `이 ${reviewedLine.length}수 임시 수순은` : `${displayMove}는`
+  const evalHint = typeof evalLoss === 'number' ? `엔진 비교상 약 ${Math.round(evalLoss)}cp의 차이가 있어 전술 확인이 필요합니다.` : ''
+  const punishmentHint = punishmentLine && punishmentLine.move ? `특히 ${punishmentLine.move} 응수가 실제 반격 후보로 잡힙니다.` : ''
 
   if (classification === 'engine_supported_idea') {
-    return `${sequencePrefix} is strategically coherent: ${intent.text} It is also tactically supported by the current engine line.`
+    return `${sequencePrefix} 전략적으로도 자연스럽고 엔진도 지지하는 아이디어입니다. ${intent.text}`
   }
   if (classification === 'high_risk') {
-    return `${sequencePrefix} has a recognizable human idea, but the practical danger is high. ${featureText} The red warning arrow shows where concrete punishment must be checked first.`
+    return `${sequencePrefix} 의도는 분명하지만 위험도가 높습니다. ${featureText} ${punishmentHint || evalHint} 빨간 화살표의 응징 루트를 먼저 확인해야 합니다.`
   }
   if (classification === 'practical_but_risky' || classification === 'risky_practical_try') {
-    return `${sequencePrefix} creates practical chances through ${intent.text.toLowerCase()} The concern is that the same plan may leave a counter-route or overextended piece for the opponent.`
+    return `${sequencePrefix} 실전적인 찬스를 만드는 시도입니다. ${intent.text} 다만 같은 방향성이 상대의 반격 경로나 과확장을 허용할 수 있습니다. ${punishmentHint}`
   }
   if (classification === 'playable_alternative') {
-    return `${sequencePrefix} looks like a playable human alternative. ${intent.text} It may not be the engine's first choice, but it carries a plan a human can understand.`
+    return `${sequencePrefix} 엔진 1순위는 아니어도 사람이 이해할 수 있는 계획을 가진 대안입니다. ${intent.text}`
   }
   if (bestMove && bestMove !== reviewedMove) {
-    return `${sequencePrefix} deserves a tactical check. ${featureText} A concrete reply or competing candidate is highlighted, so the plan should be tested before trusting it.`
+    return `${sequencePrefix} 전술 검토가 필요한 후보입니다. ${featureText} 추천수와 비교해 계획이 실제로 성립하는지 확인해야 합니다.`
   }
   if (candidateText) {
-    return `${sequencePrefix} leads toward a ${candidateText}, but the more important review point is strategic: ${intent.text}`
+    return `${sequencePrefix} ${candidateText}로 이어집니다. 하지만 핵심은 수치보다 계획입니다. ${intent.text}`
   }
-  return `${sequencePrefix} shows a candidate idea rather than just a number. ${intent.text} Future deeper search will add sharper tactical confirmation.`
+  return `${sequencePrefix} 단순한 엔진 숫자가 아니라 아이디어로 검토할 수 있습니다. ${intent.text}`
 }
 
 function buildIdeas ({ intent, features }) {
-  const ideas = [{ id: 'intent', ...intent }]
+  const ideas = [{ id: 'intent', ...intent, text: intent.text }]
   for (const feature of features.slice(0, 3)) {
     ideas.push({ id: feature.id, type: feature.type, confidence: feature.confidence, text: feature.text })
   }
   return ideas
 }
 
-function buildRisks ({ bestLine, reviewedMove, classification, features }) {
+function buildRisks ({ bestLine, punishmentLine, reviewedMove, classification, features }) {
   const risks = []
   for (const feature of features.filter(feature => ['overextension_check', 'exposed_king_lane'].includes(feature.type)).slice(0, 2)) {
     risks.push({ id: feature.id, type: feature.type, severity: feature.type === 'exposed_king_lane' ? 'high' : 'medium', confidence: feature.confidence, text: feature.text })
   }
-  if (bestLine && bestLine.move && bestLine.move !== reviewedMove) {
+  const warningLine = punishmentLine && punishmentLine.move ? punishmentLine : bestLine
+  if (warningLine && warningLine.move && warningLine.move !== reviewedMove) {
     risks.push({
       id: 'risk',
       type: 'tactical_counterplay',
       severity: classification === 'high_risk' ? 'high' : 'medium',
-      confidence: classification === 'high_risk' ? 0.74 : 0.58,
-      move: bestLine.move,
-      text: 'The red arrow marks the most concrete available engine-backed reply or competing candidate. This is the first place to check before trusting the human plan.'
+      confidence: classification === 'high_risk' ? 0.78 : 0.62,
+      move: warningLine.move,
+      text: `엔진이 확인한 구체적인 반격 후보입니다: ${warningLine.move}. 이 응수를 막지 못하면 아이디어보다 전술 손실이 먼저 발생할 수 있습니다.`
     })
   }
   return risks
+}
+
+
+function featureLabel (type) {
+  const labels = {
+    attack_side_concentration: '측면 압박',
+    central_pressure: '중앙 압박',
+    palace_pressure: '궁성 압박',
+    opened_attack_line: '공격 라인',
+    exposed_king_lane: '왕 노출',
+    piece_activation: '기물 활성화',
+    overextension_check: '과확장 주의',
+    sequence_plan_direction: '수순 방향성'
+  }
+  return labels[type] || '핵심 장면'
 }
 
 function buildKeyMoments (line, features) {
@@ -270,8 +328,8 @@ function buildKeyMoments (line, features) {
     return {
       ply: idx + 1,
       move,
-      label: moveFeatures[0] ? moveFeatures[0].type.replace(/_/g, ' ') : 'sequence move',
-      text: moveFeatures[0] ? moveFeatures[0].text : 'This move keeps the temporary sequence moving and should be checked in context.'
+      label: moveFeatures[0] ? featureLabel(moveFeatures[0].type) : '수순 진행',
+      text: moveFeatures[0] ? moveFeatures[0].text : '이 수는 임시 수순의 흐름을 이어 가는 장면입니다. 전후 맥락에서 의미를 확인해야 합니다.'
     }
   })
 }
@@ -281,7 +339,10 @@ export function buildReviewCacheKey (request) {
   const multipv = Array.isArray(request.multipv)
     ? request.multipv.slice(0, 5).map(entry => [entry && entry.ucimove, entry && entry.cp, entry && entry.mate, entry && entry.depth].join(':')).join(',')
     : ''
-  return [REVIEW_SERVICE_VERSION, request.variant, request.fen, request.move, line, request.engineName, multipv].join('|')
+  const engineRoot = request.engineAnalysis && request.engineAnalysis.root && Array.isArray(request.engineAnalysis.root.candidates)
+    ? request.engineAnalysis.root.candidates.slice(0, 3).map(entry => [entry && entry.ucimove, entry && entry.cp, entry && entry.mate, entry && entry.depth].join(':')).join(',')
+    : ''
+  return [REVIEW_SERVICE_VERSION, request.variant, request.fen, request.move, line, request.engineName, multipv, engineRoot].join('|')
 }
 
 /**
@@ -292,15 +353,19 @@ export function buildReviewCacheKey (request) {
  * engine-backed tactical confirmation can be layered on without touching the engine.
  */
 export function analyzeReviewRequest (request) {
-  const multipv = Array.isArray(request.multipv) ? request.multipv.map(normalizePvLine).filter(Boolean) : []
+  const engineAnalysis = request.engineAnalysis || null
+  const engineRecommendations = engineCandidatesFromAnalysis(engineAnalysis)
+  const multipv = engineRecommendations.length > 0 ? engineRecommendations : (Array.isArray(request.multipv) ? request.multipv.map(normalizePvLine).filter(Boolean) : [])
   const reviewedMove = request.move || (Array.isArray(request.line) ? request.line[0] : '')
   const reviewedLine = Array.isArray(request.line) ? request.line : (reviewedMove ? [reviewedMove] : [])
   const features = extractLineFeatures(reviewedLine)
   const intent = summarizeIntentFromFeatures(features)
   const bestLine = multipv[0] || null
-  const candidateLine = multipv.find(line => line.move === reviewedMove) || null
-  const classification = classifyMove({ reviewedMove, bestLine, candidateLine, features })
-  const overlays = buildOverlays({ reviewedMove, reviewedLine, bestLine, classification, features })
+  const candidateLine = multipv.find(line => line.move === reviewedMove) || userCandidateFromAnalysis(engineAnalysis)
+  const punishmentLine = punishmentFromAnalysis(engineAnalysis)
+  const evalLoss = bestLine && candidateLine && typeof bestLine.cp === 'number' && typeof candidateLine.cp === 'number' ? Math.max(0, bestLine.cp - candidateLine.cp) : null
+  const classification = classifyMove({ reviewedMove, bestLine, candidateLine, features, evalLoss })
+  const overlays = buildOverlays({ reviewedMove, reviewedLine, bestLine, punishmentLine, classification, features })
 
   return {
     id: request.id,
@@ -312,22 +377,25 @@ export function analyzeReviewRequest (request) {
     reviewedMove,
     reviewedLine,
     classification,
-    summary: buildSummary({ reviewedMove, moveSan: request.moveSan, reviewedLine, bestLine, classification, candidateLine, intent, features }),
+    summary: buildSummary({ reviewedMove, moveSan: request.moveSan, reviewedLine, bestLine, classification, candidateLine, intent, features, evalLoss, punishmentLine }),
     engineEvidence: {
       engineName: request.engineName || '',
       bestMove: bestLine ? bestLine.move : '',
       bestCp: bestLine ? bestLine.cp : null,
       candidateCp: candidateLine ? candidateLine.cp : null,
       candidateFoundInMultiPv: Boolean(candidateLine),
-      evalLoss: bestLine && candidateLine && typeof bestLine.cp === 'number' && typeof candidateLine.cp === 'number' ? Math.max(0, bestLine.cp - candidateLine.cp) : null,
-      bestPv: bestLine ? bestLine.pvUCI : ''
+      evalLoss,
+      bestPv: bestLine ? bestLine.pvUCI : '',
+      punishmentMove: punishmentLine ? punishmentLine.move : '',
+      engineError: engineAnalysis && engineAnalysis.error ? engineAnalysis.error : null
     },
     features,
+    engineRecommendations,
     ideas: buildIdeas({ intent, features }),
-    risks: buildRisks({ bestLine, reviewedMove, classification, features }),
+    risks: buildRisks({ bestLine, punishmentLine, reviewedMove, classification, features }),
     keyMoments: buildKeyMoments(reviewedLine, features),
     alternatives: bestLine && bestLine.move && bestLine.move !== reviewedMove
-      ? [{ id: 'engine-main-candidate', move: bestLine.move, text: 'Compare the human idea with this concrete candidate before deciding.' }]
+      ? [{ id: 'engine-main-candidate', move: bestLine.move, text: '이 구체적인 추천수와 사람의 아이디어를 비교해 보세요.' }]
       : [],
     overlays,
     generatedAt: Date.now()
