@@ -131,5 +131,30 @@ export class Engine extends EventEmitter {
       })
     })
   }
+
+  /**
+   * Run an engine-backed review search on the eval worker.
+   * @param {Object} request review request containing fen, move, and line
+   * @returns {Promise<Object>} structured engine evidence
+   */
+  reviewAnalysis (request) {
+    return new Promise(resolve => {
+      this.evalWorker.onmessage = ({ data }) => {
+        if (data.type === 'cache') {
+          for (const { type, payload } of data.events) {
+            if (type === 'reviewed') {
+              resolve(payload)
+              delete this.evalWorker.onmessage
+            }
+          }
+        }
+      }
+      this.evalWorker.postMessage({
+        payload: request,
+        type: 'review'
+      })
+    })
+  }
+
 }
 export const engine = new Engine()

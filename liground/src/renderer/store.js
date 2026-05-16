@@ -3,6 +3,8 @@ import Vuex from 'vuex'
 import ffish from 'ffish'
 import { engine, Engine } from './engine'
 import allEngines from './store/engines'
+import { createReviewRequest, emptyReviewState, emptyReviewSequenceState, REVIEW_MARKER_MODES, REVIEW_MODES } from '../shared/review/schema'
+import { analyzeReviewRequest } from '../shared/review/reviewService'
 
 import moveAudio from './assets/audio/Move.mp3'
 import captureAudio from './assets/audio/Capture.mp3'
@@ -106,6 +108,129 @@ function normalizeFen (fen) {
     return parts.slice(0, parts.length - 2).join(' ')
   }
   return parts.join(' ')
+}
+
+function reviewMoveToOverlaySquares (move) {
+  if (typeof move !== 'string') return null
+  if (move.includes('@')) {
+    const dest = move.split('@')[1]
+    return dest ? { square: dest } : null
+  }
+  const match = move.match(/^([a-i]\d{1,2})([a-i]\d{1,2})/)
+  if (!match) return null
+  return { orig: match[1], dest: match[2] }
+}
+
+function normalizeReviewLegalMoves (legalMoves) {
+  if (Array.isArray(legalMoves)) return legalMoves.filter(Boolean)
+  return String(legalMoves || '').split(/\s+/).filter(Boolean)
+}
+
+function resolveReviewSequenceMove (legalMoves, move) {
+  if (!move) return null
+  const candidates = normalizeReviewLegalMoves(legalMoves)
+  if (candidates.includes(move)) return move
+  if (move.includes('@')) return null
+  const promotionMatches = candidates.filter(candidate => candidate && candidate.startsWith(move) && candidate.length > move.length)
+  if (promotionMatches.length === 0) return null
+  return promotionMatches.find(candidate => candidate.endsWith('q')) || promotionMatches[0]
+}
+
+
+function enrichReviewMovePreviewFens (result, variant, is960) {
+  if (!result || !Array.isArray(result.moves) || !result.fen) return result
+  let board
+  try {
+    board = is960 ? new ffish.Board(variant, result.fen, true) : new ffish.Board(variant, result.fen)
+  } catch (err) {
+    return result
+  }
+  const previewByPly = {}
+  for (const move of result.moves) {
+    if (!move || !move.move) continue
+    try {
+      board.push(move.move)
+      previewByPly[move.ply] = board.fen()
+    } catch (err) {
+      break
+    }
+  }
+  const enrich = move => move && previewByPly[move.ply] ? { ...move, previewFen: previewByPly[move.ply] } : move
+  return {
+    ...result,
+    moves: result.moves.map(enrich),
+    markerMoves: Array.isArray(result.markerMoves) ? result.markerMoves.map(enrich) : result.markerMoves
+  }
+}
+
+function previewOverlaysForMove (move) {
+  if (!move) return []
+  const overlays = Array.isArray(move.overlays) ? move.overlays.slice(0, 6).map(overlay => ({ ...overlay, source: 'review-preview' })) : []
+  const sq = reviewMoveToOverlaySquares(move.move)
+  if (sq && sq.orig && sq.dest) {
+    overlays.push({
+      id: `hover-preview-move-${move.ply}`,
+      kind: 'arrow',
+      orig: sq.orig,
+      dest: sq.dest,
+      brush: move.tone === 'critical' ? 'red' : (move.tone === 'practical' ? 'yellow' : 'green'),
+      label: move.classificationLabel,
+      modifiers: { lineWidth: move.tone === 'critical' ? 7 : 5 },
+      source: 'review-preview'
+    })
+    overlays.push({
+      id: `hover-preview-target-${move.ply}`,
+      kind: 'highlight',
+      square: sq.dest,
+      brush: move.tone === 'critical' ? 'red' : (move.tone === 'practical' ? 'yellow' : 'green'),
+      label: '착점',
+      modifiers: { lineWidth: 4 },
+      source: 'review-preview'
+    })
+  }
+  const responseMove = move.punishmentMove || (typeof move.bestPv === 'string' ? move.bestPv.split(/\s+/).filter(Boolean)[0] : '')
+  const response = responseMove && responseMove !== move.move ? reviewMoveToOverlaySquares(responseMove) : null
+  if (response && response.orig && response.dest) {
+    overlays.push({
+      id: `hover-preview-response-${move.ply}`,
+      kind: 'arrow',
+      orig: response.orig,
+      dest: response.dest,
+      brush: move.tone === 'critical' || move.severity === 'blunder' || move.severity === 'mistake' ? 'red' : 'yellow',
+      label: move.punishmentMove ? '응징' : '응수',
+      modifiers: { lineWidth: move.tone === 'critical' ? 8 : 6 },
+      source: 'review-preview'
+    })
+    overlays.push({
+      id: `hover-preview-response-target-${move.ply}`,
+      kind: 'danger',
+      square: response.dest,
+      brush: move.tone === 'critical' ? 'red' : 'yellow',
+      label: '압박',
+      modifiers: { lineWidth: 4 },
+      source: 'review-preview'
+    })
+  }
+  return overlays
+}
+
+function buildReviewSequenceOverlays (line) {
+  const circled = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩', '⑪', '⑫']
+  return (Array.isArray(line) ? line : []).map((move, idx) => {
+    const sq = reviewMoveToOverlaySquares(move)
+    if (!sq) return null
+    const base = {
+      id: `review-sequence-${idx}`,
+      kind: sq.orig && sq.dest ? 'arrow' : 'highlight',
+      brush: idx % 2 === 0 ? 'yellow' : 'blue',
+      label: circled[idx] || String(idx + 1),
+      modifiers: { lineWidth: Math.max(2, 6 - idx * 0.4), opacity: Math.max(0.35, 0.85 - idx * 0.04) },
+      explanationId: 'sequence-path',
+      priority: 20,
+      source: 'review-sequence'
+    }
+    return sq.orig && sq.dest ? { ...base, orig: sq.orig, dest: sq.dest } : { ...base, square: sq.square }
+  }).filter(Boolean)
 }
 
 /**
@@ -336,6 +461,7 @@ export const store = new Vuex.Store({
     viewAnalysis: true,
     analysisMode: true,
     editorMode: false,
+    review: emptyReviewState(),
     analysisVisualization: {
       showMultiPvArrows: true,
       multiPvCount: 3,
@@ -385,6 +511,9 @@ export const store = new Vuex.Store({
     fen (state, payload) {
       state.fen = payload
       state.normalizedFen = normalizeFen(payload)
+      if (state.review && state.review.currentResult && state.review.currentResult.fen !== payload) {
+        state.review.overlays = []
+      }
     },
     engineIndex (state, payload) {
       state.engineIndex = payload
@@ -707,6 +836,112 @@ export const store = new Vuex.Store({
     analysisVisualization (state, payload) {
       state.analysisVisualization = { ...state.analysisVisualization, ...payload }
     },
+    reviewMarkerMode (state, payload) {
+      const mode = Object.values(REVIEW_MARKER_MODES).includes(payload) ? payload : REVIEW_MARKER_MODES.MY_MOVES_ONLY
+      state.review.markerMode = mode
+      state.review.preview = { active: false, fen: '', move: null, overlays: [] }
+      if (typeof localStorage !== 'undefined') {
+        localStorage.reviewMarkerMode = mode
+      }
+    },
+    reviewSetRequest (state, payload) {
+      state.review.lastRequestId = payload
+      state.review.loading = true
+      state.review.error = null
+      state.review.preview = { active: false, fen: '', move: null, overlays: [] }
+      state.review.active = true
+    },
+    reviewSetResult (state, payload) {
+      const result = enrichReviewMovePreviewFens(payload, state.variant, state.board && state.board.is960 && state.board.is960())
+      state.review.loading = false
+      state.review.error = null
+      state.review.preview = { active: false, fen: '', move: null, overlays: [] }
+      state.review.currentResult = result
+      state.review.overlays = Array.isArray(result.overlays) ? result.overlays : []
+      state.review.active = true
+      Vue.set(state.review.resultsById, result.id, result)
+    },
+    reviewPreviewSet (state, payload) {
+      state.review.preview = {
+        active: Boolean(payload && payload.previewFen),
+        fen: payload && payload.previewFen ? payload.previewFen : '',
+        move: payload || null,
+        overlays: previewOverlaysForMove(payload)
+      }
+    },
+    reviewPreviewClear (state) {
+      state.review.preview = { active: false, fen: '', move: null, overlays: [] }
+    },
+    reviewSetError (state, payload) {
+      state.review.loading = false
+      state.review.error = payload
+      state.review.active = true
+    },
+    reviewClear (state) {
+      const previousInteraction = state.review.sequence && state.review.sequence.previousInteraction
+      const markerMode = state.review.markerMode
+      state.review = emptyReviewState()
+      state.review.markerMode = markerMode
+      if (previousInteraction && typeof previousInteraction.analysisMode === 'boolean') {
+        state.analysisMode = previousInteraction.analysisMode
+      }
+      if (previousInteraction && typeof previousInteraction.editorMode === 'boolean') {
+        state.editorMode = previousInteraction.editorMode
+      }
+    },
+    reviewSequenceStart (state, payload) {
+      state.review.sequence = {
+        ...emptyReviewSequenceState(),
+        active: true,
+        baseFen: payload.fen,
+        fen: payload.fen,
+        turn: payload.turn,
+        legalMoves: payload.legalMoves,
+        previousInteraction: payload.previousInteraction || emptyReviewSequenceState().previousInteraction
+      }
+      state.review.currentResult = null
+      state.review.overlays = []
+      state.review.preview = { active: false, fen: '', move: null, overlays: [] }
+      state.review.error = null
+      state.review.active = true
+    },
+    reviewSequenceUpdate (state, payload) {
+      state.review.sequence = {
+        ...state.review.sequence,
+        fen: payload.fen,
+        turn: payload.turn,
+        legalMoves: payload.legalMoves,
+        line: payload.line,
+        sans: payload.sans,
+        overlays: buildReviewSequenceOverlays(payload.line),
+        lastMove: payload.lastMove,
+        previousInteraction: payload.previousInteraction || state.review.sequence.previousInteraction
+      }
+      state.review.currentResult = null
+      state.review.overlays = []
+      state.review.preview = { active: false, fen: '', move: null, overlays: [] }
+    },
+    reviewSequenceEnd (state) {
+      const previousInteraction = state.review.sequence.previousInteraction
+      state.review.sequence = emptyReviewSequenceState()
+      state.review.preview = { active: false, fen: '', move: null, overlays: [] }
+      if (previousInteraction && typeof previousInteraction.analysisMode === 'boolean') {
+        state.analysisMode = previousInteraction.analysisMode
+      }
+      if (previousInteraction && typeof previousInteraction.editorMode === 'boolean') {
+        state.editorMode = previousInteraction.editorMode
+      }
+    },
+    reviewSequenceClear (state) {
+      state.review.sequence = {
+        ...state.review.sequence,
+        fen: state.review.sequence.baseFen,
+        line: [],
+        sans: [],
+        overlays: [],
+        lastMove: null
+      }
+    },
     openedPGN (state, payload) {
       state.openedPGN = payload
     },
@@ -823,6 +1058,7 @@ export const store = new Vuex.Store({
         selectedGame: null,
         allEngines: allEngines,
         activeEngine: null,
+        review: emptyReviewState(),
         active: false
       }
 
@@ -873,6 +1109,9 @@ export const store = new Vuex.Store({
       }
       if (localStorage.variant) {
         context.commit('variant', localStorage.variant)
+      }
+      if (localStorage.reviewMarkerMode && Object.values(REVIEW_MARKER_MODES).includes(localStorage.reviewMarkerMode)) {
+        context.commit('reviewMarkerMode', localStorage.reviewMarkerMode)
       }
       if (localStorage.engines) {
         try {
@@ -1881,6 +2120,195 @@ export const store = new Vuex.Store({
     analysisVisualization (context, payload) {
       context.commit('analysisVisualization', payload)
     },
+    setReviewMarkerMode (context, payload) {
+      context.commit('reviewMarkerMode', payload)
+    },
+    previewReviewMove (context, payload) {
+      context.commit('reviewPreviewSet', payload)
+    },
+    clearReviewPreview (context) {
+      context.commit('reviewPreviewClear')
+    },
+    startReviewSequence (context) {
+      const previousInteraction = {
+        analysisMode: context.state.analysisMode,
+        editorMode: context.state.editorMode
+      }
+      if (context.state.editorMode) {
+        context.commit('editorMode', false)
+      }
+      const board = context.getters.is960
+        ? new ffish.Board(context.getters.variant, context.getters.fen, true)
+        : new ffish.Board(context.getters.variant, context.getters.fen)
+      context.commit('reviewSequenceStart', {
+        fen: context.getters.fen,
+        turn: board.turn(),
+        legalMoves: board.legalMoves(),
+        previousInteraction
+      })
+      if (context.getters.active) {
+        context.dispatch('stopEngine')
+      }
+    },
+    addReviewSequenceMove (context, move) {
+      if (!context.state.review.sequence.active || !move) return
+      const sequence = context.state.review.sequence
+      const board = context.getters.is960
+        ? new ffish.Board(context.getters.variant, sequence.fen, true)
+        : new ffish.Board(context.getters.variant, sequence.fen)
+      const legalMoves = board.legalMoves()
+      const resolvedMove = resolveReviewSequenceMove(legalMoves, move)
+      if (!resolvedMove) {
+        context.commit('reviewSetError', `임시 검토 수순에서 둘 수 없는 수입니다: ${move}`)
+        return false
+      }
+      let san = resolvedMove
+      try { san = board.sanMove(resolvedMove) } catch (err) {}
+      board.push(resolvedMove)
+      const line = sequence.line.concat(resolvedMove)
+      const sans = sequence.sans.concat(san)
+      context.commit('reviewSequenceUpdate', {
+        fen: board.fen(),
+        turn: board.turn(),
+        legalMoves: board.legalMoves(),
+        line,
+        sans,
+        lastMove: resolvedMove
+      })
+      return true
+    },
+    clearReviewSequence (context) {
+      if (!context.state.review.sequence.active) return
+      const board = context.getters.is960
+        ? new ffish.Board(context.getters.variant, context.state.review.sequence.baseFen, true)
+        : new ffish.Board(context.getters.variant, context.state.review.sequence.baseFen)
+      context.commit('reviewSequenceClear')
+      context.commit('reviewSequenceUpdate', {
+        fen: board.fen(),
+        turn: board.turn(),
+        legalMoves: board.legalMoves(),
+        line: [],
+        sans: [],
+        lastMove: null
+      })
+    },
+    cancelReviewSequence (context) {
+      context.commit('reviewSequenceEnd')
+    },
+    reviewCurrentSequence (context) {
+      const sequence = context.state.review.sequence
+      if (!sequence.active || sequence.line.length === 0) {
+        context.commit('reviewSetError', '검토할 임시 수순을 먼저 보드에서 직접 진행해 주세요.')
+        return Promise.resolve(null)
+      }
+      return context.dispatch('requestReview', {
+        mode: REVIEW_MODES.LINE,
+        fen: sequence.baseFen,
+        move: sequence.line[0],
+        moveSan: sequence.sans[0],
+        line: sequence.line,
+        markerMode: context.state.review.markerMode,
+        context: {
+          markerMode: context.state.review.markerMode,
+          sequenceSans: sequence.sans,
+          finalFen: sequence.fen,
+          temporary: true
+        }
+      })
+    },
+    async requestReview (context, payload) {
+      const request = createReviewRequest({
+        ...payload,
+        id: payload.id || `review-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        variant: payload.variant || context.getters.variant,
+        engineName: payload.engineName || context.getters.engineName,
+        multipv: payload.multipv || context.getters.multipv,
+        markerMode: payload.markerMode || context.state.review.markerMode
+      })
+      context.commit('reviewSetRequest', request.id)
+      try {
+        request.engineAnalysis = await engine.reviewAnalysis({
+          fen: request.fen,
+          move: request.move,
+          line: request.line,
+          depth: request.context && request.context.reviewDepth ? request.context.reviewDepth : 10,
+          multiPv: 3,
+          perMoveDepth: request.context && request.context.reviewDepth ? request.context.reviewDepth : 8,
+          maxReviewMoves: 20,
+          variant: request.variant
+        })
+      } catch (err) {
+        request.engineAnalysis = { error: err.message }
+      }
+      let result
+      if (ipcRenderer && ipcRenderer.invoke) {
+        result = await ipcRenderer.invoke('review-analyze', request)
+      } else {
+        result = analyzeReviewRequest(request)
+      }
+      if (context.state.review.lastRequestId !== request.id) {
+        return null
+      }
+      if (!result || result.error) {
+        context.commit('reviewSetError', result && result.error ? result.error : 'Review failed')
+        return null
+      }
+      context.commit('reviewSetResult', result)
+      return result
+    },
+    reviewCurrentMove (context) {
+      const move = context.getters.currentMove[0]
+      if (!move) {
+        context.commit('reviewSetError', '검토할 기보의 수를 먼저 선택해 주세요.')
+        return Promise.resolve(null)
+      }
+      return context.dispatch('requestReview', {
+        mode: REVIEW_MODES.MOVE,
+        fen: move.prev ? move.prev.fen : context.getters.startFen,
+        move: move.uci,
+        moveSan: move.name,
+        line: [move.uci],
+        multipv: [],
+        markerMode: context.state.review.markerMode,
+        context: {
+          markerMode: context.state.review.markerMode,
+          currentFen: context.getters.fen,
+          ply: move.ply
+        }
+      })
+    },
+    reviewCustomMove (context, move) {
+      if (!move) {
+        context.commit('reviewSetError', '검토할 수를 먼저 입력해 주세요.')
+        return Promise.resolve(null)
+      }
+      return context.dispatch('requestReview', {
+        mode: REVIEW_MODES.CUSTOM_MOVE,
+        fen: context.getters.fen,
+        move,
+        line: [move],
+        markerMode: context.state.review.markerMode,
+        context: { markerMode: context.state.review.markerMode, currentFen: context.getters.fen }
+      })
+    },
+    reviewLine (context, line) {
+      const cleanLine = Array.isArray(line) ? line.filter(Boolean) : []
+      if (cleanLine.length === 0) {
+        context.commit('reviewSetError', '검토할 수순을 한 수 이상 입력해 주세요.')
+        return Promise.resolve(null)
+      }
+      return context.dispatch('requestReview', {
+        mode: REVIEW_MODES.LINE,
+        fen: context.getters.fen,
+        move: cleanLine[0],
+        line: cleanLine,
+        markerMode: context.state.review.markerMode,
+        context: { markerMode: context.state.review.markerMode, currentFen: context.getters.fen }
+      })
+    },
+    clearReview (context) {
+      context.commit('reviewClear')
+    },
     openedPGN (context, payload) {
       context.commit('openedPGN', payload)
     },
@@ -2334,6 +2762,36 @@ export const store = new Vuex.Store({
     },
     analysisVisualization (state) {
       return state.analysisVisualization
+    },
+    review (state) {
+      return state.review
+    },
+    reviewMarkerMode (state) {
+      return state.review.markerMode
+    },
+    reviewResult (state) {
+      return state.review.currentResult
+    },
+    reviewSequence (state) {
+      return state.review.sequence
+    },
+    reviewSequenceActive (state) {
+      return state.review.sequence.active
+    },
+    reviewPreview (state) {
+      return state.review.preview
+    },
+    reviewPreviewActive (state) {
+      return Boolean(state.review.preview && state.review.preview.active)
+    },
+    reviewOverlays (state) {
+      if (state.review.preview && state.review.preview.active) {
+        return Array.isArray(state.review.preview.overlays) ? state.review.preview.overlays : []
+      }
+      const resultOverlays = Array.isArray(state.review.overlays) ? state.review.overlays : []
+      const sequenceOverlays = Array.isArray(state.review.sequence.overlays) ? state.review.sequence.overlays : []
+      if (!state.review.sequence.active) return resultOverlays
+      return resultOverlays.length > 0 ? resultOverlays : sequenceOverlays
     },
     menuAtMove (state) {
       return state.menuAtMove
