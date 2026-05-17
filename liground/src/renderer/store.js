@@ -240,14 +240,19 @@ function enrichReviewMovePreviewFens (result, variant, is960) {
 }
 
 
-function isRealtimeStrategicOverlay (overlay) {
-  if (!overlay || typeof overlay.id !== 'string') return false
-  return overlay.id.startsWith('move-marker-') || overlay.id.startsWith('reviewed-line-') || overlay.id === 'reviewed-destination'
-}
-
-function filterRealtimeStrategicOverlays (overlays, enabled) {
-  if (enabled !== false) return overlays
-  return overlays.filter(overlay => !isRealtimeStrategicOverlay(overlay))
+// Realtime commentary owns only the latest played move on the live board.
+// Rich review markers remain available in review panels and hover previews.
+function primaryRealtimeBoardOverlays (result, overlays, arrowsEnabled, currentFen) {
+  if (!result || arrowsEnabled === false) return []
+  const resultContext = result.requestContext || {}
+  if (resultContext.currentFen && currentFen && resultContext.currentFen !== currentFen) return []
+  const reviewedLine = Array.isArray(result.reviewedLine) ? result.reviewedLine : []
+  const latestPly = reviewedLine.length
+  if (!latestPly) return []
+  return (Array.isArray(overlays) ? overlays : [])
+    .filter(overlay => overlay && overlay.id === `move-marker-${latestPly}` && overlay.kind === 'arrow')
+    .slice(0, 1)
+    .map(overlay => ({ ...overlay, source: 'realtime-current-move' }))
 }
 
 function previewOverlaysForMove (move) {
@@ -3057,7 +3062,12 @@ export const store = new Vuex.Store({
       const realtimeStrategic = resultContext.source === 'realtime-played-line'
       const resultOverlays = Array.isArray(state.review.overlays) ? state.review.overlays : []
       const visibleResultOverlays = realtimeStrategic
-        ? filterRealtimeStrategicOverlays(resultOverlays, state.analysisVisualization.realtimeCommentaryArrows)
+        ? primaryRealtimeBoardOverlays(
+          state.review.currentResult,
+          resultOverlays,
+          state.analysisVisualization.realtimeCommentaryArrows,
+          state.fen
+        )
         : resultOverlays
       const sequenceOverlays = Array.isArray(state.review.sequence.overlays) ? state.review.sequence.overlays : []
       if (!state.review.sequence.active) return visibleResultOverlays
