@@ -30,9 +30,11 @@ function koreanScoreLabel (score, high = '높음', mid = '보통', low = '낮음
 
 function moveAiSimilarity (move) {
   if (!move) return 0
-  if (move.top1) return 100
-  if (move.top3) return 78
-  return clamp(qualityFromAcpl(move.loss) * 0.72)
+  const base = move.top1 ? 100 : (move.top3 ? 78 : clamp(qualityFromAcpl(move.loss) * 0.72))
+  const difficultyBonus = move.difficult && move.loss <= 45 ? 6 : 0
+  const chaosPenalty = move.chaos && move.loss >= 120 ? 10 : 0
+  const forcedPenalty = move.forced ? 6 : 0
+  return clamp(base + difficultyBonus - chaosPenalty - forcedPenalty)
 }
 
 function phaseForPly (ply) {
@@ -85,6 +87,12 @@ function normalizeMove (move, source = 'review') {
   const tactical = Boolean(move.practical && (move.practical.attackChances || move.practical.complexityIncrease || move.practical.initiative)) || live.tactical
   const defensive = Boolean(move.practical && move.practical.defensiveConcern) || live.defensive
   const riskCount = Array.isArray(move.risks) ? move.risks.length : 0
+  const forced = hasEngineLoss
+    ? (!tactical && !live.complexity && riskCount === 0 && loss <= 25)
+    : (!live.complexity && !live.tactical && loss <= 35)
+  const choiceRich = !forced && (tactical || live.complexity || riskCount > 0 || loss >= 35)
+  const difficult = choiceRich && (riskCount > 0 || tactical || loss >= 70 || live.complexity)
+  const chaos = tactical && (riskCount > 0 || loss >= 70 || live.complexity)
   return {
     ...move,
     move: move.move || move.uci || '',
@@ -96,6 +104,10 @@ function normalizeMove (move, source = 'review') {
     defensive,
     initiative: Boolean(move.practical && move.practical.initiative) || live.initiative,
     complexity: Boolean(move.practical && move.practical.complexityIncrease) || live.complexity,
+    forced,
+    choiceRich,
+    difficult,
+    chaos,
     riskCount,
     source,
     sideKey: sideKeyForPly(move.ply || 1),
@@ -108,6 +120,15 @@ function statsForMoves (moves) {
   const losses = moves.map(move => move.loss)
   const total = Math.max(1, moves.length)
   const critical = moves.filter(move => move.riskCount || (move.loss >= 30 && move.loss < 130) || move.complexity)
+  const choiceMoves = moves.filter(move => !move.forced)
+  const difficultMoves = moves.filter(move => move.difficult)
+  const chaosMoves = moves.filter(move => move.chaos)
+  const precisionMoves = difficultMoves.filter(move => move.loss <= 35 || move.top1)
+  const burstValues = []
+  for (let idx = 0; idx <= moves.length - 3; idx++) {
+    burstValues.push(stdDev(moves.slice(idx, idx + 3).map(move => move.loss)))
+  }
+  const unforcedLosses = choiceMoves.map(move => move.loss)
   return {
     acpl: average(losses),
     top1: moves.filter(move => move.top1).length / total * 100,
@@ -118,8 +139,14 @@ function statsForMoves (moves) {
     blunder: moves.filter(move => move.loss >= 200).length,
     stdDev: stdDev(losses),
     criticalTop1: critical.filter(move => move.top1).length / Math.max(1, critical.length) * 100,
-    unforcedTop1: moves.filter(move => move.top1).length / total * 100,
-    unforcedAcpl: average(losses),
+    unforcedTop1: choiceMoves.filter(move => move.top1).length / Math.max(1, choiceMoves.length) * 100,
+    unforcedAcpl: choiceMoves.length ? average(unforcedLosses) : average(losses),
+    difficultSimilarity: difficultMoves.length ? average(difficultMoves.map(moveAiSimilarity)) : 0,
+    chaosAccuracy: chaosMoves.length ? average(chaosMoves.map(moveAiSimilarity)) : 0,
+    precisionSpikeRate: precisionMoves.length / Math.max(1, difficultMoves.length) * 100,
+    forcedRatio: moves.filter(move => move.forced).length / total * 100,
+    choiceRichRatio: choiceMoves.length / total * 100,
+    burstConsistency: clamp(100 - average(burstValues) * 1.4),
     engineBackedRatio: moves.filter(move => move.hasEngineLoss).length / total * 100
   }
 }
@@ -132,6 +159,8 @@ function phaseBreakdown (moves) {
     const quality = aiSimilarity
     const tacticalRate = phaseMoves.filter(move => move.tactical).length / Math.max(1, phaseMoves.length) * 100
     const riskRate = phaseMoves.filter(move => move.riskCount || move.loss >= 100).length / Math.max(1, phaseMoves.length) * 100
+    const difficultMoves = phaseMoves.filter(move => move.difficult)
+    const choiceMoves = phaseMoves.filter(move => !move.forced)
     return {
       ...phase,
       count: phaseMoves.length,
@@ -139,6 +168,8 @@ function phaseBreakdown (moves) {
       aiSimilarity,
       quality,
       volatility: stdDev(phaseMoves.map(move => move.loss)),
+      difficultSimilarity: difficultMoves.length ? average(difficultMoves.map(moveAiSimilarity)) : 0,
+      unforcedAcpl: choiceMoves.length ? average(choiceMoves.map(move => move.loss)) : acpl,
       tacticalRate,
       riskRate
     }
@@ -186,11 +217,14 @@ function analyzerMetrics (moves, stats, phases) {
   const stability = clamp(100 - stats.stdDev * 1.7 - stats.blunder * 10 + stats.top3 * 0.18)
   const practicality = clamp(practicalGood / Math.max(1, tacticalCount) * 70 + stats.top3 * 0.25)
   const riskProfile = clamp(riskyCount / total * 75 + stats.blunder * 8 + stats.stdDev * 0.75)
-  const strategicSharpness = clamp(stats.criticalTop1 * 0.45 + tacticalDependence * 0.35 + (bestWindow === null ? 30 : qualityFromAcpl(bestWindow)) * 0.2)
+  const strategicSharpness = clamp(stats.criticalTop1 * 0.35 + stats.difficultSimilarity * 0.25 + tacticalDependence * 0.25 + (bestWindow === null ? 30 : qualityFromAcpl(bestWindow)) * 0.15)
   const conversionQuality = late && late.count ? late.quality : clamp(100 - stats.acpl * 0.65)
   const defensiveResilience = recovery === null ? clamp(100 - defensiveCount / total * 10 - stats.blunder * 8) : recovery
-  const engineLike = clamp(stats.top1 * 0.45 + stats.top3 * 0.25 + (100 - stats.unforcedAcpl) * 0.2 + (100 - stats.stdDev * 2) * 0.1)
-  const humanPractical = clamp(practicality * 0.45 + aggression * 0.2 + riskProfile * 0.15 + (100 - engineLike) * 0.2)
+  const choiceAccuracy = stats.choiceRichRatio >= 25 ? clamp(stats.unforcedTop1 * 0.35 + qualityFromAcpl(stats.unforcedAcpl) * 0.35 + stats.difficultSimilarity * 0.3) : clamp(stats.top3 * 0.45 + qualityFromAcpl(stats.acpl) * 0.55)
+  const chaosAccuracy = stats.chaosAccuracy || clamp(stats.criticalTop1 * 0.55 + qualityFromAcpl(stats.unforcedAcpl) * 0.45)
+  const mechanicalStability = clamp(stats.top1 * 0.35 + stats.top3 * 0.2 + stability * 0.35 + (100 - stats.choiceRichRatio) * 0.1)
+  const engineLike = clamp(choiceAccuracy * 0.32 + stats.top3 * 0.18 + stats.difficultSimilarity * 0.18 + chaosAccuracy * 0.12 + stability * 0.2)
+  const humanPractical = clamp(practicality * 0.35 + aggression * 0.18 + riskProfile * 0.12 + stats.choiceRichRatio * 0.15 + (100 - mechanicalStability) * 0.2)
 
   return {
     tacticalDependence,
@@ -205,6 +239,11 @@ function analyzerMetrics (moves, stats, phases) {
     defensiveResilience,
     engineLike,
     humanPractical,
+    choiceAccuracy,
+    chaosAccuracy,
+    mechanicalStability,
+    precisionSpikeRate: stats.precisionSpikeRate,
+    burstConsistency: stats.burstConsistency,
     bestWindowAcpl: bestWindow,
     hardPositionTop1: stats.criticalTop1,
     recoveryRate: recovery
@@ -367,6 +406,11 @@ function styleNarratives (metrics, phases, moves, isLive, events = []) {
   if (metrics.positionalPreference >= 68) narratives.push('포지션 지향성이 분명합니다. 당장의 전술보다 장기적인 활동성, 진형의 탄력, 다음 압박 지점을 준비하는 선택이 자주 나타납니다.')
   if (metrics.engineLike >= 72 && !critical) narratives.push('유리한 흐름을 유지하는 방식이 상당히 정교합니다. 큰 흔들림 없이 평가를 보존하는 선택이 반복되어 엔진식 전환 감각과 닮은 부분이 있습니다.')
   if (metrics.humanPractical >= 64) narratives.push('실전적 보상 선호가 보입니다. 최선 수의 건조한 유지보다 상대가 계속 어려운 결정을 하도록 복잡성과 압박을 남겨두는 쪽에 가깝습니다.')
+  if (metrics.choiceAccuracy >= 70) narratives.push('강제 응수보다 선택지가 많은 장면에서 판단 품질이 좋습니다. 단순한 수순 암기보다 실제 후보 선택 능력이 드러나는 유형입니다.')
+  else if (metrics.choiceAccuracy < 42 && moves.some(move => !move.forced)) narratives.push('강제 수순이 아닌 선택 국면에서 손실이 커지는 편입니다. 명확한 응수보다 여러 계획이 가능한 장면에서 후보 검토가 흔들렸습니다.')
+  if (metrics.chaosAccuracy >= 68) narratives.push('난전 대응력이 좋습니다. 계산 부담이 큰 장면에서도 평가를 크게 훼손하지 않고 실전 압박을 이어가는 흐름이 보입니다.')
+  else if (metrics.chaosAccuracy && metrics.chaosAccuracy < 42) narratives.push('복잡한 전술 국면에서 정확도가 떨어집니다. 공격이나 수비 의도는 있어도 변화가 길어질수록 평가 손실이 커지는 패턴입니다.')
+  if (metrics.mechanicalStability >= 76 && metrics.riskProfile < 45) narratives.push('손실 편차가 작고 선택 리듬이 매우 안정적입니다. 사람다운 흔들기보다는 기계적인 평가 보존에 가까운 운영입니다.')
   if (metrics.defensiveResilience >= 70 && !critical) narratives.push('수비 복원력이 좋습니다. 불리하거나 복잡한 장면 이후에도 바로 무너지지 않고, 다음 몇 수 안에 균형을 되찾는 패턴이 보입니다.')
   if (metrics.riskProfile >= 70) narratives.push('위험 감수 성향이 큽니다. 다만 이것은 단순히 나쁜 수가 많다는 뜻이 아니라, 형세를 흔들어 실전적 기회를 만들려는 선택이 섞여 있다는 의미에 가깝습니다.')
   if (recovery) narratives.push(recovery.text)
@@ -388,6 +432,9 @@ function sideNarratives (side, events) {
   else if (warning) lines.push(warning.text)
   if (side.metrics.aggression >= 68) lines.push(`${side.label}는 주도권을 직접 밀어붙이는 비중이 높았습니다. 다만 안정성 점수와 함께 보면 공격이 실제 평가를 지켰는지 분리해서 봐야 합니다.`)
   if (side.metrics.stability < 45) lines.push(`${side.label}의 안정성은 낮은 편입니다. 큰 실수 하나뿐 아니라 손실 편차가 커서 국면마다 판단 품질이 흔들렸습니다.`)
+  if (side.metrics.choiceAccuracy >= 68) lines.push(`${side.label}는 강제 응수가 아닌 선택 국면에서도 비교적 좋은 판단을 유지했습니다. 여러 계획 중 하나를 골라야 하는 장면에서 강점이 보입니다.`)
+  else if (side.metrics.choiceAccuracy < 42 && side.moveCount >= 3) lines.push(`${side.label}는 선택지가 많은 장면에서 정확도가 흔들렸습니다. 강제 수순보다 계획 선택과 전환 판단을 중심으로 복기하는 편이 좋습니다.`)
+  if (side.metrics.chaosAccuracy >= 68) lines.push(`${side.label}는 난전에서도 비교적 침착하게 평가를 지켰습니다.`)
   if (side.metrics.defensiveResilience >= 65) lines.push(`${side.label}는 흔들린 뒤에도 비교적 빠르게 자세를 고쳐 잡는 수습 능력이 보입니다.`)
   if (recovery) lines.push(recovery.text)
   if (!lines.length) lines.push(`${side.label}는 전술, 운영, 안정성 사이에서 비교적 균형 잡힌 흐름을 보였습니다.`)
@@ -423,9 +470,11 @@ function comparativeNarratives (sides, events) {
   const aggressionGap = cho.metrics.aggression - han.metrics.aggression
   const stabilityGap = cho.metrics.stability - han.metrics.stability
   const engineGap = cho.metrics.engineLike - han.metrics.engineLike
+  const choiceGap = cho.metrics.choiceAccuracy - han.metrics.choiceAccuracy
   if (Math.abs(aggressionGap) >= 15) lines.push(`${aggressionGap > 0 ? '초' : '한'}는 더 직접적인 압박과 공격적 선택을 많이 보였고, ${aggressionGap > 0 ? '한' : '초'}는 상대적으로 운영·수습 비중이 높았습니다.`)
   if (Math.abs(stabilityGap) >= 15) lines.push(`${stabilityGap > 0 ? '초' : '한'}의 안정성이 더 높았습니다. 반대쪽은 특정 구간에서 평가 손실 편차가 커져 흐름을 유지하는 데 어려움이 있었습니다.`)
   if (Math.abs(engineGap) >= 12) lines.push(`엔진 유사도는 ${engineGap > 0 ? '초' : '한'} 쪽이 더 높게 나타납니다. 후보수 선택이 더 자주 평가 보존 방향과 맞았습니다.`)
+  if (Math.abs(choiceGap) >= 14) lines.push(`강제 응수가 아닌 선택 국면에서는 ${choiceGap > 0 ? '초' : '한'} 쪽 판단이 더 선명했습니다. 단순한 평균보다 실제 의사결정 장면에서의 차이가 드러납니다.`)
   const critical = events.find(event => event.severity === 'critical')
   if (critical) lines.push(`전체 승부의 핵심은 ${critical.sideLabel} ${critical.ply}수 전후였습니다. 이 지점에서 주도권과 수비 부담의 균형이 크게 바뀌었습니다.`)
   if (!lines.length) lines.push('양쪽의 성향 차이는 크지 않았고, 승부는 단일한 기풍 차이보다 구체적인 계산 장면의 정확도에서 갈렸습니다.')
@@ -442,6 +491,19 @@ function gameFlowNarratives (moves, phases, events, sides) {
   const recovery = events.find(event => event.type === 'recovery')
   const failedAttack = events.find(event => event.type === 'failed_attack')
   const defensiveBreak = events.find(event => event.type === 'defensive_breakdown')
+  const choiceRichMoves = moves.filter(move => !move.forced)
+  const chaosMoves = moves.filter(move => move.chaos)
+
+  if (choiceRichMoves.length >= 4) {
+    const choiceQuality = average(choiceRichMoves.map(moveAiSimilarity))
+    if (choiceQuality >= 70) lines.push('강제 응수보다 선택지가 열린 장면에서 판단 품질이 좋았습니다. 이 대국의 AI 유사도는 단순한 맞춤보다 실제 의사결정 정확도에 힘이 실립니다.')
+    else if (choiceQuality < 45) lines.push('선택지가 열린 장면에서 손실이 커졌습니다. 평균보다 선택 국면의 후보 선택을 중심으로 복기할 필요가 있습니다.')
+  }
+  if (chaosMoves.length >= 3) {
+    const chaosQuality = average(chaosMoves.map(moveAiSimilarity))
+    if (chaosQuality >= 68) lines.push('난전 구간에서도 크게 무너지지 않았습니다. 계산 부담이 큰 장면에서 실전 압박과 정확도를 함께 유지한 흐름입니다.')
+    else if (chaosQuality < 45) lines.push('난전 구간에서 평가 손실이 집중되었습니다. 복잡성을 만든 뒤 그 변화를 끝까지 통제하는 부분이 핵심 복기 지점입니다.')
+  }
 
   if (opening && middle && opening.count && middle.count) {
     const similarityDelta = middle.aiSimilarity - opening.aiSimilarity
@@ -470,6 +532,9 @@ function gameFlowNarratives (moves, phases, events, sides) {
 function similarity (metrics) {
   return [
     { key: 'engineLike', label: '엔진형 정밀도 유사성', value: metrics.engineLike, text: koreanScoreLabel(metrics.engineLike, '평가 보존과 전환이 매우 정교합니다', '상위권 실전 감각에 가까운 정확도입니다', '인간적인 기복이 더 크게 드러납니다') },
+    { key: 'choiceAccuracy', label: '선택 국면 AI 유사성', value: metrics.choiceAccuracy, text: koreanScoreLabel(metrics.choiceAccuracy, '강제 수순이 아닌 장면에서도 판단이 선명합니다', '선택지가 있는 장면에서 무난한 정확도입니다', '여러 계획 중 고르는 장면에서 손실이 늘어납니다') },
+    { key: 'chaosAccuracy', label: '난전 대응 유사성', value: metrics.chaosAccuracy, text: koreanScoreLabel(metrics.chaosAccuracy, '복잡한 전술전에서도 흐름을 잘 통제합니다', '난전에서 실전적으로 버티는 편입니다', '복잡성이 커질수록 정확도가 흔들립니다') },
+    { key: 'mechanicalStability', label: '기계적 안정성 유사성', value: metrics.mechanicalStability, text: koreanScoreLabel(metrics.mechanicalStability, '손실 편차가 작고 매우 안정적입니다', '사람다운 기복과 안정성이 섞여 있습니다', '국면별 편차가 큰 인간적인 흐름입니다') },
     { key: 'humanPractical', label: '인간 실전형 유사성', value: metrics.humanPractical, text: koreanScoreLabel(metrics.humanPractical, '보상·압박·복잡성을 적극 활용합니다', '실전성과 안정성의 균형형입니다', '실전적 흔들기보다 정리형에 가깝습니다') },
     { key: 'tactical', label: '전술형 유사성', value: metrics.tacticalDependence, text: koreanScoreLabel(metrics.tacticalDependence, '강제 계산 의존이 높습니다', '필요한 장면에서 전술을 활용합니다', '전술보다 구조 운영 비중이 큽니다') },
     { key: 'positional', label: '포지션형 유사성', value: metrics.positionalPreference, text: koreanScoreLabel(metrics.positionalPreference, '장기 압박과 활동성 관리가 뚜렷합니다', '전술과 포지션의 혼합형입니다', '직접 전술과 변화를 더 선호합니다') },
@@ -506,7 +571,7 @@ function buildAnalysis (rawMoves, source) {
     comparativeNarratives: comparativeNarratives(sides, events),
     similarity: similarity(metrics),
     narratives: styleNarratives(metrics, phases, moves, isLive, events),
-    summary: `${instabilityText}${koreanScoreLabel(metrics.engineLike, '엔진 유사도가 높은', '정교하지만 인간적인', '실전적 편차가 살아 있는')} 흐름입니다. ${koreanScoreLabel(metrics.tacticalDependence, '강제 계산과 전술 압박', '균형 잡힌 후보 선택', '포지션 운영과 장기 압박')}이 두드러지고, 전체 안정성은 ${koreanScoreLabel(metrics.stability, '높은 편', '보통', '다소 흔들리는 편')}입니다.`,
+    summary: `${instabilityText}${koreanScoreLabel(metrics.engineLike, '엔진 유사도가 높은', '정교하지만 인간적인', '실전적 편차가 살아 있는')} 흐름입니다. ${koreanScoreLabel(metrics.choiceAccuracy, '선택지가 열린 장면에서도 정확도가 유지되고', '선택 국면 판단은 무난하며', '선택 국면에서 흔들림이 있으며')} ${koreanScoreLabel(metrics.chaosAccuracy, '난전 대응도 안정적입니다', '복잡한 장면은 실전적으로 버틴 편입니다', '복잡성이 커질수록 손실이 늘어납니다')}. 전체 안정성은 ${koreanScoreLabel(metrics.stability, '높은 편', '보통', '다소 흔들리는 편')}입니다.`,
     terms: [
       '평균 형세 손실·편차·AI 일치율·구간 분석은 분석 시스템의 통계 해석 모델을 UI 환경에 맞게 적용한 것입니다.',
       '이 리포트는 단정적 판정이 아니라 스타일, 안정성, 국면 전환을 읽기 위한 전략 해설용 참고 자료입니다.',

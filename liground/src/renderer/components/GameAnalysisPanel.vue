@@ -390,9 +390,10 @@ export default {
         { key: 'aggression', label: '공격 성향', value: m.aggression },
         { key: 'stability', label: '안정성', value: m.stability },
         { key: 'practicality', label: '실전성', value: m.practicality },
+        { key: 'choiceAccuracy', label: '선택 국면', value: m.choiceAccuracy },
+        { key: 'chaosAccuracy', label: '난전 대응', value: m.chaosAccuracy },
         { key: 'riskProfile', label: '위험 감수', value: m.riskProfile },
         { key: 'strategicSharpness', label: '승부처 선명도', value: m.strategicSharpness },
-        { key: 'conversionQuality', label: '전환 품질', value: m.conversionQuality },
         { key: 'defensiveResilience', label: '수비 복원력', value: m.defensiveResilience }
       ]
     },
