@@ -485,7 +485,13 @@ export const store = new Vuex.Store({
       deepInstabilitySensitivityCp: 80,
       deepScheduleMode: 'equal',
       deepMaxDurationMs: 300000,
-      deepDiversityThreshold: 2
+      deepDiversityThreshold: 2,
+      reviewDepthPreset: 'normal',
+      reviewDepth: 10,
+      reviewTacticalDepth: 8,
+      reviewStrategicHorizon: 20,
+      reviewPunishmentLineLength: 6,
+      reviewDetailLevel: 'balanced'
     },
     deepAnalysis: {
       running: false,
@@ -2310,13 +2316,23 @@ export const store = new Vuex.Store({
       })
     },
     async requestReview (context, payload) {
+      const reviewCfg = context.state.analysisVisualization
       const request = createReviewRequest({
         ...payload,
         id: payload.id || `review-${Date.now()}-${Math.random().toString(36).slice(2)}`,
         variant: payload.variant || context.getters.variant,
         engineName: payload.engineName || context.getters.engineName,
         multipv: payload.multipv || context.getters.multipv,
-        markerMode: payload.markerMode || context.state.review.markerMode
+        markerMode: payload.markerMode || context.state.review.markerMode,
+        context: {
+          ...(payload.context || {}),
+          reviewDepth: reviewCfg.reviewDepth,
+          tacticalDepth: reviewCfg.reviewTacticalDepth,
+          strategicHorizon: reviewCfg.reviewStrategicHorizon,
+          punishmentLineLength: reviewCfg.reviewPunishmentLineLength,
+          detailLevel: reviewCfg.reviewDetailLevel,
+          depthPreset: reviewCfg.reviewDepthPreset
+        }
       })
       context.commit('reviewSetRequest', request.id)
       try {
@@ -2324,10 +2340,12 @@ export const store = new Vuex.Store({
           fen: request.fen,
           move: request.move,
           line: request.line,
-          depth: request.context && request.context.reviewDepth ? request.context.reviewDepth : 10,
+          depth: request.context && request.context.reviewDepth ? request.context.reviewDepth : context.state.analysisVisualization.reviewDepth,
           multiPv: 3,
-          perMoveDepth: request.context && request.context.reviewDepth ? request.context.reviewDepth : 8,
-          maxReviewMoves: 20,
+          perMoveDepth: request.context && request.context.tacticalDepth ? request.context.tacticalDepth : context.state.analysisVisualization.reviewTacticalDepth,
+          maxReviewMoves: context.state.analysisVisualization.reviewStrategicHorizon,
+          punishmentLineLength: context.state.analysisVisualization.reviewPunishmentLineLength,
+          detailLevel: context.state.analysisVisualization.reviewDetailLevel,
           variant: request.variant
         })
       } catch (err) {

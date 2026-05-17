@@ -2,14 +2,14 @@
   <section class="game-analysis panel">
     <div class="analysis-title">
       <div>
-        <h3>Game Analysis</h3>
-        <p>엔진 리뷰 위에 올리는 고급 전략·스타일 메타 리포트입니다.</p>
+        <h3>기보 메타 분석</h3>
+        <p>엔진 리뷰와 현재 수순 흐름 위에 올리는 전략·성향 해설입니다.</p>
       </div>
-      <button type="button" :disabled="!canAnalyze" @click="refreshAnalysis">분석 갱신</button>
+      <button type="button" :disabled="!canAnalyze" @click="refreshAnalysis">해설 갱신</button>
     </div>
 
     <div v-if="!canAnalyze" class="analysis-empty">
-      먼저 수순 리뷰나 선택 수 검토를 실행하면, 해당 엔진 리뷰 결과를 바탕으로 플레이 스타일과 구간별 품질을 해석합니다.
+      기보가 진행되면 현재까지의 수순으로 라이브 성향을 해석합니다. 수순 리뷰를 실행하면 엔진 손실과 응수 정보를 반영해 더 깊게 분석합니다.
     </div>
 
     <template v-else-if="analysis">
@@ -17,7 +17,7 @@
 
       <div class="phase-visual">
         <div class="phase-ring" :style="ringStyle">
-          <span>Phase</span>
+          <span>국면</span>
         </div>
         <div class="phase-list">
           <div v-for="phase in analysis.phases" :key="phase.key" class="phase-row">
@@ -30,7 +30,7 @@
       </div>
 
       <details open class="meta-section">
-        <summary>Strategic profile</summary>
+        <summary>전략 프로파일</summary>
         <div class="metric-grid">
           <div v-for="metric in primaryMetrics" :key="metric.key" class="metric-card">
             <span>{{ metric.label }}</span>
@@ -41,7 +41,7 @@
       </details>
 
       <details open class="meta-section">
-        <summary>AI / Style similarity</summary>
+        <summary>AI · 기풍 유사도</summary>
         <div class="similarity-list">
           <div v-for="item in analysis.similarity" :key="item.key" class="similarity-row">
             <div>
@@ -54,15 +54,15 @@
       </details>
 
       <details class="meta-section">
-        <summary>Interpretation notes</summary>
+        <summary>해설 노트</summary>
         <ul>
           <li v-for="line in analysis.narratives" :key="line">{{ line }}</li>
         </ul>
         <div class="stats-row">
-          <span>ACPL {{ analysis.stats.acpl.toFixed(1) }}</span>
-          <span>Top-1 {{ analysis.stats.top1.toFixed(1) }}%</span>
+          <span>평균 손실 {{ analysis.stats.acpl.toFixed(1) }}</span>
+          <span>최선 일치 {{ analysis.stats.top1.toFixed(1) }}%</span>
           <span>편차 {{ analysis.stats.stdDev.toFixed(1) }}</span>
-          <span>Blunder {{ analysis.stats.blunder }}</span>
+          <span>치명 손실 {{ analysis.stats.blunder }}</span>
         </div>
         <small v-for="term in analysis.terms" :key="term" class="term">{{ term }}</small>
       </details>
@@ -71,7 +71,7 @@
 </template>
 
 <script>
-import { analyzeGameReview, phaseRingStyle } from '../../shared/review/gameAnalysis'
+import { analyzeGameReview, analyzeLiveGame, phaseRingStyle } from '../../shared/review/gameAnalysis'
 
 export default {
   name: 'GameAnalysisPanel',
@@ -84,11 +84,16 @@ export default {
     reviewResult () {
       return this.$store.getters.reviewResult
     },
+    playedMoves () {
+      return this.$store.getters.moves || []
+    },
     canAnalyze () {
-      return Boolean(this.reviewResult && Array.isArray(this.reviewResult.moves) && this.reviewResult.moves.length)
+      return Boolean((this.reviewResult && Array.isArray(this.reviewResult.moves) && this.reviewResult.moves.length) || this.playedMoves.length)
     },
     analysis () {
-      return this.localAnalysis || (this.canAnalyze ? analyzeGameReview(this.reviewResult) : null)
+      if (this.localAnalysis) return this.localAnalysis
+      if (this.reviewResult && Array.isArray(this.reviewResult.moves) && this.reviewResult.moves.length) return analyzeGameReview(this.reviewResult)
+      return this.playedMoves.length ? analyzeLiveGame(this.playedMoves) : null
     },
     ringStyle () {
       return this.analysis ? phaseRingStyle(this.analysis.phases) : {}
@@ -97,26 +102,31 @@ export default {
       if (!this.analysis) return []
       const m = this.analysis.metrics
       return [
-        { key: 'tacticalDependence', label: 'Tactical dependence', value: m.tacticalDependence },
-        { key: 'positionalPreference', label: 'Positional preference', value: m.positionalPreference },
-        { key: 'aggression', label: 'Aggression', value: m.aggression },
-        { key: 'stability', label: 'Stability', value: m.stability },
-        { key: 'practicality', label: 'Practicality', value: m.practicality },
-        { key: 'riskProfile', label: 'Risk profile', value: m.riskProfile },
-        { key: 'strategicSharpness', label: 'Strategic sharpness', value: m.strategicSharpness },
-        { key: 'conversionQuality', label: 'Conversion quality', value: m.conversionQuality },
-        { key: 'defensiveResilience', label: 'Defensive resilience', value: m.defensiveResilience }
+        { key: 'tacticalDependence', label: '전술 의존도', value: m.tacticalDependence },
+        { key: 'positionalPreference', label: '포지션 선호', value: m.positionalPreference },
+        { key: 'aggression', label: '공격 성향', value: m.aggression },
+        { key: 'stability', label: '안정성', value: m.stability },
+        { key: 'practicality', label: '실전성', value: m.practicality },
+        { key: 'riskProfile', label: '위험 감수', value: m.riskProfile },
+        { key: 'strategicSharpness', label: '승부처 선명도', value: m.strategicSharpness },
+        { key: 'conversionQuality', label: '전환 품질', value: m.conversionQuality },
+        { key: 'defensiveResilience', label: '수비 복원력', value: m.defensiveResilience }
       ]
     }
   },
   watch: {
     reviewResult () {
       this.localAnalysis = null
+    },
+    playedMoves () {
+      if (!this.reviewResult) this.localAnalysis = null
     }
   },
   methods: {
     refreshAnalysis () {
-      this.localAnalysis = analyzeGameReview(this.reviewResult)
+      this.localAnalysis = this.reviewResult && Array.isArray(this.reviewResult.moves) && this.reviewResult.moves.length
+        ? analyzeGameReview(this.reviewResult)
+        : analyzeLiveGame(this.playedMoves)
     },
     acplText (value) {
       return typeof value === 'number' ? `ACPL ${value.toFixed(1)}` : '데이터 부족'

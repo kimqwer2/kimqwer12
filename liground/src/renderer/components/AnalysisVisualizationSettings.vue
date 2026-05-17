@@ -1,53 +1,77 @@
 <template>
   <div class="viz-settings">
-    <h4>Visualization</h4>
-    <label><input v-model="local.showMultiPvArrows" type="checkbox" @change="save"> MultiPV arrows</label>
-    <label>Top N <input v-model.number="local.multiPvCount" min="1" type="number" @change="save"></label>
-    <label><input v-model="local.trajectoryEnabled" type="checkbox" @change="save"> Best-line trajectory</label>
-    <label>Side
-      <select v-model="local.trajectorySideMode" @change="save"><option value="both">Both</option><option value="my">My side</option></select>
+    <h4>시각화</h4>
+    <label><input v-model="local.showMultiPvArrows" type="checkbox" @change="save"> 후보수 화살표</label>
+    <label>표시 후보 수 <input v-model.number="local.multiPvCount" min="1" type="number" @change="save"></label>
+    <label><input v-model="local.trajectoryEnabled" type="checkbox" @change="save"> 최선 수순 궤적</label>
+    <label>표시 방향
+      <select v-model="local.trajectorySideMode" @change="save"><option value="both">양쪽</option><option value="my">내 수</option></select>
     </label>
-    <label>Depth
-      <select v-model="depthMode" @change="saveDepth"><option value="4">4</option><option value="8">8</option><option value="12">12</option><option value="20">20</option><option value="40">40</option><option value="unlimited">Unlimited</option></select>
+    <label>궤적 깊이
+      <select v-model="depthMode" @change="saveDepth"><option value="4">4</option><option value="8">8</option><option value="12">12</option><option value="20">20</option><option value="40">40</option><option value="unlimited">무제한</option></select>
     </label>
-    <label>Render mode
-      <select v-model="local.visualizationMode" @change="save"><option value="arrow">Arrow</option><option value="ghost">Ghost trajectory</option><option value="hybrid">Hybrid</option></select>
+    <label>표시 방식
+      <select v-model="local.visualizationMode" @change="save"><option value="arrow">화살표</option><option value="ghost">잔상 궤적</option><option value="hybrid">혼합</option></select>
     </label>
-    <label><input v-model="local.orderNumbers" type="checkbox" @change="save"> Number badges</label>
-    <label><input v-model="local.orderThickness" type="checkbox" @change="save"> Thickness</label>
-    <label><input v-model="local.orderOpacity" type="checkbox" @change="save"> Opacity</label>
-    <label>Target analysis depth
-      <select v-model="targetDepth" @change="saveTarget"><option value="infinite">Infinite</option><option value="10">10</option><option value="15">15</option><option value="20">20</option><option value="25">25</option></select>
+    <label><input v-model="local.orderNumbers" type="checkbox" @change="save"> 순번 표시</label>
+    <label><input v-model="local.orderThickness" type="checkbox" @change="save"> 두께 반영</label>
+    <label><input v-model="local.orderOpacity" type="checkbox" @change="save"> 투명도 반영</label>
+    <label>일반 분석 목표 깊이
+      <select v-model="targetDepth" @change="saveTarget"><option value="infinite">무제한</option><option value="10">10</option><option value="15">15</option><option value="20">20</option><option value="25">25</option></select>
     </label>
 
+    <details class="deep-advanced">
+      <summary>수순 리뷰 깊이</summary>
+      <label>프리셋
+        <select v-model="local.reviewDepthPreset" @change="applyReviewPreset">
+          <option value="fast">빠르게</option>
+          <option value="normal">보통</option>
+          <option value="deep">깊게</option>
+          <option value="expert">전문가</option>
+        </select>
+      </label>
+      <label>리뷰 깊이 <input v-model.number="local.reviewDepth" min="6" max="32" type="number" @change="save"></label>
+      <label>전술 확인 깊이 <input v-model.number="local.reviewTacticalDepth" min="4" max="32" type="number" @change="save"></label>
+      <label>전략 수순 범위 <input v-model.number="local.reviewStrategicHorizon" min="1" max="60" type="number" @change="save"></label>
+      <label>응징 수순 길이 <input v-model.number="local.reviewPunishmentLineLength" min="2" max="12" type="number" @change="save"></label>
+      <label>해설 밀도
+        <select v-model="local.reviewDetailLevel" @change="save">
+          <option value="compact">간결</option>
+          <option value="balanced">균형</option>
+          <option value="verbose">상세</option>
+        </select>
+      </label>
+      <small>깊게/전문가 모드는 느리지만 지연 전술, 장기 압박, 응징 수순을 더 오래 추적합니다.</small>
+    </details>
+
     <div class="deep-box">
-      <h4>Analysis Mode</h4>
-      <label class="radio-row"><input v-model="local.analysisModeType" type="radio" value="normal" @change="save"> Normal</label>
-      <label class="radio-row"><input v-model="local.analysisModeType" type="radio" value="deep" @change="save"> Deep Analysis</label>
-      <small>Deep Analysis is an analysis supervisor: it gets MultiPV candidates, then re-analyzes each candidate as an isolated worldline.</small>
+      <h4>분석 모드</h4>
+      <label class="radio-row"><input v-model="local.analysisModeType" type="radio" value="normal" @change="save"> 일반 분석</label>
+      <label class="radio-row"><input v-model="local.analysisModeType" type="radio" value="deep" @change="save"> 심층 분석</label>
+      <small>심층 분석은 후보수를 먼저 넓게 확보한 뒤, 각 후보를 독립된 수순처럼 다시 검토해 편향과 불안정성을 줄이는 감독 모드입니다.</small>
 
       <template v-if="local.analysisModeType === 'deep'">
         <button type="button" :disabled="deepAnalysis.running" @click="startDeepAnalysis">
-          {{ deepAnalysis.running ? 'Deep analysis running…' : 'Run Deep Analysis' }}
+          {{ deepAnalysis.running ? '심층 분석 진행 중…' : '심층 분석 실행' }}
         </button>
         <details class="deep-advanced">
-          <summary>Deep Analysis Settings</summary>
-          <label>Candidate count <input v-model.number="local.deepCandidateCount" min="1" max="8" type="number" @change="save"></label>
-          <label>Root MultiPV time (sec) <input :value="msToSec(local.deepRootTimeMs)" min="1" type="number" @change="saveMs('deepRootTimeMs', $event.target.value)"></label>
-          <label>Time per candidate (sec) <input :value="msToSec(local.deepTimePerCandidateMs)" min="1" type="number" @change="saveMs('deepTimePerCandidateMs', $event.target.value)"></label>
-          <label>Secondary time (sec) <input :value="msToSec(local.deepSecondaryTimeMs)" min="1" type="number" @change="saveMs('deepSecondaryTimeMs', $event.target.value)"></label>
-          <label>Depth per candidate <input v-model.number="local.deepDepthPerCandidate" min="0" type="number" @change="save"></label>
-          <label>Schedule
+          <summary>심층 분석 세부 설정</summary>
+          <label>후보수 개수 <input v-model.number="local.deepCandidateCount" min="1" max="8" type="number" @change="save"></label>
+          <label>초기 후보 탐색(초) <input :value="msToSec(local.deepRootTimeMs)" min="1" type="number" @change="saveMs('deepRootTimeMs', $event.target.value)"></label>
+          <label>후보별 분석 시간(초) <input :value="msToSec(local.deepTimePerCandidateMs)" min="1" type="number" @change="saveMs('deepTimePerCandidateMs', $event.target.value)"></label>
+          <label>보조 후보 분석(초) <input :value="msToSec(local.deepSecondaryTimeMs)" min="1" type="number" @change="saveMs('deepSecondaryTimeMs', $event.target.value)"></label>
+          <label>후보별 깊이 <input v-model.number="local.deepDepthPerCandidate" min="0" type="number" @change="save"></label>
+          <label>시간 배분
             <select v-model="local.deepScheduleMode" @change="save">
-              <option value="equal">Equal time</option>
-              <option value="top-short-secondary-long">Top short / secondary long</option>
-              <option value="dynamic-instability">Dynamic by instability</option>
+              <option value="equal">동일 시간</option>
+              <option value="top-short-secondary-long">1순위 짧게 / 대안 길게</option>
+              <option value="dynamic-instability">불안정도 기반 동적 배분</option>
             </select>
           </label>
-          <label><input v-model="local.deepClearHashBetweenCandidates" type="checkbox" @change="save"> Clear hash between candidates</label>
-          <label>Instability sensitivity (cp) <input v-model.number="local.deepInstabilitySensitivityCp" min="20" type="number" @change="save"></label>
-          <label>Diversity threshold <input v-model.number="local.deepDiversityThreshold" min="1" type="number" @change="save"></label>
-          <label>Max candidate duration (sec) <input :value="msToSec(local.deepMaxDurationMs)" min="5" type="number" @change="saveMs('deepMaxDurationMs', $event.target.value)"></label>
+          <label><input v-model="local.deepClearHashBetweenCandidates" type="checkbox" @change="save"> 후보 사이 해시 초기화</label>
+          <label>불안정 민감도(cp) <input v-model.number="local.deepInstabilitySensitivityCp" min="20" type="number" @change="save"></label>
+          <label>다양성 기준 <input v-model.number="local.deepDiversityThreshold" min="1" type="number" @change="save"></label>
+          <label>후보 최대 시간(초) <input :value="msToSec(local.deepMaxDurationMs)" min="5" type="number" @change="saveMs('deepMaxDurationMs', $event.target.value)"></label>
         </details>
       </template>
     </div>
@@ -58,13 +82,13 @@
 
     <div v-if="deepAnalysis.report" class="deep-report">
       <div class="report-heading">
-        <strong>Deep Analysis Report</strong>
-        <button type="button" @click="clearDeepAnalysis">Clear</button>
+        <strong>심층 분석 리포트</strong>
+        <button type="button" @click="clearDeepAnalysis">지우기</button>
       </div>
       <small>
-        {{ deepAnalysis.report.summary.candidateCount }} candidates ·
-        {{ deepAnalysis.report.summary.volatileCount }} unstable ·
-        {{ formatMs(deepAnalysis.report.elapsedMs) }} total
+        {{ deepAnalysis.report.summary.candidateCount }} 개 후보 ·
+        {{ deepAnalysis.report.summary.volatileCount }} 개 불안정 ·
+        {{ formatMs(deepAnalysis.report.elapsedMs) }} 소요
       </small>
       <div
         v-for="candidate in deepAnalysis.report.candidates"
@@ -73,25 +97,25 @@
       >
         <div class="candidate-title">
           <strong>#{{ candidate.finalRank }} {{ candidate.move }}</strong>
-          <span>{{ candidate.stability }}</span>
+          <span>{{ stabilityText(candidate.stability) }}</span>
         </div>
-        <small>{{ candidate.diversityTag }}</small>
+        <small>{{ diversityText(candidate.diversityTag) }}</small>
         <div class="candidate-grid">
-          <span>Final {{ scoreText(candidate.finalScore) }}</span>
-          <span>Max {{ cpText(candidate.maxScore) }}</span>
-          <span>Drift {{ cpText(candidate.evalDrift) }}</span>
-          <span>Depth {{ candidate.depthReached || '-' }}</span>
-          <span>Time {{ formatMs(candidate.timeMs) }}</span>
-          <span>PV changes {{ candidate.pvChanges }}</span>
-          <span>Best switches {{ candidate.bestMoveSwitches }}</span>
-          <span>Rank Δ {{ rankChange(candidate.rankingChange) }}</span>
+          <span>최종 {{ scoreText(candidate.finalScore) }}</span>
+          <span>최고 {{ cpText(candidate.maxScore) }}</span>
+          <span>흔들림 {{ cpText(candidate.evalDrift) }}</span>
+          <span>깊이 {{ candidate.depthReached || '-' }}</span>
+          <span>시간 {{ formatMs(candidate.timeMs) }}</span>
+          <span>PV 변화 {{ candidate.pvChanges }}</span>
+          <span>최선수 교체 {{ candidate.bestMoveSwitches }}</span>
+          <span>순위 변화 {{ rankChange(candidate.rankingChange) }}</span>
         </div>
         <small v-if="candidate.final && candidate.final.pvUCI">PV {{ candidate.final.pvUCI }}</small>
         <div class="flags">
-          <span v-if="candidate.flags && candidate.flags.highDisagreement">high disagreement</span>
-          <span v-if="candidate.flags && candidate.flags.lateImprovement">late improvement</span>
-          <span v-if="candidate.flags && candidate.flags.collapsedCandidate">collapsed candidate</span>
-          <span v-if="candidate.flags && candidate.flags.dynamicallyExtended">dynamically extended</span>
+          <span v-if="candidate.flags && candidate.flags.highDisagreement">평가 불일치 큼</span>
+          <span v-if="candidate.flags && candidate.flags.lateImprovement">후반 개선</span>
+          <span v-if="candidate.flags && candidate.flags.collapsedCandidate">후보 붕괴</span>
+          <span v-if="candidate.flags && candidate.flags.dynamicallyExtended">동적 연장</span>
         </div>
       </div>
     </div>
@@ -125,6 +149,16 @@ export default {
     },
     saveDepth () { this.local.trajectoryUnlimited = this.depthMode === 'unlimited'; if (!this.local.trajectoryUnlimited) this.local.trajectoryDepth = Number(this.depthMode); this.save() },
     saveTarget () { this.$store.dispatch('analysisVisualization', { analysisTargetDepth: this.targetDepth }) },
+    applyReviewPreset () {
+      const presets = {
+        fast: { reviewDepth: 8, reviewTacticalDepth: 6, reviewStrategicHorizon: 8, reviewPunishmentLineLength: 4, reviewDetailLevel: 'compact' },
+        normal: { reviewDepth: 10, reviewTacticalDepth: 8, reviewStrategicHorizon: 20, reviewPunishmentLineLength: 6, reviewDetailLevel: 'balanced' },
+        deep: { reviewDepth: 16, reviewTacticalDepth: 14, reviewStrategicHorizon: 36, reviewPunishmentLineLength: 8, reviewDetailLevel: 'verbose' },
+        expert: { reviewDepth: 22, reviewTacticalDepth: 20, reviewStrategicHorizon: 60, reviewPunishmentLineLength: 12, reviewDetailLevel: 'verbose' }
+      }
+      this.local = { ...this.local, ...(presets[this.local.reviewDepthPreset] || presets.normal) }
+      this.save()
+    },
     saveMs (key, seconds) {
       const value = Math.max(1, Number(seconds) || 1) * 1000
       this.local[key] = value
@@ -158,6 +192,23 @@ export default {
     rankChange (value) {
       if (!value) return '0'
       return value > 0 ? `+${value}` : String(value)
+    },
+    stabilityText (value) {
+      if (value === 'highly volatile') return '매우 불안정'
+      if (value === 'unstable') return '불안정'
+      return '안정적'
+    },
+    diversityText (value) {
+      const labels = {
+        'forcing / tactical': '강제 전술 후보',
+        'advantage conversion': '우세 전환 후보',
+        'defensive resource': '수비 자원 후보',
+        'alternative plan': '대안 계획 후보',
+        'principal plan': '주요 계획 후보',
+        'engine bestmove fallback': '엔진 최선수 보조 후보',
+        'engine candidate': '엔진 후보수'
+      }
+      return labels[value] || value || '후보수'
     },
     volatilityClass (value) {
       if (value === 'highly volatile') return 'volatile-high'
