@@ -2,7 +2,10 @@
   <!-- All components but menubar -->
   <div id="inner">
     <div>
-      <div class="main-grid">
+      <div
+        class="main-grid"
+        @wheel.exact="routeWheelToRightPanel"
+      >
         <div class="chessboard-grid">
           <div class="board-grid">
             <div class="board">
@@ -258,6 +261,23 @@ export default {
         this.moveForwardOne()
       }
     },
+    rightPanelScrollTarget () {
+      const visibleTab = this.$el.querySelector('#right-column .tab.visible')
+      if (!visibleTab) return null
+      const style = window.getComputedStyle(visibleTab)
+      const canScrollSelf = /(auto|scroll)/.test(style.overflowY) && visibleTab.scrollHeight > visibleTab.clientHeight
+      if (canScrollSelf) return visibleTab
+      return visibleTab.querySelector('.analysis, .settings') || visibleTab
+    },
+    routeWheelToRightPanel (event) {
+      const target = event.target
+      if (!target || target.closest('.scrollable') || target.closest('#right-column')) return
+      if (target.closest('input, textarea, select, button')) return
+      const scrollTarget = this.rightPanelScrollTarget()
+      if (!scrollTarget || scrollTarget.scrollHeight <= scrollTarget.clientHeight) return
+      event.preventDefault()
+      scrollTarget.scrollTop += event.deltaY
+    },
     moveToStart () { // this method returns to the starting point of the current line
       this.$store.dispatch('fen', this.startFen)
     },
@@ -429,9 +449,7 @@ export default {
   grid-template-rows: auto minmax(0, 1fr);
   column-gap: 28px;
   height: calc(100vh - 25px);
-  overflow-x: hidden;
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  overflow: hidden;
   padding-right: 12px;
   grid-template-areas:
     "chessboard analysisview"
