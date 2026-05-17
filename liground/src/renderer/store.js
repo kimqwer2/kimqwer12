@@ -2502,11 +2502,85 @@ export const store = new Vuex.Store({
       return result
     },
 
+    async reviewPlayedLineSequentially (context, payload = {}) {
+      const line = Array.isArray(payload.line) ? payload.line.filter(Boolean) : []
+      if (line.length === 0) {
+        context.commit('reviewSetError', '분석할 기보 수순이 없습니다. 먼저 수를 입력하거나 기보를 불러와 주세요.')
+        return Promise.resolve(null)
+      }
+      const markerMode = payload.markerMode || context.state.review.markerMode
+      const baseFen = payload.fen || context.getters.startFen
+      const fullSans = Array.isArray(payload.sans) ? payload.sans : []
+      const requestContext = {
+        markerMode,
+        currentFen: context.getters.fen,
+        manualGame: Boolean(payload.manualGame),
+        source: payload.source || 'played-line',
+        sequenceSans: fullSans,
+        fullRebuild: true,
+        sequentialReview: true
+      }
+      context.commit('reviewPrepareFullRebuild')
+      let accumulated = null
+      for (let idx = 0; idx < line.length; idx++) {
+        const prefixLine = line.slice(0, idx + 1)
+        const move = line[idx]
+        const moveSan = fullSans[idx] || move
+        const fen = idx === 0
+          ? baseFen
+          : (accumulated && Array.isArray(accumulated.moves) && accumulated.moves[idx - 1] ? accumulated.moves[idx - 1].previewFen : '')
+        if (!fen) {
+          context.commit('reviewSetError', '현재 기보를 처음부터 이어서 검토할 수 없습니다. 이전 수의 보드 상태를 확인해 주세요.')
+          return accumulated
+        }
+        const stepResult = await context.dispatch('requestReview', {
+          mode: REVIEW_MODES.LINE,
+          fen,
+          move,
+          moveSan,
+          line: [move],
+          markerMode,
+          context: {
+            ...requestContext,
+            deferCommit: true,
+            sequentialPly: idx + 1,
+            sequenceSans: [moveSan]
+          }
+        })
+        if (!stepResult) return null
+        if (idx === 0) {
+          accumulated = {
+            ...stepResult,
+            fen: baseFen,
+            reviewedMove: line[0],
+            reviewedLine: prefixLine,
+            moveSan: fullSans[0] || line[0],
+            requestContext
+          }
+        } else {
+          accumulated = mergeIncrementalReviewResult({
+            previous: accumulated,
+            suffix: stepResult,
+            fullLine: prefixLine,
+            fullSans,
+            markerMode,
+            prefixLength: idx,
+            requestContext
+          })
+        }
+        context.commit('reviewSetResult', accumulated)
+      }
+      return accumulated
+    },
+
     async reviewPlayedLine (context, payload = {}) {
       const line = Array.isArray(payload.line) ? payload.line.filter(Boolean) : []
       if (line.length === 0) {
         context.commit('reviewSetError', '분석할 기보 수순이 없습니다. 먼저 수를 입력하거나 기보를 불러와 주세요.')
         return Promise.resolve(null)
+      }
+      if (payload.fullRebuild === true) {
+        return context.dispatch('reviewPlayedLineSequentially', payload)
       }
       const markerMode = payload.markerMode || context.state.review.markerMode
       const baseFen = payload.fen || context.getters.startFen
