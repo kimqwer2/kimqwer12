@@ -568,7 +568,8 @@ export const store = new Vuex.Store({
       reviewStrategicHorizon: 20,
       reviewPunishmentLineLength: 6,
       reviewDetailLevel: 'balanced',
-      realtimeGameCommentary: false
+      realtimeGameCommentary: false,
+      realtimeCommentaryArrows: true
     },
     deepAnalysis: {
       running: false,
@@ -3038,6 +3039,9 @@ export const store = new Vuex.Store({
       return Boolean(state.review.preview && state.review.preview.active)
     },
     reviewOverlays (state) {
+      const resultContext = state.review.currentResult && state.review.currentResult.requestContext ? state.review.currentResult.requestContext : {}
+      const realtimeStrategic = resultContext.source === 'realtime-played-line'
+      if (realtimeStrategic && state.analysisVisualization.realtimeCommentaryArrows === false) return []
       if (state.review.preview && state.review.preview.active) {
         return Array.isArray(state.review.preview.overlays) ? state.review.preview.overlays : []
       }

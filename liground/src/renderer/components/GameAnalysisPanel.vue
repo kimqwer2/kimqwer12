@@ -25,14 +25,14 @@
 
       <div class="phase-visual">
         <div class="phase-ring" :style="ringStyle">
-          <span>국면</span>
+          <span>AI 유사도</span>
         </div>
         <div class="phase-list">
           <div v-for="phase in analysis.phases" :key="phase.key" class="phase-row">
             <span class="phase-dot" :style="{ backgroundColor: phase.color }" />
-            <strong>{{ phase.label }}</strong>
-            <span>{{ qualityText(phase.quality) }}</span>
-            <small>{{ acplText(phase.acpl) }} · {{ phase.count }}수</small>
+            <strong>{{ phase.label }} AI 일치율</strong>
+            <span>{{ similarityText(phase.aiSimilarity) }}</span>
+            <small>{{ lossText(phase.acpl) }} · {{ phase.count }}수</small>
           </div>
         </div>
       </div>
@@ -45,6 +45,17 @@
               <strong>{{ side.label }}</strong>
               <small>{{ sideStatText(side) }}</small>
             </header>
+            <div v-if="side.moveCount" class="side-ai-summary">
+              <span>AI 유사도 <strong>{{ Math.round(side.metrics.engineLike) }}%</strong></span>
+              <span>평균 형세 손실 <strong>{{ side.stats.acpl.toFixed(1) }}</strong></span>
+            </div>
+            <div v-if="side.moveCount" class="side-phase-list">
+              <div v-for="phase in side.phases" :key="`${side.key}-${phase.key}`" class="side-phase-row">
+                <span>{{ phase.label }}</span>
+                <div class="meter"><i :style="{ width: `${Math.round(phase.aiSimilarity)}%` }" /></div>
+                <strong>{{ Math.round(phase.aiSimilarity) }}%</strong>
+              </div>
+            </div>
             <div v-if="side.moveCount" class="metric-grid compact">
               <div v-for="metric in sideMetrics(side.metrics)" :key="`${side.key}-${metric.key}`" class="metric-card">
                 <span>{{ metric.label }}</span>
@@ -71,20 +82,36 @@
       </details>
 
       <details open class="meta-section">
-        <summary>AI · 기풍 유사도</summary>
-        <div class="similarity-list">
-          <div v-for="item in analysis.similarity" :key="item.key" class="similarity-row">
-            <div>
-              <strong>{{ item.label }}</strong>
-              <small>{{ item.text }}</small>
+        <summary>초 / 한 AI 기풍 유사도</summary>
+        <div class="side-style-grid">
+          <article v-for="side in analysis.sides" :key="`${side.key}-style`" class="side-style-card">
+            <header>
+              <strong>{{ side.label }} 기풍</strong>
+              <small>{{ side.moveCount ? `전체 AI 유사도 ${Math.round(side.metrics.engineLike)}%` : '데이터 부족' }}</small>
+            </header>
+            <div v-if="side.moveCount" class="similarity-list">
+              <div v-for="item in side.similarity" :key="`${side.key}-${item.key}`" class="similarity-row">
+                <div>
+                  <strong>{{ item.label }}</strong>
+                  <small>{{ item.text }}</small>
+                </div>
+                <span>{{ Math.round(item.value) }}%</span>
+              </div>
             </div>
-            <span>{{ Math.round(item.value) }}%</span>
-          </div>
+            <p v-else class="quiet-note">아직 {{ side.label }}의 수가 충분하지 않아 기풍 유사도를 분리하기 어렵습니다.</p>
+          </article>
         </div>
       </details>
 
       <details class="meta-section">
         <summary>해설 노트</summary>
+        <div v-if="analysis.flowNarratives && analysis.flowNarratives.length" class="flow-notes">
+          <strong>대국 흐름</strong>
+          <ul>
+            <li v-for="line in analysis.flowNarratives" :key="line">{{ line }}</li>
+          </ul>
+        </div>
+        <strong>핵심 해설</strong>
         <ul>
           <li v-for="line in analysis.narratives" :key="line">{{ line }}</li>
         </ul>
@@ -95,7 +122,7 @@
           </ul>
         </div>
         <div class="stats-row">
-          <span>평균 손실 {{ analysis.stats.acpl.toFixed(1) }}</span>
+          <span>평균 형세 손실 {{ analysis.stats.acpl.toFixed(1) }}</span>
           <span>최선 일치 {{ analysis.stats.top1.toFixed(1) }}%</span>
           <span>편차 {{ analysis.stats.stdDev.toFixed(1) }}</span>
           <span>치명 손실 {{ analysis.stats.blunder }}</span>
@@ -349,7 +376,7 @@ export default {
     },
     sideStatText (side) {
       if (!side || !side.moveCount) return '분석할 수순 없음'
-      return `${side.moveCount}수 · 평균 손실 ${side.stats.acpl.toFixed(1)}`
+      return `${side.moveCount}수 · 평균 형세 손실 ${side.stats.acpl.toFixed(1)}`
     },
     sideMetrics (m) {
       if (!m) return []
@@ -365,13 +392,16 @@ export default {
         { key: 'defensiveResilience', label: '수비 복원력', value: m.defensiveResilience }
       ]
     },
-    acplText (value) {
-      return typeof value === 'number' ? `ACPL ${value.toFixed(1)}` : '데이터 부족'
+    lossText (value) {
+      return typeof value === 'number' ? `평균 형세 손실 ${value.toFixed(1)}` : '데이터 부족'
+    },
+    similarityText (value) {
+      return typeof value === 'number' ? `${Math.round(value)}%` : '데이터 부족'
     },
     qualityText (value) {
-      if (value >= 75) return '강점 구간'
-      if (value >= 45) return '보통 구간'
-      return '불안정 구간'
+      if (value >= 75) return 'AI 유사도 높음'
+      if (value >= 45) return 'AI 유사도 보통'
+      return 'AI 유사도 낮음'
     }
   }
 }
@@ -560,17 +590,54 @@ ul { margin: 8px 0 0 16px; padding: 0; }
   border-radius: 6px;
   background: rgba(127, 127, 127, 0.10);
 }
-.side-card header {
+.side-card header,
+.side-style-card header {
   display: flex;
   justify-content: space-between;
   gap: 8px;
   align-items: baseline;
 }
+.side-ai-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.side-ai-summary span {
+  padding: 4px 6px;
+  border-radius: 999px;
+  background: rgba(114, 137, 218, 0.16);
+}
+.side-phase-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 8px;
+}
+.side-phase-row {
+  display: grid;
+  grid-template-columns: 42px 1fr 42px;
+  gap: 6px;
+  align-items: center;
+}
+.side-phase-row strong { text-align: right; }
 .metric-grid.compact {
   grid-template-columns: repeat(auto-fit, minmax(105px, 1fr));
 }
+.side-style-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(245px, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+.side-style-card {
+  padding: 8px;
+  border-radius: 6px;
+  background: rgba(127, 127, 127, 0.10);
+}
 .side-notes,
-.comparison-notes ul {
+.comparison-notes ul,
+.flow-notes ul {
   margin-top: 8px;
   line-height: 1.45;
 }
@@ -594,7 +661,8 @@ ul { margin: 8px 0 0 16px; padding: 0; }
   line-height: 1.45;
 }
 .quiet-note,
-.comparison-notes {
+.comparison-notes,
+.flow-notes {
   margin-top: 8px;
 }
 @media (max-width: 780px) {

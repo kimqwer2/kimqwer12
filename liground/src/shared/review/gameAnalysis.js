@@ -28,6 +28,13 @@ function koreanScoreLabel (score, high = '높음', mid = '보통', low = '낮음
   return low
 }
 
+function moveAiSimilarity (move) {
+  if (!move) return 0
+  if (move.top1) return 100
+  if (move.top3) return 78
+  return clamp(qualityFromAcpl(move.loss) * 0.72)
+}
+
 function phaseForPly (ply) {
   return PHASES.find(phase => ply >= phase.range[0] && ply <= phase.range[1]) || PHASES[PHASES.length - 1]
 }
@@ -121,13 +128,15 @@ function phaseBreakdown (moves) {
   return PHASES.map(phase => {
     const phaseMoves = moves.filter(move => move.phase.key === phase.key)
     const acpl = phaseMoves.length ? average(phaseMoves.map(move => move.loss)) : null
-    const quality = acpl === null ? 0 : qualityFromAcpl(acpl)
+    const aiSimilarity = phaseMoves.length ? average(phaseMoves.map(moveAiSimilarity)) : 0
+    const quality = aiSimilarity
     const tacticalRate = phaseMoves.filter(move => move.tactical).length / Math.max(1, phaseMoves.length) * 100
     const riskRate = phaseMoves.filter(move => move.riskCount || move.loss >= 100).length / Math.max(1, phaseMoves.length) * 100
     return {
       ...phase,
       count: phaseMoves.length,
       acpl,
+      aiSimilarity,
       quality,
       volatility: stdDev(phaseMoves.map(move => move.loss)),
       tacticalRate,
@@ -423,6 +432,41 @@ function comparativeNarratives (sides, events) {
   return lines
 }
 
+
+function gameFlowNarratives (moves, phases, events, sides) {
+  const lines = []
+  const opening = phases.find(phase => phase.key === 'opening')
+  const middle = phases.find(phase => phase.key === 'middlegame')
+  const endgame = phases.find(phase => phase.key === 'endgame')
+  const critical = events.find(event => event.severity === 'critical')
+  const recovery = events.find(event => event.type === 'recovery')
+  const failedAttack = events.find(event => event.type === 'failed_attack')
+  const defensiveBreak = events.find(event => event.type === 'defensive_breakdown')
+
+  if (opening && middle && opening.count && middle.count) {
+    const similarityDelta = middle.aiSimilarity - opening.aiSimilarity
+    if (similarityDelta <= -15) lines.push(`초반에는 비교적 엔진 흐름과 맞았지만, 중반부터 AI 유사도가 낮아지며 계산 부담과 형세 불안이 커졌습니다.`)
+    else if (similarityDelta >= 15) lines.push(`초반보다 중반에 후보수 선택이 더 정교해졌습니다. 복잡한 국면으로 들어가면서도 엔진 흐름을 따라가는 힘이 좋아진 대국입니다.`)
+    else lines.push(`초반에서 중반으로 넘어가는 AI 유사도 변화는 크지 않았고, 양쪽 모두 비교적 일정한 선택 리듬을 유지했습니다.`)
+  }
+  if (middle && endgame && middle.count && endgame.count) {
+    const endDelta = endgame.aiSimilarity - middle.aiSimilarity
+    if (endDelta >= 12) lines.push('종반으로 갈수록 형세 정리가 좋아졌습니다. 중반의 복잡성을 줄이고 안정적인 마무리 방향으로 전환한 흐름입니다.')
+    else if (endDelta <= -12) lines.push('종반 전환 과정에서 정확도가 떨어졌습니다. 중반의 압박이나 수비 부담을 끝까지 안정적으로 정리하지 못한 구간이 보입니다.')
+  }
+  if (critical) lines.push(`가장 큰 흐름 변화는 ${critical.sideLabel} ${critical.ply}수 전후입니다. 이 장면 이후 주도권과 수비 부담의 균형이 크게 바뀌었습니다.`)
+  if (failedAttack) lines.push(`${failedAttack.sideLabel}의 공격 시도는 실전 압박을 만들었지만, 엔진 기준으로는 보상보다 불안 요소가 더 크게 남았습니다.`)
+  if (defensiveBreak) lines.push(`${defensiveBreak.sideLabel}의 수비 구조는 ${defensiveBreak.ply}수 부근부터 흔들렸고, 이후 상대 압박을 정리하는 비용이 커졌습니다.`)
+  if (recovery) lines.push(`${recovery.sideLabel}는 ${recovery.ply}수 이후 일부 균형을 되찾으려는 회복 흐름을 보였습니다. 회복의 성공 여부는 후속 안정성에서 갈립니다.`)
+  if (Array.isArray(sides) && sides.length === 2 && sides[0].moveCount && sides[1].moveCount) {
+    const sharper = sides[0].metrics.strategicSharpness >= sides[1].metrics.strategicSharpness ? sides[0] : sides[1]
+    const steadier = sides[0].metrics.stability >= sides[1].metrics.stability ? sides[0] : sides[1]
+    if (sharper.key !== steadier.key) lines.push(`${sharper.label}는 승부처에서 더 날카로운 선택을 보였고, ${steadier.label}는 상대적으로 안정적인 운영과 수습에 강점이 있었습니다.`)
+  }
+  if (!lines.length && moves.length) lines.push('전체적으로 큰 단절보다 작은 판단들이 누적되며 흐름이 형성된 대국입니다. 한 수의 전술보다 국면별 안정성과 주도권 전환을 함께 보는 편이 좋습니다.')
+  return lines.slice(0, 6)
+}
+
 function similarity (metrics) {
   return [
     { key: 'engineLike', label: '엔진형 정밀도 유사성', value: metrics.engineLike, text: koreanScoreLabel(metrics.engineLike, '평가 보존과 전환이 매우 정교합니다', '상위권 실전 감각에 가까운 정확도입니다', '인간적인 기복이 더 크게 드러납니다') },
@@ -458,12 +502,13 @@ function buildAnalysis (rawMoves, source) {
     metrics,
     sides,
     criticalEvents: events,
+    flowNarratives: gameFlowNarratives(moves, phases, events, sides),
     comparativeNarratives: comparativeNarratives(sides, events),
     similarity: similarity(metrics),
     narratives: styleNarratives(metrics, phases, moves, isLive, events),
     summary: `${instabilityText}${koreanScoreLabel(metrics.engineLike, '엔진 유사도가 높은', '정교하지만 인간적인', '실전적 편차가 살아 있는')} 흐름입니다. ${koreanScoreLabel(metrics.tacticalDependence, '강제 계산과 전술 압박', '균형 잡힌 후보 선택', '포지션 운영과 장기 압박')}이 두드러지고, 전체 안정성은 ${koreanScoreLabel(metrics.stability, '높은 편', '보통', '다소 흔들리는 편')}입니다.`,
     terms: [
-      'ACPL·편차·Top 일치율·구간 분석은 fjace_analyzer_all7.py의 통계 철학을 UI 데이터에 맞게 재해석한 것입니다.',
+      '평균 형세 손실·편차·AI 일치율·구간 분석은 fjace_analyzer_all7.py의 통계 철학을 UI 데이터에 맞게 재해석한 것입니다.',
       '이 리포트는 단정적 판정이 아니라 스타일, 안정성, 국면 전환을 읽기 위한 전략 해설용 참고 자료입니다.',
       '초/한 분리 해석은 같은 기보 안에서도 양쪽의 공격성, 안정성, 수비 복원력이 다르게 나타난다는 전제를 반영합니다.'
     ]
