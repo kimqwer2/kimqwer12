@@ -597,6 +597,7 @@ export function analyzeReviewRequest (request) {
     mode: request.mode || REVIEW_MODES.MOVE,
     markerMode,
     markerModeLabel: markerModeLabel(markerMode),
+    requestContext: request.context || {},
     variant: request.variant,
     fen: request.fen,
     reviewedMove,

@@ -491,7 +491,8 @@ export const store = new Vuex.Store({
       reviewTacticalDepth: 8,
       reviewStrategicHorizon: 20,
       reviewPunishmentLineLength: 6,
-      reviewDetailLevel: 'balanced'
+      reviewDetailLevel: 'balanced',
+      realtimeGameCommentary: false
     },
     deepAnalysis: {
       running: false,
@@ -2366,6 +2367,29 @@ export const store = new Vuex.Store({
       }
       context.commit('reviewSetResult', result)
       return result
+    },
+
+    reviewPlayedLine (context, payload = {}) {
+      const line = Array.isArray(payload.line) ? payload.line.filter(Boolean) : []
+      if (line.length === 0) {
+        context.commit('reviewSetError', '분석할 기보 수순이 없습니다. 먼저 수를 입력하거나 기보를 불러와 주세요.')
+        return Promise.resolve(null)
+      }
+      return context.dispatch('requestReview', {
+        mode: REVIEW_MODES.LINE,
+        fen: payload.fen || context.getters.startFen,
+        move: line[0],
+        moveSan: Array.isArray(payload.sans) ? payload.sans[0] : '',
+        line,
+        markerMode: payload.markerMode || context.state.review.markerMode,
+        context: {
+          markerMode: payload.markerMode || context.state.review.markerMode,
+          currentFen: context.getters.fen,
+          manualGame: Boolean(payload.manualGame),
+          source: payload.source || 'played-line',
+          sequenceSans: Array.isArray(payload.sans) ? payload.sans : []
+        }
+      })
     },
     reviewCurrentMove (context) {
       const move = context.getters.currentMove[0]

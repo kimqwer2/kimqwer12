@@ -41,6 +41,8 @@
           <option value="verbose">상세</option>
         </select>
       </label>
+      <label><input v-model="local.realtimeGameCommentary" type="checkbox" @change="save"> 실시간 전략 해설</label>
+      <small>켜면 임시 수순이나 현재 기보 흐름이 잠시 멈춘 뒤 자동으로 엔진 리뷰를 반영합니다. 불필요한 반복 분석을 줄이기 위해 짧게 지연 실행됩니다.</small>
       <small>깊게/전문가 모드는 느리지만 지연 전술, 장기 압박, 응징 수순을 더 오래 추적합니다.</small>
     </details>
 

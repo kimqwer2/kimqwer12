@@ -527,10 +527,10 @@ export default {
 <style scoped>
 .review-panel {
   display: flex;
-  flex: 1 1 auto;
+  flex: 0 0 auto;
   flex-direction: column;
   min-height: 0;
-  max-height: none;
+  max-height: min(52vh, 660px);
   margin: 10px 0;
   padding: 0;
   background: var(--second-bg-color);
@@ -539,7 +539,9 @@ export default {
   color: var(--main-text-color);
   font-size: 12px;
   text-align: left;
-  overflow: visible;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
 }
 .review-header {
   position: sticky;
@@ -923,6 +925,13 @@ small {
   margin-top: 10px;
   line-height: 1.4;
 }
+@media (max-width: 1100px) {
+  .review-panel {
+    max-height: none;
+    overflow: visible;
+  }
+}
+
 @media (max-width: 780px) {
   .review-panel {
     flex: 0 0 auto;

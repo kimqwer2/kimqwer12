@@ -369,6 +369,7 @@ function styleNarratives (metrics, phases, moves, isLive, events = []) {
 }
 
 function sideNarratives (side, events) {
+  if (!side.moveCount) return [`${side.label}는 아직 분석할 수순이 충분하지 않습니다.`]
   const lines = []
   const sideEvents = events.filter(event => event.sideKey === side.key)
   const critical = sideEvents.find(event => event.severity === 'critical')
@@ -409,6 +410,7 @@ function comparativeNarratives (sides, events) {
   const [cho, han] = sides
   const lines = []
   if (!cho || !han) return lines
+  if (!cho.moveCount || !han.moveCount) return ['양쪽 모두의 수가 충분히 쌓이면 공격·수비 대비를 비교합니다.']
   const aggressionGap = cho.metrics.aggression - han.metrics.aggression
   const stabilityGap = cho.metrics.stability - han.metrics.stability
   const engineGap = cho.metrics.engineLike - han.metrics.engineLike

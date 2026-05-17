@@ -5,7 +5,11 @@
         <h3>기보 메타 분석</h3>
         <p>엔진 리뷰와 현재 수순 흐름 위에 올리는 전략·성향 해설입니다.</p>
       </div>
-      <button type="button" :disabled="!canAnalyze" @click="refreshAnalysis">해설 갱신</button>
+      <div class="analysis-actions">
+        <label class="realtime-toggle"><input v-model="realTimeCommentary" type="checkbox"> 실시간 전략 해설</label>
+        <button type="button" :disabled="!canAnalyze" @click="refreshAnalysis">해설 갱신</button>
+        <button type="button" :disabled="!canReviewCurrentGame" @click="reviewCurrentGame">현재 기보 엔진 반영</button>
+      </div>
     </div>
 
     <div v-if="!canAnalyze" class="analysis-empty">
@@ -13,6 +17,10 @@
     </div>
 
     <template v-else-if="analysis">
+      <div class="context-line">
+        현재 해설 기준: <strong>{{ contextLabel }}</strong>
+        <span v-if="reviewLoading">엔진 리뷰 반영 중…</span>
+      </div>
       <p class="summary">{{ analysis.summary }}</p>
 
       <div class="phase-visual">
@@ -35,9 +43,9 @@
           <article v-for="side in analysis.sides" :key="side.key" class="side-card">
             <header>
               <strong>{{ side.label }}</strong>
-              <small>{{ side.moveCount }}수 · 평균 손실 {{ side.stats.acpl.toFixed(1) }}</small>
+              <small>{{ sideStatText(side) }}</small>
             </header>
-            <div class="metric-grid compact">
+            <div v-if="side.moveCount" class="metric-grid compact">
               <div v-for="metric in sideMetrics(side.metrics)" :key="`${side.key}-${metric.key}`" class="metric-card">
                 <span>{{ metric.label }}</span>
                 <strong>{{ Math.round(metric.value) }}</strong>
@@ -101,22 +109,79 @@
 <script>
 import { analyzeGameReview, analyzeLiveGame, analyzeReviewSequence, phaseRingStyle } from '../../shared/review/gameAnalysis'
 
+function sameLine (left, right) {
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false
+  return left.every((move, idx) => move === right[idx])
+}
+
 export default {
   name: 'GameAnalysisPanel',
   data () {
     return {
-      localAnalysis: null
+      localAnalysis: null,
+      realtimeTimer: null,
+      lastRealtimeReviewKey: ''
     }
   },
   computed: {
+    review () {
+      return this.$store.getters.review || {}
+    },
     reviewResult () {
       return this.$store.getters.reviewResult
+    },
+    reviewPreview () {
+      return this.$store.getters.reviewPreview
+    },
+    reviewLoading () {
+      return Boolean(this.review && this.review.loading)
+    },
+    cfg () {
+      return this.$store.getters.analysisVisualization || {}
+    },
+    realTimeCommentary: {
+      get () {
+        return Boolean(this.cfg.realtimeGameCommentary)
+      },
+      set (value) {
+        this.$store.dispatch('analysisVisualization', { realtimeGameCommentary: Boolean(value) })
+      }
+    },
+    reviewSequence () {
+      return this.$store.getters.reviewSequence
     },
     playedMoves () {
       return this.$store.getters.moves || []
     },
-    reviewSequence () {
-      return this.$store.getters.reviewSequence
+    currentMove () {
+      const current = this.$store.getters.currentMove
+      return Array.isArray(current) ? current[0] : null
+    },
+    mainFirstMove () {
+      return this.$store.getters.mainFirstMove
+    },
+    startFen () {
+      return this.$store.getters.startFen
+    },
+    activePlayedLine () {
+      if (!this.playedMoves.length) return []
+      if (this.currentMove) return this.lineToMove(this.currentMove)
+      const first = this.mainFirstMove || this.playedMoves.find(move => move && !move.prev) || this.playedMoves[0]
+      const line = []
+      const seen = new Set()
+      let cursor = first
+      while (cursor && !seen.has(cursor)) {
+        seen.add(cursor)
+        line.push(cursor)
+        cursor = cursor.main || (Array.isArray(cursor.next) ? cursor.next[0] : null)
+      }
+      return line.length ? line : this.playedMoves
+    },
+    activePlayedUci () {
+      return this.activePlayedLine.map(move => move.uci || move.move).filter(Boolean)
+    },
+    activePlayedSans () {
+      return this.activePlayedLine.map(move => move.name || move.move || move.uci || '').filter(Boolean)
     },
     hasReviewResult () {
       return Boolean(this.reviewResult && Array.isArray(this.reviewResult.moves) && this.reviewResult.moves.length)
@@ -124,35 +189,156 @@ export default {
     hasTemporaryLine () {
       return Boolean(this.reviewSequence && this.reviewSequence.active && Array.isArray(this.reviewSequence.line) && this.reviewSequence.line.length)
     },
+    previewReviewResult () {
+      if (!this.realTimeCommentary || !this.hasReviewResult || !this.reviewPreview || !this.reviewPreview.active || !this.reviewPreview.move) return null
+      const ply = this.reviewPreview.move.ply
+      if (!ply) return null
+      const moves = this.reviewResult.moves.filter(move => move.ply <= ply)
+      if (!moves.length) return null
+      return {
+        ...this.reviewResult,
+        moves,
+        markerMoves: Array.isArray(this.reviewResult.markerMoves) ? this.reviewResult.markerMoves.filter(move => move.ply <= ply) : this.reviewResult.markerMoves,
+        reviewedLine: moves.map(move => move.move).filter(Boolean),
+        requestContext: { ...(this.reviewResult.requestContext || {}), source: 'hover-preview', previewPly: ply }
+      }
+    },
+    activeAnalysisContext () {
+      if (this.previewReviewResult) {
+        return {
+          key: `preview:${this.reviewResult.id || ''}:${this.reviewPreview.move.ply}`,
+          label: `수순별 평가 ${this.reviewPreview.move.ply}수까지`,
+          analysis: analyzeGameReview(this.previewReviewResult)
+        }
+      }
+      if (this.hasReviewResult) {
+        const ctx = this.reviewResult.requestContext || {}
+        const label = ctx.temporary ? '임시 수순 엔진 리뷰' : (ctx.manualGame || ctx.source === 'played-line' || ctx.source === 'realtime-played-line' ? '현재 기보 엔진 리뷰' : '수순 리뷰 결과')
+        return {
+          key: `review:${this.reviewResult.id || ''}:${this.reviewResult.generatedAt || ''}`,
+          label,
+          analysis: analyzeGameReview(this.reviewResult)
+        }
+      }
+      if (this.hasTemporaryLine) {
+        return {
+          key: `temporary:${this.reviewSequence.baseFen || ''}:${this.reviewSequence.line.join(' ')}`,
+          label: '임시 수순 실시간 해석',
+          analysis: analyzeReviewSequence(this.reviewSequence)
+        }
+      }
+      if (this.activePlayedLine.length) {
+        return {
+          key: `played:${this.activePlayedUci.join(' ')}`,
+          label: '현재 기보 흐름',
+          analysis: analyzeLiveGame(this.activePlayedLine)
+        }
+      }
+      return null
+    },
+    activeContextKey () {
+      return this.activeAnalysisContext ? this.activeAnalysisContext.key : ''
+    },
+    contextLabel () {
+      return this.activeAnalysisContext ? this.activeAnalysisContext.label : '분석 대기'
+    },
     canAnalyze () {
-      return Boolean(this.hasReviewResult || this.hasTemporaryLine || this.playedMoves.length)
+      return Boolean(this.activeAnalysisContext)
+    },
+    canReviewCurrentGame () {
+      return Boolean(!this.reviewLoading && this.activePlayedUci.length)
     },
     analysis () {
-      if (this.localAnalysis) return this.localAnalysis
-      if (this.hasReviewResult) return analyzeGameReview(this.reviewResult)
-      if (this.hasTemporaryLine) return analyzeReviewSequence(this.reviewSequence)
-      return this.playedMoves.length ? analyzeLiveGame(this.playedMoves) : null
+      return this.localAnalysis || (this.activeAnalysisContext ? this.activeAnalysisContext.analysis : null)
     },
     ringStyle () {
       return this.analysis ? phaseRingStyle(this.analysis.phases) : {}
+    },
+    realtimeReviewKey () {
+      if (!this.realTimeCommentary || this.reviewLoading) return ''
+      if (this.hasTemporaryLine && !this.resultMatchesLine(this.reviewSequence.line, this.reviewSequence.baseFen)) {
+        return `temporary:${this.reviewSequence.baseFen || ''}:${this.reviewSequence.line.join(' ')}`
+      }
+      if (!this.hasReviewResult && !this.hasTemporaryLine && this.activePlayedUci.length >= 2) {
+        return `played:${this.startFen || ''}:${this.activePlayedUci.join(' ')}`
+      }
+      return ''
     }
   },
   watch: {
-    reviewResult () {
+    activeContextKey () {
       this.localAnalysis = null
     },
-    playedMoves () {
-      if (!this.reviewResult) this.localAnalysis = null
+    realtimeReviewKey: {
+      immediate: true,
+      handler () {
+        this.scheduleRealtimeReview()
+      }
     },
-    reviewSequence () {
-      this.localAnalysis = null
+    realTimeCommentary (enabled) {
+      if (!enabled) this.clearRealtimeTimer()
+      else this.scheduleRealtimeReview()
     }
   },
+  beforeDestroy () {
+    this.clearRealtimeTimer()
+  },
   methods: {
+    lineToMove (move) {
+      const line = []
+      const seen = new Set()
+      let cursor = move
+      while (cursor && !seen.has(cursor)) {
+        seen.add(cursor)
+        line.unshift(cursor)
+        cursor = cursor.prev
+      }
+      return line
+    },
+    resultMatchesLine (line, fen) {
+      if (!this.hasReviewResult || !Array.isArray(line)) return false
+      if (fen && this.reviewResult.fen && fen !== this.reviewResult.fen) return false
+      return sameLine(this.reviewResult.reviewedLine || [], line)
+    },
+    clearRealtimeTimer () {
+      if (this.realtimeTimer) clearTimeout(this.realtimeTimer)
+      this.realtimeTimer = null
+    },
+    scheduleRealtimeReview () {
+      this.clearRealtimeTimer()
+      const key = this.realtimeReviewKey
+      if (!key || key === this.lastRealtimeReviewKey) return
+      this.realtimeTimer = setTimeout(() => {
+        if (key !== this.realtimeReviewKey || this.reviewLoading) return
+        this.lastRealtimeReviewKey = key
+        if (key.startsWith('temporary:')) {
+          this.$store.dispatch('reviewCurrentSequence')
+        } else if (key.startsWith('played:')) {
+          this.$store.dispatch('reviewPlayedLine', {
+            fen: this.startFen,
+            line: this.activePlayedUci,
+            sans: this.activePlayedSans,
+            manualGame: true,
+            source: 'realtime-played-line'
+          })
+        }
+      }, 1500)
+    },
     refreshAnalysis () {
-      this.localAnalysis = this.hasReviewResult
-        ? analyzeGameReview(this.reviewResult)
-        : (this.hasTemporaryLine ? analyzeReviewSequence(this.reviewSequence) : analyzeLiveGame(this.playedMoves))
+      this.localAnalysis = this.activeAnalysisContext ? this.activeAnalysisContext.analysis : null
+    },
+    reviewCurrentGame () {
+      this.$store.dispatch('reviewPlayedLine', {
+        fen: this.startFen,
+        line: this.activePlayedUci,
+        sans: this.activePlayedSans,
+        manualGame: true,
+        source: 'played-line'
+      })
+    },
+    sideStatText (side) {
+      if (!side || !side.moveCount) return '분석할 수순 없음'
+      return `${side.moveCount}수 · 평균 손실 ${side.stats.acpl.toFixed(1)}`
     },
     sideMetrics (m) {
       if (!m) return []
@@ -182,6 +368,11 @@ export default {
 
 <style scoped>
 .game-analysis {
+  flex: 0 0 auto;
+  max-height: min(46vh, 620px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
   margin: 10px 0;
   padding: 10px;
   background: var(--second-bg-color);
@@ -201,6 +392,31 @@ export default {
 .analysis-title {
   justify-content: space-between;
   align-items: flex-start;
+}
+.analysis-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.realtime-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 7px;
+  border-radius: 4px;
+  background: rgba(127, 127, 127, 0.10);
+  white-space: nowrap;
+}
+.context-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+  color: var(--second-text-color, #9aa0a6);
+}
+.context-line span {
+  color: #f2c94c;
 }
 h3, p { margin: 0; }
 .analysis-title p,
@@ -371,6 +587,9 @@ ul { margin: 8px 0 0 16px; padding: 0; }
   margin-top: 8px;
 }
 @media (max-width: 780px) {
+  .game-analysis { max-height: none; overflow: visible; }
+  .analysis-title { flex-direction: column; }
+  .analysis-actions { justify-content: flex-start; }
   .phase-visual { align-items: flex-start; }
   .phase-ring { width: 88px; height: 88px; }
 }
