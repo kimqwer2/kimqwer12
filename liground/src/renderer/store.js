@@ -419,6 +419,7 @@ export const store = new Vuex.Store({
       options: []
     },
     engineSettings: {},
+    nnueStatus: null,
     listOfEngineStats: [],
     engineStats: {
       depth: 0,
@@ -473,7 +474,25 @@ export const store = new Vuex.Store({
       orderThickness: true,
       orderOpacity: true,
       analysisTargetDepth: 'infinite',
-      visualizationMode: 'arrow'
+      visualizationMode: 'arrow',
+      analysisModeType: 'normal',
+      deepCandidateCount: 3,
+      deepRootTimeMs: 15000,
+      deepTimePerCandidateMs: 30000,
+      deepSecondaryTimeMs: 180000,
+      deepDepthPerCandidate: 0,
+      deepClearHashBetweenCandidates: false,
+      deepInstabilitySensitivityCp: 80,
+      deepScheduleMode: 'equal',
+      deepMaxDurationMs: 300000,
+      deepDiversityThreshold: 2
+    },
+    deepAnalysis: {
+      running: false,
+      error: null,
+      report: null,
+      startedAt: null,
+      completedAt: null
     },
     menuAtMove: null,
     displayMenu: true,
@@ -647,6 +666,7 @@ export const store = new Vuex.Store({
     },
     engineInfo (state, payload) {
       state.engineInfo = payload
+      state.nnueStatus = null
       const settings = {}
       for (const option of payload.options) {
         if (!filteredSettings.includes(option.name)) {
@@ -668,6 +688,9 @@ export const store = new Vuex.Store({
     },
     engineStats (state, payload) {
       state.engineStats = payload
+    },
+    nnueStatus (state, payload) {
+      state.nnueStatus = payload
     },
     resetEngineStats (state) {
       state.enginetime = 0
@@ -835,6 +858,33 @@ export const store = new Vuex.Store({
     },
     analysisVisualization (state, payload) {
       state.analysisVisualization = { ...state.analysisVisualization, ...payload }
+    },
+    deepAnalysisStart (state) {
+      state.deepAnalysis = {
+        running: true,
+        error: null,
+        report: null,
+        startedAt: Date.now(),
+        completedAt: null
+      }
+    },
+    deepAnalysisResult (state, payload) {
+      state.deepAnalysis = {
+        running: false,
+        error: payload && payload.error ? payload.error : null,
+        report: payload && !payload.error ? payload : null,
+        startedAt: state.deepAnalysis.startedAt,
+        completedAt: Date.now()
+      }
+    },
+    deepAnalysisClear (state) {
+      state.deepAnalysis = {
+        running: false,
+        error: null,
+        report: null,
+        startedAt: null,
+        completedAt: null
+      }
     },
     reviewMarkerMode (state, payload) {
       const mode = Object.values(REVIEW_MARKER_MODES).includes(payload) ? payload : REVIEW_MARKER_MODES.MY_MOVES_ONLY
@@ -1905,7 +1955,7 @@ export const store = new Vuex.Store({
           if (!filteredSettings.includes(name)) {
             context.state.engineSettings[name] = value
           }
-          if (name === 'MultiPV' || name === 'UCI_Variant') {
+          if (name === 'MultiPV' || name === 'UCI_Variant' || name === 'EvalFile') {
             console.log('[engine-cmd] setoption', name, value)
           }
           engine.send(`setoption name ${name} value ${value}`)
@@ -2094,6 +2144,9 @@ export const store = new Vuex.Store({
       if (context.state.active) {
         context.dispatch('stopEngine')
         context.commit('analysisMode', false)
+      } else if (context.state.analysisVisualization.analysisModeType === 'deep') {
+        await context.dispatch('startDeepAnalysis')
+        context.commit('analysisMode', false)
       } else {
         // Ensure engine options are sent before position/go so MultiPV activates reliably.
         const topN = context.state.analysisVisualization.multiPvCount
@@ -2119,6 +2172,38 @@ export const store = new Vuex.Store({
     },
     analysisVisualization (context, payload) {
       context.commit('analysisVisualization', payload)
+    },
+    async startDeepAnalysis (context) {
+      if (context.state.deepAnalysis.running) return
+      if (context.getters.active) {
+        context.dispatch('stopEngine')
+      }
+      context.dispatch('resetEngineData')
+      context.commit('deepAnalysisStart')
+      const cfg = context.state.analysisVisualization
+      const settings = {
+        candidateCount: cfg.deepCandidateCount,
+        rootTimeMs: cfg.deepRootTimeMs,
+        timePerCandidateMs: cfg.deepTimePerCandidateMs,
+        secondaryTimeMs: cfg.deepSecondaryTimeMs,
+        depthPerCandidate: cfg.deepDepthPerCandidate,
+        clearHashBetweenCandidates: cfg.deepClearHashBetweenCandidates,
+        instabilitySensitivityCp: cfg.deepInstabilitySensitivityCp,
+        scheduleMode: cfg.deepScheduleMode,
+        maxDurationMs: cfg.deepMaxDurationMs,
+        diversityThreshold: cfg.deepDiversityThreshold
+      }
+      console.log('[deep-analysis] start', { fen: context.getters.fen, variant: context.getters.variant, settings })
+      const result = await engine.deepAnalysis({
+        fen: context.getters.fen,
+        variant: context.getters.variant,
+        settings
+      })
+      console.log('[deep-analysis] result', result)
+      context.commit('deepAnalysisResult', result)
+    },
+    clearDeepAnalysis (context) {
+      context.commit('deepAnalysisClear')
     },
     setReviewMarkerMode (context, payload) {
       context.commit('reviewMarkerMode', payload)
@@ -2527,6 +2612,9 @@ export const store = new Vuex.Store({
     engineSettings (state) {
       return state.engineSettings
     },
+    nnueStatus (state) {
+      return state.nnueStatus
+    },
     multipv (state) {
       return state.multipv
     },
@@ -2763,6 +2851,9 @@ export const store = new Vuex.Store({
     analysisVisualization (state) {
       return state.analysisVisualization
     },
+    deepAnalysis (state) {
+      return state.deepAnalysis
+    },
     review (state) {
       return state.review
     },
@@ -2826,6 +2917,33 @@ ffish.onRuntimeInitialized = () => {
   })
   engine.on('eval-debug', (...msgs) => console.log('%c[Eval Engine] Debug:', 'color: #9580ff; font-weight: 700;', ...msgs))
   engine.on('eval-error', (...msgs) => console.error('%c[Eval Engine]', 'color: #9580ff; font-weight: 700;', ...msgs))
+  engine.on('nnue', status => {
+    store.commit('nnueStatus', status)
+    const prefix = '[NNUE]'
+    if (status.status === 'applied') {
+      console.info(prefix, `EvalFile applied: ${status.requested}`, status)
+    } else if (status.status === 'found') {
+      console.info(prefix, `EvalFile found: ${status.requested}`, status)
+    } else if (status.status === 'missing') {
+      console.warn(prefix, `EvalFile missing: ${status.requested}. Engine default network remains active.`, status)
+    } else if (status.status === 'rejected') {
+      console.error(prefix, `Engine rejected EvalFile: ${status.requested}`, status)
+    }
+  })
+  engine.on('eval-nnue', status => {
+    const prefix = '[Eval NNUE]'
+    if (status.status === 'applied') {
+      console.info(prefix, `EvalFile applied: ${status.requested}`, status)
+    } else if (status.status === 'found') {
+      console.info(prefix, `EvalFile found: ${status.requested}`, status)
+    } else if (status.status === 'missing') {
+      console.warn(prefix, `EvalFile missing: ${status.requested}. Review engine default network remains active.`, status)
+    } else if (status.status === 'rejected') {
+      console.error(prefix, `Review engine rejected EvalFile: ${status.requested}`, status)
+    }
+  })
+  engine.on('option-applied', option => console.log('[engine-option-applied]', option))
+  engine.on('eval-option-applied', option => console.log('[eval-engine-option-applied]', option))
 
   // capture engine info
   engine.on('info', info => store.dispatch('updateMultiPV', info))

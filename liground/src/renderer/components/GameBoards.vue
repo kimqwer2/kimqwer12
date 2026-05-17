@@ -426,16 +426,20 @@ export default {
 .main-grid {
   display: grid;
   grid-template-columns: minmax(45%, 1fr) minmax(30%, 1fr);
-  grid-template-rows: auto auto auto;
+  grid-template-rows: auto minmax(0, 1fr);
   column-gap: 28px;
+  height: calc(100vh - 25px);
+  overflow: hidden;
   padding-right: 12px;
   grid-template-areas:
     "chessboard analysisview"
-    "evalplot analysisview"
     "evalplot analysisview";
 }
 .chessboard-grid {
   grid-area: chessboard;
+  position: sticky;
+  top: 0;
+  z-index: 2;
   display: grid;
   grid-template-columns: 1fr;
   grid-template-rows: auto auto auto;
@@ -477,8 +481,11 @@ export default {
 #right-column {
   grid-area: analysisview;
   width: 100%;
+  height: 100%;
+  min-height: 0;
   max-height: calc(100vh - 25px);
   min-width: 0;
+  overflow: hidden;
   padding-left: 16px;
   box-sizing: border-box;
 }
@@ -575,10 +582,13 @@ input {
 }
 #evalplot {
   grid-area: evalplot;
+  align-self: start;
   width: 100%;
   max-width: none;
+  max-height: 100%;
   margin-top: 12px;
   margin-left: 12px;
+  overflow: hidden;
 }
 #evalplot-qt {
   grid-area: evalplot;
@@ -601,8 +611,20 @@ input {
       "evalplot"
       "analysisview";
   }
+  .main-grid {
+    height: auto;
+    min-height: calc(100vh - 25px);
+    overflow: visible;
+  }
+  .chessboard-grid {
+    position: sticky;
+    top: 0;
+  }
   #right-column {
+    height: auto;
     max-height: none;
+    overflow: visible;
+    padding-left: 0;
   }
 }
 

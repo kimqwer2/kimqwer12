@@ -105,7 +105,12 @@ export default {
 
 <style scoped>
 .analysis {
+  display: flex;
+  flex-direction: column;
   width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
   padding: 0;
   margin: 0;
 }
@@ -143,7 +148,8 @@ export default {
   background-color: #8b1919;
 }
 .b {
-  margin-top: 40px;
+  flex: 0 0 auto;
+  margin-top: 12px;
 }
 @keyframes bar-anim {
   0% {
@@ -156,6 +162,13 @@ export default {
 
 #move-history {
   text-align: left;
+}
+
+@media (max-width: 1100px) {
+  .analysis {
+    height: auto;
+    overflow: visible;
+  }
 }
 
 </style>
