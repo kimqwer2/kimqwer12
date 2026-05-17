@@ -429,7 +429,9 @@ export default {
   grid-template-rows: auto minmax(0, 1fr);
   column-gap: 28px;
   height: calc(100vh - 25px);
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding-right: 12px;
   grid-template-areas:
     "chessboard analysisview"

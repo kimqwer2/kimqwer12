@@ -494,7 +494,7 @@ function buildAnalysis (rawMoves, source) {
     : ''
   return {
     generatedAt: Date.now(),
-    source: isLive ? 'live-current-game' : (isTemporary ? 'temporary-review-line' : 'fjace_analyzer_all7.py-inspired bridge'),
+    source: isLive ? 'live-current-game' : (isTemporary ? 'temporary-review-line' : 'analysis-statistics-bridge'),
     confidence: stats.engineBackedRatio >= 50 ? 'engine-backed' : 'live-heuristic',
     moveCount: moves.length,
     stats,
@@ -508,7 +508,7 @@ function buildAnalysis (rawMoves, source) {
     narratives: styleNarratives(metrics, phases, moves, isLive, events),
     summary: `${instabilityText}${koreanScoreLabel(metrics.engineLike, '엔진 유사도가 높은', '정교하지만 인간적인', '실전적 편차가 살아 있는')} 흐름입니다. ${koreanScoreLabel(metrics.tacticalDependence, '강제 계산과 전술 압박', '균형 잡힌 후보 선택', '포지션 운영과 장기 압박')}이 두드러지고, 전체 안정성은 ${koreanScoreLabel(metrics.stability, '높은 편', '보통', '다소 흔들리는 편')}입니다.`,
     terms: [
-      '평균 형세 손실·편차·AI 일치율·구간 분석은 fjace_analyzer_all7.py의 통계 철학을 UI 데이터에 맞게 재해석한 것입니다.',
+      '평균 형세 손실·편차·AI 일치율·구간 분석은 분석 시스템의 통계 해석 모델을 UI 환경에 맞게 적용한 것입니다.',
       '이 리포트는 단정적 판정이 아니라 스타일, 안정성, 국면 전환을 읽기 위한 전략 해설용 참고 자료입니다.',
       '초/한 분리 해석은 같은 기보 안에서도 양쪽의 공격성, 안정성, 수비 복원력이 다르게 나타난다는 전제를 반영합니다.'
     ]

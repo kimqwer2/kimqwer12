@@ -239,6 +239,17 @@ function enrichReviewMovePreviewFens (result, variant, is960) {
   }
 }
 
+
+function isRealtimeStrategicOverlay (overlay) {
+  if (!overlay || typeof overlay.id !== 'string') return false
+  return overlay.id.startsWith('move-marker-') || overlay.id.startsWith('reviewed-line-') || overlay.id === 'reviewed-destination'
+}
+
+function filterRealtimeStrategicOverlays (overlays, enabled) {
+  if (enabled !== false) return overlays
+  return overlays.filter(overlay => !isRealtimeStrategicOverlay(overlay))
+}
+
 function previewOverlaysForMove (move) {
   if (!move) return []
   const overlays = Array.isArray(move.overlays) ? move.overlays.slice(0, 6).map(overlay => ({ ...overlay, source: 'review-preview' })) : []
@@ -3039,16 +3050,18 @@ export const store = new Vuex.Store({
       return Boolean(state.review.preview && state.review.preview.active)
     },
     reviewOverlays (state) {
-      const resultContext = state.review.currentResult && state.review.currentResult.requestContext ? state.review.currentResult.requestContext : {}
-      const realtimeStrategic = resultContext.source === 'realtime-played-line'
-      if (realtimeStrategic && state.analysisVisualization.realtimeCommentaryArrows === false) return []
       if (state.review.preview && state.review.preview.active) {
         return Array.isArray(state.review.preview.overlays) ? state.review.preview.overlays : []
       }
+      const resultContext = state.review.currentResult && state.review.currentResult.requestContext ? state.review.currentResult.requestContext : {}
+      const realtimeStrategic = resultContext.source === 'realtime-played-line'
       const resultOverlays = Array.isArray(state.review.overlays) ? state.review.overlays : []
+      const visibleResultOverlays = realtimeStrategic
+        ? filterRealtimeStrategicOverlays(resultOverlays, state.analysisVisualization.realtimeCommentaryArrows)
+        : resultOverlays
       const sequenceOverlays = Array.isArray(state.review.sequence.overlays) ? state.review.sequence.overlays : []
-      if (!state.review.sequence.active) return resultOverlays
-      return resultOverlays.length > 0 ? resultOverlays : sequenceOverlays
+      if (!state.review.sequence.active) return visibleResultOverlays
+      return visibleResultOverlays.length > 0 ? visibleResultOverlays : sequenceOverlays
     },
     menuAtMove (state) {
       return state.menuAtMove
