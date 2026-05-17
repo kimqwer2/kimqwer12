@@ -30,14 +30,36 @@
       </div>
 
       <details open class="meta-section">
-        <summary>전략 프로파일</summary>
-        <div class="metric-grid">
-          <div v-for="metric in primaryMetrics" :key="metric.key" class="metric-card">
-            <span>{{ metric.label }}</span>
-            <strong>{{ Math.round(metric.value) }}</strong>
-            <div class="meter"><i :style="{ width: `${Math.round(metric.value)}%` }" /></div>
-          </div>
+        <summary>초 / 한 분리 전략 프로파일</summary>
+        <div class="side-analysis-grid">
+          <article v-for="side in analysis.sides" :key="side.key" class="side-card">
+            <header>
+              <strong>{{ side.label }}</strong>
+              <small>{{ side.moveCount }}수 · 평균 손실 {{ side.stats.acpl.toFixed(1) }}</small>
+            </header>
+            <div class="metric-grid compact">
+              <div v-for="metric in sideMetrics(side.metrics)" :key="`${side.key}-${metric.key}`" class="metric-card">
+                <span>{{ metric.label }}</span>
+                <strong>{{ Math.round(metric.value) }}</strong>
+                <div class="meter"><i :style="{ width: `${Math.round(metric.value)}%` }" /></div>
+              </div>
+            </div>
+            <ul class="side-notes">
+              <li v-for="line in side.narratives" :key="line">{{ line }}</li>
+            </ul>
+          </article>
         </div>
+      </details>
+
+      <details open class="meta-section">
+        <summary>승부처 · 흐름 변동</summary>
+        <div v-if="analysis.criticalEvents && analysis.criticalEvents.length" class="event-list">
+          <article v-for="event in analysis.criticalEvents" :key="`${event.type}-${event.ply}-${event.sideKey}`" :class="['event-card', event.severity]">
+            <strong>{{ event.title }}</strong>
+            <p>{{ event.text }}</p>
+          </article>
+        </div>
+        <p v-else class="quiet-note">큰 평가 급변보다 작은 선택들이 누적된 흐름입니다.</p>
       </details>
 
       <details open class="meta-section">
@@ -58,6 +80,12 @@
         <ul>
           <li v-for="line in analysis.narratives" :key="line">{{ line }}</li>
         </ul>
+        <div v-if="analysis.comparativeNarratives && analysis.comparativeNarratives.length" class="comparison-notes">
+          <strong>초·한 비교</strong>
+          <ul>
+            <li v-for="line in analysis.comparativeNarratives" :key="line">{{ line }}</li>
+          </ul>
+        </div>
         <div class="stats-row">
           <span>평균 손실 {{ analysis.stats.acpl.toFixed(1) }}</span>
           <span>최선 일치 {{ analysis.stats.top1.toFixed(1) }}%</span>
@@ -71,7 +99,7 @@
 </template>
 
 <script>
-import { analyzeGameReview, analyzeLiveGame, phaseRingStyle } from '../../shared/review/gameAnalysis'
+import { analyzeGameReview, analyzeLiveGame, analyzeReviewSequence, phaseRingStyle } from '../../shared/review/gameAnalysis'
 
 export default {
   name: 'GameAnalysisPanel',
@@ -87,20 +115,47 @@ export default {
     playedMoves () {
       return this.$store.getters.moves || []
     },
+    reviewSequence () {
+      return this.$store.getters.reviewSequence
+    },
+    hasReviewResult () {
+      return Boolean(this.reviewResult && Array.isArray(this.reviewResult.moves) && this.reviewResult.moves.length)
+    },
+    hasTemporaryLine () {
+      return Boolean(this.reviewSequence && this.reviewSequence.active && Array.isArray(this.reviewSequence.line) && this.reviewSequence.line.length)
+    },
     canAnalyze () {
-      return Boolean((this.reviewResult && Array.isArray(this.reviewResult.moves) && this.reviewResult.moves.length) || this.playedMoves.length)
+      return Boolean(this.hasReviewResult || this.hasTemporaryLine || this.playedMoves.length)
     },
     analysis () {
       if (this.localAnalysis) return this.localAnalysis
-      if (this.reviewResult && Array.isArray(this.reviewResult.moves) && this.reviewResult.moves.length) return analyzeGameReview(this.reviewResult)
+      if (this.hasReviewResult) return analyzeGameReview(this.reviewResult)
+      if (this.hasTemporaryLine) return analyzeReviewSequence(this.reviewSequence)
       return this.playedMoves.length ? analyzeLiveGame(this.playedMoves) : null
     },
     ringStyle () {
       return this.analysis ? phaseRingStyle(this.analysis.phases) : {}
+    }
+  },
+  watch: {
+    reviewResult () {
+      this.localAnalysis = null
     },
-    primaryMetrics () {
-      if (!this.analysis) return []
-      const m = this.analysis.metrics
+    playedMoves () {
+      if (!this.reviewResult) this.localAnalysis = null
+    },
+    reviewSequence () {
+      this.localAnalysis = null
+    }
+  },
+  methods: {
+    refreshAnalysis () {
+      this.localAnalysis = this.hasReviewResult
+        ? analyzeGameReview(this.reviewResult)
+        : (this.hasTemporaryLine ? analyzeReviewSequence(this.reviewSequence) : analyzeLiveGame(this.playedMoves))
+    },
+    sideMetrics (m) {
+      if (!m) return []
       return [
         { key: 'tacticalDependence', label: '전술 의존도', value: m.tacticalDependence },
         { key: 'positionalPreference', label: '포지션 선호', value: m.positionalPreference },
@@ -112,21 +167,6 @@ export default {
         { key: 'conversionQuality', label: '전환 품질', value: m.conversionQuality },
         { key: 'defensiveResilience', label: '수비 복원력', value: m.defensiveResilience }
       ]
-    }
-  },
-  watch: {
-    reviewResult () {
-      this.localAnalysis = null
-    },
-    playedMoves () {
-      if (!this.reviewResult) this.localAnalysis = null
-    }
-  },
-  methods: {
-    refreshAnalysis () {
-      this.localAnalysis = this.reviewResult && Array.isArray(this.reviewResult.moves) && this.reviewResult.moves.length
-        ? analyzeGameReview(this.reviewResult)
-        : analyzeLiveGame(this.playedMoves)
     },
     acplText (value) {
       return typeof value === 'number' ? `ACPL ${value.toFixed(1)}` : '데이터 부족'
@@ -281,6 +321,54 @@ ul { margin: 8px 0 0 16px; padding: 0; }
 .term {
   display: block;
   margin-top: 6px;
+}
+.side-analysis-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+.side-card {
+  padding: 8px;
+  border-radius: 6px;
+  background: rgba(127, 127, 127, 0.10);
+}
+.side-card header {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: baseline;
+}
+.metric-grid.compact {
+  grid-template-columns: repeat(auto-fit, minmax(105px, 1fr));
+}
+.side-notes,
+.comparison-notes ul {
+  margin-top: 8px;
+  line-height: 1.45;
+}
+.event-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: 8px;
+}
+.event-card {
+  padding: 8px;
+  border-left: 4px solid #7289da;
+  border-radius: 5px;
+  background: rgba(114, 137, 218, 0.12);
+}
+.event-card.warning { border-left-color: #f2994a; }
+.event-card.critical { border-left-color: #d64545; }
+.event-card.recovery { border-left-color: #2f855a; }
+.event-card p {
+  margin-top: 4px;
+  line-height: 1.45;
+}
+.quiet-note,
+.comparison-notes {
+  margin-top: 8px;
 }
 @media (max-width: 780px) {
   .phase-visual { align-items: flex-start; }

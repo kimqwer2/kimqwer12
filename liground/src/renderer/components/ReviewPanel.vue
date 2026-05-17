@@ -157,6 +157,7 @@
         v-if="reviewedMoves.length"
         class="move-timeline review-section"
         open
+        @mouseleave="clearPreview"
       >
         <summary>
           <strong>수순별 평가</strong>
@@ -170,7 +171,6 @@
             :class="['move-chip', severityClassForMove(move), { active: selectedMove && selectedMove.ply === move.ply }]"
             @click="selectMove(move)"
             @mouseenter="previewMove(move)"
-            @mouseleave="clearPreview"
             @focus="previewMove(move)"
             @blur="clearPreview"
           >
