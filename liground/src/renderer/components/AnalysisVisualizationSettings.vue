@@ -178,7 +178,7 @@ small { color: var(--second-text-color, #9aa0a6); overflow-wrap: anywhere; }
 .deep-box { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--main-border-color); }
 .radio-row { justify-content: flex-start; }
 .deep-error { padding: 6px; border-left: 4px solid #d7263d; background: rgba(215, 38, 61, 0.18); }
-.deep-report { display: flex; flex-direction: column; gap: 6px; max-height: 45vh; overflow-y: auto; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--main-border-color); overscroll-behavior: contain; }
+.deep-report { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--main-border-color); }
 .deep-advanced { display: flex; flex-direction: column; gap: 6px; padding: 6px; border-radius: 4px; background: rgba(127,127,127,0.08); }
 .deep-advanced[open] { display: flex; }
 .deep-advanced summary { cursor: pointer; font-weight: 700; }

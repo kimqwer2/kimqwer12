@@ -15,6 +15,7 @@
       @move-to-end="$emit('move-to-end', 0)"
     />
     <ReviewPanel />
+    <GameAnalysisPanel />
     <div class="b">
       <button
         class="buttonRed"
@@ -36,13 +37,15 @@
 import AnalysisHead from './AnalysisHead'
 import AnalysisContainer from './AnalysisContainer.vue'
 import ReviewPanel from './ReviewPanel.vue'
+import GameAnalysisPanel from './GameAnalysisPanel.vue'
 
 export default {
   name: 'AnalysisView',
   components: {
     AnalysisHead,
     AnalysisContainer,
-    ReviewPanel
+    ReviewPanel,
+    GameAnalysisPanel
   },
   data () {
     return {
