@@ -1001,6 +1001,13 @@ export const store = new Vuex.Store({
       state.review.preview = { active: false, fen: '', move: null, overlays: [] }
       state.review.active = true
     },
+    reviewPrepareFullRebuild (state) {
+      state.review.currentResult = null
+      state.review.overlays = []
+      state.review.preview = { active: false, fen: '', move: null, overlays: [] }
+      state.review.error = null
+      state.review.active = true
+    },
     reviewSetResult (state, payload) {
       const result = enrichReviewMovePreviewFens(payload, state.variant, state.board && state.board.is960 && state.board.is960())
       state.review.loading = false
@@ -2474,18 +2481,32 @@ export const store = new Vuex.Store({
       const markerMode = payload.markerMode || context.state.review.markerMode
       const baseFen = payload.fen || context.getters.startFen
       const fullSans = Array.isArray(payload.sans) ? payload.sans : []
+      const incrementalRequested = payload.incremental === true
+      const fullRebuild = payload.fullRebuild === true || !incrementalRequested
       const requestContext = {
         markerMode,
         currentFen: context.getters.fen,
         manualGame: Boolean(payload.manualGame),
         source: payload.source || 'played-line',
-        sequenceSans: fullSans
+        sequenceSans: fullSans,
+        incrementalMode: incrementalRequested,
+        fullRebuild
       }
+      if (fullRebuild) context.commit('reviewPrepareFullRebuild')
       const previous = context.state.review.currentResult
       const previousContext = previous && previous.requestContext ? previous.requestContext : {}
       const previousLine = previous && Array.isArray(previous.reviewedLine) ? previous.reviewedLine : []
       const prefixLength = reviewLinePrefixLength(previousLine, line)
-      const canExtend = previous && previous.fen === baseFen && previousContext.manualGame && prefixLength >= 2 && prefixLength === previousLine.length && prefixLength < line.length && Array.isArray(previous.moves) && previous.moves[prefixLength - 1] && previous.moves[prefixLength - 1].previewFen
+      const canExtend = incrementalRequested &&
+        previous &&
+        previous.fen === baseFen &&
+        previousContext.manualGame &&
+        prefixLength >= 2 &&
+        prefixLength === previousLine.length &&
+        prefixLength < line.length &&
+        Array.isArray(previous.moves) &&
+        previous.moves[prefixLength - 1] &&
+        previous.moves[prefixLength - 1].previewFen
       if (canExtend) {
         const suffixLine = line.slice(prefixLength)
         const suffixSans = fullSans.slice(prefixLength)

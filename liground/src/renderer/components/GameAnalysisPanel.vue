@@ -357,7 +357,8 @@ export default {
             line: this.activePlayedUci,
             sans: this.activePlayedSans,
             manualGame: true,
-            source: 'realtime-played-line'
+            source: 'realtime-played-line',
+            incremental: true
           })
         }
       }, 1500)
@@ -371,7 +372,8 @@ export default {
         line: this.activePlayedUci,
         sans: this.activePlayedSans,
         manualGame: true,
-        source: 'played-line'
+        source: 'played-line',
+        fullRebuild: true
       })
     },
     sideStatText (side) {
