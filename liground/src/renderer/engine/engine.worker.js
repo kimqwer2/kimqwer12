@@ -1,4 +1,5 @@
 import fs from 'fs'
+import path from 'path'
 import { spawn } from 'child_process'
 import EngineDriver from './driver'
 import EngineSender from './sender'
@@ -11,6 +12,8 @@ let child = null
 
 /** @type {EngineDriver} */
 let engine = null
+let engineCwd = ''
+let pendingEvalFile = null
 
 /**
  * Run a new engine, killing the old process.
@@ -40,6 +43,7 @@ async function run (binary, cwd, listeners) {
     msg.error(`Could not find engine binary "${binary}"`)
     return
   }
+  engineCwd = cwd
   msg.debug('Running:', { binary, cwd })
   child = spawn(binary, [], { cwd }).on('error', err => msg.error(err.message))
 
@@ -49,7 +53,19 @@ async function run (binary, cwd, listeners) {
     engine = new EngineDriver(child.stdin, child.stdout)
 
     // setup error logging & crash handling
-    child.stderr.on('data', err => msg.error('Engine reported Error:', err.toString().trim()))
+    child.stderr.on('data', err => {
+      const text = err.toString().trim()
+      msg.error('Engine reported Error:', text)
+      if (pendingEvalFile && /nnue|evalfile|network|net/i.test(text)) {
+        msg.queue('nnue', {
+          status: 'rejected',
+          requested: pendingEvalFile.requested,
+          resolved: pendingEvalFile.resolved,
+          cwd: engineCwd,
+          error: text
+        })
+      }
+    })
     child.on('exit', () => msg.queue('crash'))
 
     // setup listeners
@@ -76,13 +92,81 @@ async function run (binary, cwd, listeners) {
  * Execute a UCI command.
  * @param {string} cmd
  */
-function exec (cmd) {
+function parseSetOption (cmd) {
+  const match = cmd.match(/^setoption\s+name\s+(.+?)(?:\s+value\s+(.+))?$/i)
+  if (!match) return null
+  return {
+    name: match[1].trim(),
+    value: match[2] !== undefined ? match[2].trim() : null
+  }
+}
+
+function resolveEvalFilePath (value) {
+  if (!value || value.toLowerCase() === '<empty>') return null
+  return path.isAbsolute(value) ? value : path.resolve(engineCwd || '.', value)
+}
+
+async function exec (cmd) {
   cmd = cmd.trim()
   msg.debug(`Received command "${cmd}"`)
-  if (engine) {
-    engine.exec(cmd).catch(err => msg.error(err.message))
-  } else {
+  if (!engine) {
     msg.error('Engine not running')
+    return
+  }
+
+  const option = parseSetOption(cmd)
+  if (option && option.name === 'EvalFile') {
+    const resolved = resolveEvalFilePath(option.value)
+    if (resolved && !fs.existsSync(resolved)) {
+      const payload = {
+        status: 'missing',
+        requested: option.value,
+        resolved,
+        cwd: engineCwd
+      }
+      msg.queue('nnue', payload)
+      msg.error(`[NNUE] EvalFile not found: ${option.value} (resolved to ${resolved}). Keeping engine default network.`)
+      return
+    }
+    if (resolved) {
+      pendingEvalFile = { requested: option.value, resolved }
+      msg.queue('nnue', {
+        status: 'found',
+        requested: option.value,
+        resolved,
+        cwd: engineCwd
+      })
+    }
+  }
+
+  try {
+    await engine.exec(cmd)
+    if (option) {
+      await engine.waitForReady()
+      const payload = { name: option.name, value: option.value }
+      msg.queue('option-applied', payload)
+      if (option.name === 'EvalFile') {
+        const resolved = resolveEvalFilePath(option.value)
+        pendingEvalFile = resolved ? { requested: option.value, resolved } : null
+        msg.queue('nnue', {
+          status: 'applied',
+          requested: option.value,
+          resolved,
+          cwd: engineCwd
+        })
+      }
+    }
+  } catch (err) {
+    msg.error(err.message)
+    if (option && option.name === 'EvalFile') {
+      msg.queue('nnue', {
+        status: 'rejected',
+        requested: option.value,
+        resolved: resolveEvalFilePath(option.value),
+        cwd: engineCwd,
+        error: err.message
+      })
+    }
   }
 }
 

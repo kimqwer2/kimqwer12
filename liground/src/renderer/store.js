@@ -419,6 +419,7 @@ export const store = new Vuex.Store({
       options: []
     },
     engineSettings: {},
+    nnueStatus: null,
     listOfEngineStats: [],
     engineStats: {
       depth: 0,
@@ -647,6 +648,7 @@ export const store = new Vuex.Store({
     },
     engineInfo (state, payload) {
       state.engineInfo = payload
+      state.nnueStatus = null
       const settings = {}
       for (const option of payload.options) {
         if (!filteredSettings.includes(option.name)) {
@@ -668,6 +670,9 @@ export const store = new Vuex.Store({
     },
     engineStats (state, payload) {
       state.engineStats = payload
+    },
+    nnueStatus (state, payload) {
+      state.nnueStatus = payload
     },
     resetEngineStats (state) {
       state.enginetime = 0
@@ -1905,7 +1910,7 @@ export const store = new Vuex.Store({
           if (!filteredSettings.includes(name)) {
             context.state.engineSettings[name] = value
           }
-          if (name === 'MultiPV' || name === 'UCI_Variant') {
+          if (name === 'MultiPV' || name === 'UCI_Variant' || name === 'EvalFile') {
             console.log('[engine-cmd] setoption', name, value)
           }
           engine.send(`setoption name ${name} value ${value}`)
@@ -2527,6 +2532,9 @@ export const store = new Vuex.Store({
     engineSettings (state) {
       return state.engineSettings
     },
+    nnueStatus (state) {
+      return state.nnueStatus
+    },
     multipv (state) {
       return state.multipv
     },
@@ -2826,6 +2834,33 @@ ffish.onRuntimeInitialized = () => {
   })
   engine.on('eval-debug', (...msgs) => console.log('%c[Eval Engine] Debug:', 'color: #9580ff; font-weight: 700;', ...msgs))
   engine.on('eval-error', (...msgs) => console.error('%c[Eval Engine]', 'color: #9580ff; font-weight: 700;', ...msgs))
+  engine.on('nnue', status => {
+    store.commit('nnueStatus', status)
+    const prefix = '[NNUE]'
+    if (status.status === 'applied') {
+      console.info(prefix, `EvalFile applied: ${status.requested}`, status)
+    } else if (status.status === 'found') {
+      console.info(prefix, `EvalFile found: ${status.requested}`, status)
+    } else if (status.status === 'missing') {
+      console.warn(prefix, `EvalFile missing: ${status.requested}. Engine default network remains active.`, status)
+    } else if (status.status === 'rejected') {
+      console.error(prefix, `Engine rejected EvalFile: ${status.requested}`, status)
+    }
+  })
+  engine.on('eval-nnue', status => {
+    const prefix = '[Eval NNUE]'
+    if (status.status === 'applied') {
+      console.info(prefix, `EvalFile applied: ${status.requested}`, status)
+    } else if (status.status === 'found') {
+      console.info(prefix, `EvalFile found: ${status.requested}`, status)
+    } else if (status.status === 'missing') {
+      console.warn(prefix, `EvalFile missing: ${status.requested}. Review engine default network remains active.`, status)
+    } else if (status.status === 'rejected') {
+      console.error(prefix, `Review engine rejected EvalFile: ${status.requested}`, status)
+    }
+  })
+  engine.on('option-applied', option => console.log('[engine-option-applied]', option))
+  engine.on('eval-option-applied', option => console.log('[eval-engine-option-applied]', option))
 
   // capture engine info
   engine.on('info', info => store.dispatch('updateMultiPV', info))

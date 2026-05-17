@@ -56,7 +56,19 @@ export class Engine extends EventEmitter {
    */
   run (binary, cwd) {
     return new Promise(resolve => {
-      this.once('active', info => resolve(info))
+      let mainInfo = null
+      let evalActive = false
+      const maybeResolve = () => {
+        if (mainInfo && evalActive) {
+          resolve(mainInfo)
+        }
+      }
+      const isActiveMessage = data => data.type === 'active' || (data.type === 'cache' && data.events.find(event => event.type === 'active'))
+
+      this.once('active', info => {
+        mainInfo = info
+        maybeResolve()
+      })
 
       // run main engine
       this.mainWorker.postMessage({
@@ -70,9 +82,9 @@ export class Engine extends EventEmitter {
         type: 'run'
       })
 
-      // initialize eval engine options
+      // initialize eval engine options after its UCI init/ready cycle is complete
       const listener = ({ data }) => {
-        if (data.type === 'active' || (data.type === 'cache' && data.events.find(event => event.type === 'active'))) {
+        if (isActiveMessage(data)) {
           this.evalWorker.removeEventListener('message', listener)
           const options = {
             UCI_AnalyseMode: 'true',
@@ -84,6 +96,8 @@ export class Engine extends EventEmitter {
               type: 'cmd'
             })
           }
+          evalActive = true
+          maybeResolve()
         }
       }
       this.evalWorker.addEventListener('message', listener)
@@ -99,7 +113,7 @@ export class Engine extends EventEmitter {
       payload: command,
       type: 'cmd'
     })
-    if (command.toLowerCase().includes('uci_variant')) {
+    if (command.toLowerCase().includes('uci_variant') || command.toLowerCase().includes('evalfile')) {
       this.evalWorker.postMessage({
         payload: command,
         type: 'cmd'
