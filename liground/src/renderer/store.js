@@ -137,6 +137,82 @@ function resolveReviewSequenceMove (legalMoves, move) {
 }
 
 
+function reviewLinePrefixLength (previousLine, nextLine) {
+  if (!Array.isArray(previousLine) || !Array.isArray(nextLine)) return 0
+  let idx = 0
+  while (idx < previousLine.length && idx < nextLine.length && previousLine[idx] === nextLine[idx]) idx++
+  return idx
+}
+
+function shouldDisplayReviewMoveForMarkerMode (ply, markerMode) {
+  if (markerMode === REVIEW_MARKER_MODES.FIRST_MOVE_ONLY) return ply === 1
+  if (markerMode === REVIEW_MARKER_MODES.OPPONENT_MOVES_ONLY) return ply % 2 === 0
+  if (markerMode === REVIEW_MARKER_MODES.BOTH_SIDES) return true
+  return ply % 2 === 1
+}
+
+function mergedReviewClassification (moves) {
+  const order = ['blunder', 'mistake', 'inaccuracy', 'needs_care', 'interesting_risk', 'attacking_try', 'complexity', 'practical', 'natural', 'good', 'excellent']
+  const sorted = moves.slice().sort((a, b) => {
+    const left = order.includes(a.classification) ? order.indexOf(a.classification) : order.length
+    const right = order.includes(b.classification) ? order.indexOf(b.classification) : order.length
+    return left - right
+  })
+  return sorted[0] || null
+}
+
+function mergeIncrementalReviewResult ({ previous, suffix, fullLine, fullSans, markerMode, prefixLength, requestContext }) {
+  const priorMoves = Array.isArray(previous.moves) ? previous.moves.slice(0, prefixLength) : []
+  const suffixMoves = Array.isArray(suffix.moves)
+    ? suffix.moves.map(move => {
+      const ply = prefixLength + move.ply
+      return {
+        ...move,
+        ply,
+        side: ply % 2 === 1 ? 'user' : 'opponent',
+        sideLabel: ply % 2 === 1 ? '내 수' : '상대 수',
+        previewLine: fullLine.slice(0, ply)
+      }
+    })
+    : []
+  const moves = priorMoves.concat(suffixMoves)
+  const markerMoves = moves.filter(move => shouldDisplayReviewMoveForMarkerMode(move.ply, markerMode))
+  const summaryMove = mergedReviewClassification(markerMoves.length ? markerMoves : moves)
+  const recentCount = suffixMoves.length
+  return {
+    ...suffix,
+    fen: previous.fen,
+    reviewedMove: fullLine[0] || suffix.reviewedMove,
+    reviewedLine: fullLine,
+    moveSan: Array.isArray(fullSans) ? fullSans[0] : suffix.moveSan,
+    markerMode,
+    markerModeLabel: suffix.markerModeLabel || previous.markerModeLabel,
+    moves,
+    markerMoves,
+    classification: summaryMove ? summaryMove.classification : suffix.classification,
+    classificationLabel: summaryMove ? summaryMove.classificationLabel : suffix.classificationLabel,
+    summary: `현재 기보 ${fullLine.length}수까지의 흐름입니다. 이전 ${prefixLength}수 분석은 유지하고, 최근 ${recentCount}수를 추가 엔진 확인해 전략 해설에 연결했습니다. ${summaryMove ? `${summaryMove.ply}수 ${summaryMove.sideLabel} ${summaryMove.move}가 현재 가장 중요한 확인 지점입니다.` : ''}`,
+    requestContext: {
+      ...(previous.requestContext || {}),
+      ...(requestContext || {}),
+      incremental: true,
+      prefixLength,
+      source: requestContext && requestContext.source ? requestContext.source : 'realtime-played-line'
+    },
+    engineEvidence: {
+      ...(suffix.engineEvidence || {}),
+      incremental: true,
+      prefixLength,
+      perMoveCount: moves.length
+    },
+    overlays: markerMoves.slice(-6).flatMap(move => Array.isArray(move.overlays) ? move.overlays : []),
+    risks: markerMoves.flatMap(move => Array.isArray(move.risks) ? move.risks : []).slice(-4),
+    keyMoments: (Array.isArray(previous.keyMoments) ? previous.keyMoments : []).concat((Array.isArray(suffix.keyMoments) ? suffix.keyMoments : []).map(moment => ({ ...moment, ply: prefixLength + moment.ply }))).slice(-8),
+    generatedAt: Date.now()
+  }
+}
+
+
 function enrichReviewMovePreviewFens (result, variant, is960) {
   if (!result || !Array.isArray(result.moves) || !result.fen) return result
   let board
@@ -2365,30 +2441,66 @@ export const store = new Vuex.Store({
         context.commit('reviewSetError', result && result.error ? result.error : 'Review failed')
         return null
       }
+      if (request.context && request.context.deferCommit) {
+        return result
+      }
       context.commit('reviewSetResult', result)
       return result
     },
 
-    reviewPlayedLine (context, payload = {}) {
+    async reviewPlayedLine (context, payload = {}) {
       const line = Array.isArray(payload.line) ? payload.line.filter(Boolean) : []
       if (line.length === 0) {
         context.commit('reviewSetError', '분석할 기보 수순이 없습니다. 먼저 수를 입력하거나 기보를 불러와 주세요.')
         return Promise.resolve(null)
       }
+      const markerMode = payload.markerMode || context.state.review.markerMode
+      const baseFen = payload.fen || context.getters.startFen
+      const fullSans = Array.isArray(payload.sans) ? payload.sans : []
+      const requestContext = {
+        markerMode,
+        currentFen: context.getters.fen,
+        manualGame: Boolean(payload.manualGame),
+        source: payload.source || 'played-line',
+        sequenceSans: fullSans
+      }
+      const previous = context.state.review.currentResult
+      const previousContext = previous && previous.requestContext ? previous.requestContext : {}
+      const previousLine = previous && Array.isArray(previous.reviewedLine) ? previous.reviewedLine : []
+      const prefixLength = reviewLinePrefixLength(previousLine, line)
+      const canExtend = previous && previous.fen === baseFen && previousContext.manualGame && prefixLength >= 2 && prefixLength === previousLine.length && prefixLength < line.length && Array.isArray(previous.moves) && previous.moves[prefixLength - 1] && previous.moves[prefixLength - 1].previewFen
+      if (canExtend) {
+        const suffixLine = line.slice(prefixLength)
+        const suffixSans = fullSans.slice(prefixLength)
+        const suffixResult = await context.dispatch('requestReview', {
+          mode: REVIEW_MODES.LINE,
+          fen: previous.moves[prefixLength - 1].previewFen,
+          move: suffixLine[0],
+          moveSan: suffixSans[0] || suffixLine[0],
+          line: suffixLine,
+          markerMode,
+          context: {
+            ...requestContext,
+            deferCommit: true,
+            incremental: true,
+            prefixLength,
+            baseFen
+          }
+        })
+        if (suffixResult) {
+          const merged = mergeIncrementalReviewResult({ previous, suffix: suffixResult, fullLine: line, fullSans, markerMode, prefixLength, requestContext })
+          context.commit('reviewSetResult', merged)
+          return merged
+        }
+      }
       return context.dispatch('requestReview', {
         mode: REVIEW_MODES.LINE,
-        fen: payload.fen || context.getters.startFen,
+        fen: baseFen,
         move: line[0],
-        moveSan: Array.isArray(payload.sans) ? payload.sans[0] : '',
+        moveSan: fullSans[0] || line[0],
         line,
-        markerMode: payload.markerMode || context.state.review.markerMode,
-        context: {
-          markerMode: payload.markerMode || context.state.review.markerMode,
-          currentFen: context.getters.fen,
-          manualGame: Boolean(payload.manualGame),
-          source: payload.source || 'played-line',
-          sequenceSans: Array.isArray(payload.sans) ? payload.sans : []
-        }
+        markerMode,
+        context: requestContext
       })
     },
     reviewCurrentMove (context) {

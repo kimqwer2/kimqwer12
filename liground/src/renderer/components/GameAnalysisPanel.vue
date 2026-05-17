@@ -189,6 +189,14 @@ export default {
     hasTemporaryLine () {
       return Boolean(this.reviewSequence && this.reviewSequence.active && Array.isArray(this.reviewSequence.line) && this.reviewSequence.line.length)
     },
+    reviewResultMatchesActivePlayedLine () {
+      return this.activePlayedUci.length > 0 && this.resultMatchesLine(this.activePlayedUci, this.startFen)
+    },
+    reviewResultIsPlayedLine () {
+      if (!this.hasReviewResult) return false
+      const ctx = this.reviewResult.requestContext || {}
+      return Boolean(ctx.manualGame || ctx.source === 'played-line' || ctx.source === 'realtime-played-line')
+    },
     previewReviewResult () {
       if (!this.realTimeCommentary || !this.hasReviewResult || !this.reviewPreview || !this.reviewPreview.active || !this.reviewPreview.move) return null
       const ply = this.reviewPreview.move.ply
@@ -213,11 +221,14 @@ export default {
       }
       if (this.hasReviewResult) {
         const ctx = this.reviewResult.requestContext || {}
-        const label = ctx.temporary ? '임시 수순 엔진 리뷰' : (ctx.manualGame || ctx.source === 'played-line' || ctx.source === 'realtime-played-line' ? '현재 기보 엔진 리뷰' : '수순 리뷰 결과')
-        return {
-          key: `review:${this.reviewResult.id || ''}:${this.reviewResult.generatedAt || ''}`,
-          label,
-          analysis: analyzeGameReview(this.reviewResult)
+        const stalePlayedReview = this.reviewResultIsPlayedLine && this.activePlayedUci.length && !this.reviewResultMatchesActivePlayedLine
+        if (!stalePlayedReview) {
+          const label = ctx.temporary ? '임시 수순 엔진 리뷰' : (ctx.manualGame || ctx.source === 'played-line' || ctx.source === 'realtime-played-line' ? '현재 기보 엔진 리뷰' : '수순 리뷰 결과')
+          return {
+            key: `review:${this.reviewResult.id || ''}:${this.reviewResult.generatedAt || ''}`,
+            label,
+            analysis: analyzeGameReview(this.reviewResult)
+          }
         }
       }
       if (this.hasTemporaryLine) {
@@ -259,7 +270,7 @@ export default {
       if (this.hasTemporaryLine && !this.resultMatchesLine(this.reviewSequence.line, this.reviewSequence.baseFen)) {
         return `temporary:${this.reviewSequence.baseFen || ''}:${this.reviewSequence.line.join(' ')}`
       }
-      if (!this.hasReviewResult && !this.hasTemporaryLine && this.activePlayedUci.length >= 2) {
+      if (!this.hasTemporaryLine && this.activePlayedUci.length >= 2 && !this.reviewResultMatchesActivePlayedLine) {
         return `played:${this.startFen || ''}:${this.activePlayedUci.join(' ')}`
       }
       return ''
