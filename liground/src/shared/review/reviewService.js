@@ -149,12 +149,12 @@ function punishmentFromAnalysis (engineAnalysis) {
 function classifyMove ({ reviewedMove, bestLine, candidateLine, features, evalLoss }) {
   if (!reviewedMove) return 'no_move'
   if (bestLine && bestLine.move === reviewedMove) return 'engine_supported_idea'
-  if (typeof evalLoss === 'number' && evalLoss >= 180) return 'high_risk'
+  if (typeof evalLoss === 'number' && evalLoss >= 160) return 'high_risk'
   if (features && features.some(feature => feature.type === 'overextension_check' || feature.type === 'exposed_king_lane')) return 'practical_but_risky'
   if (candidateLine && bestLine && typeof bestLine.cp === 'number' && typeof candidateLine.cp === 'number') {
     const loss = bestLine.cp - candidateLine.cp
-    if (loss >= 180) return 'high_risk'
-    if (loss >= 80) return 'risky_practical_try'
+    if (loss >= 160) return 'high_risk'
+    if (loss >= 70) return 'risky_practical_try'
     if (loss >= 30) return 'playable_alternative'
   }
   if (bestLine && bestLine.move && bestLine.move !== reviewedMove) return 'needs_tactical_check'
@@ -294,14 +294,17 @@ function classifyHumanMove ({ move, bestLine, candidateLine, features, evalLoss 
   const loss = typeof evalLoss === 'number' ? evalLoss : null
 
   if (moveIsBest && (loss === null || loss <= 20)) return { key: 'excellent', label: '훌륭한 수', severity: 'excellent', tone: 'positive' }
-  if (loss !== null && loss >= 520) return { key: 'blunder', label: '큰 실수', severity: 'blunder', tone: 'critical' }
-  if (loss !== null && loss >= 360) return { key: 'mistake', label: '전술 확인이 필요한 수', severity: 'mistake', tone: 'critical' }
-  if (loss !== null && loss >= 230) return { key: 'inaccuracy', label: '반격 여지가 있는 수', severity: 'inaccuracy', tone: 'caution' }
-  if (loss !== null && loss >= 130) {
-    if (signals.attackChances || signals.complexityIncrease) return { key: 'interesting_risk', label: '좋은 수지만 반격 여지', severity: 'risky', tone: 'practical' }
+  if (loss !== null && loss >= 320) return { key: 'blunder', label: '큰 실수', severity: 'blunder', tone: 'critical' }
+  if (loss !== null && loss >= 180) return { key: 'mistake', label: '큰 손해가 나는 수', severity: 'mistake', tone: 'critical' }
+  if (loss !== null && loss >= 120) {
+    const label = signals.attackChances || signals.complexityIncrease ? '반격 의도는 있지만 위험한 수' : '위험한 수'
+    return { key: 'inaccuracy', label, severity: 'inaccuracy', tone: 'caution' }
+  }
+  if (loss !== null && loss >= 70) {
+    if (signals.attackChances || signals.complexityIncrease) return { key: 'interesting_risk', label: '반격 여지가 있는 시도', severity: 'caution', tone: 'caution' }
     return { key: 'needs_care', label: '응수 확인 후보', severity: 'caution', tone: 'caution' }
   }
-  if (loss !== null && loss >= 65) {
+  if (loss !== null && loss >= 35) {
     if (signals.attackChances) return { key: 'attacking_try', label: '공격적인 시도', severity: 'practical', tone: 'practical' }
     if (signals.complexityIncrease) return { key: 'complexity', label: '복잡성을 높이는 수', severity: 'practical', tone: 'practical' }
     return { key: 'practical', label: '실전적인 수', severity: 'practical', tone: 'practical' }
@@ -313,11 +316,15 @@ function classifyHumanMove ({ move, bestLine, candidateLine, features, evalLoss 
 }
 
 function summaryForMoveReview ({ ply, sideLabel, move, classification, intent, evalLoss, practical }) {
-  const lossText = typeof evalLoss === 'number' && evalLoss >= 65 ? ` 엔진상 약 ${Math.round(evalLoss)}cp 정도의 차이는 있습니다.` : ''
-  const practicalText = practical ? ` ${practicalLabel(practical)} 관점에서 의미가 있습니다.` : ''
-  if (classification.tone === 'critical') return `${ply}수 ${sideLabel} ${move}: ${classification.label}입니다. 바로 단정하기보다 표시된 상대 응수와 목표 지점을 먼저 확인해 보세요.${lossText}`
-  if (classification.tone === 'caution') return `${ply}수 ${sideLabel} ${move}: ${classification.label}입니다. 실전적으로 둘 수 있지만 응수와 수비 균형을 한 번 확인하면 좋습니다.${lossText}`
-  if (classification.tone === 'practical') return `${ply}수 ${sideLabel} ${move}: ${classification.label}입니다. 엔진 1순위가 아니어도 사람 입장에서는 압박과 선택지를 만드는 수입니다.${practicalText}`
+  const lossText = typeof evalLoss === 'number' && evalLoss >= 180
+    ? ' 평가상 손해가 크게 잡힙니다.'
+    : (typeof evalLoss === 'number' && evalLoss >= 120
+      ? ' 평가상 손해가 뚜렷합니다.'
+      : (typeof evalLoss === 'number' && evalLoss >= 70 ? ' 평가상 손해가 보입니다.' : ''))
+  const practicalText = practical ? ` ${practicalLabel(practical)} 관점의 의도는 함께 확인할 수 있습니다.` : ''
+  if (classification.tone === 'critical') return `${ply}수 ${sideLabel} ${move}: ${classification.label}입니다.${lossText}${practicalText} 표시된 상대 응수와 목표 지점을 먼저 확인해 보세요.`
+  if (classification.tone === 'caution') return `${ply}수 ${sideLabel} ${move}: ${classification.label}입니다.${lossText}${practicalText} 실전적으로 둘 수 있어도 응수와 수비 균형을 한 번 확인하면 좋습니다.`
+  if (classification.tone === 'practical') return `${ply}수 ${sideLabel} ${move}: ${classification.label}입니다. 가장 엄격한 추천이 아니어도 사람 입장에서는 압박과 선택지를 만드는 수입니다.${practicalText}`
   return `${ply}수 ${sideLabel} ${move}: ${classification.label}입니다. ${intent.text}`
 }
 
@@ -597,6 +604,7 @@ export function analyzeReviewRequest (request) {
     mode: request.mode || REVIEW_MODES.MOVE,
     markerMode,
     markerModeLabel: markerModeLabel(markerMode),
+    requestContext: request.context || {},
     variant: request.variant,
     fen: request.fen,
     reviewedMove,

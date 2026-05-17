@@ -137,6 +137,102 @@ function resolveReviewSequenceMove (legalMoves, move) {
 }
 
 
+function reviewLinePrefixLength (previousLine, nextLine) {
+  if (!Array.isArray(previousLine) || !Array.isArray(nextLine)) return 0
+  let idx = 0
+  while (idx < previousLine.length && idx < nextLine.length && previousLine[idx] === nextLine[idx]) idx++
+  return idx
+}
+
+function shouldDisplayReviewMoveForMarkerMode (ply, markerMode) {
+  if (markerMode === REVIEW_MARKER_MODES.FIRST_MOVE_ONLY) return ply === 1
+  if (markerMode === REVIEW_MARKER_MODES.OPPONENT_MOVES_ONLY) return ply % 2 === 0
+  if (markerMode === REVIEW_MARKER_MODES.BOTH_SIDES) return true
+  return ply % 2 === 1
+}
+
+function mergedReviewClassification (moves) {
+  const order = ['blunder', 'mistake', 'inaccuracy', 'needs_care', 'interesting_risk', 'attacking_try', 'complexity', 'practical', 'natural', 'good', 'excellent']
+  const sorted = moves.slice().sort((a, b) => {
+    const left = order.includes(a.classification) ? order.indexOf(a.classification) : order.length
+    const right = order.includes(b.classification) ? order.indexOf(b.classification) : order.length
+    return left - right
+  })
+  return sorted[0] || null
+}
+
+function mergeIncrementalReviewResult ({ previous, suffix, fullLine, fullSans, markerMode, prefixLength, requestContext }) {
+  const priorMoves = Array.isArray(previous.moves) ? previous.moves.slice(0, prefixLength) : []
+  const suffixMoves = Array.isArray(suffix.moves)
+    ? suffix.moves.map(move => {
+      const ply = prefixLength + move.ply
+      return {
+        ...move,
+        ply,
+        side: ply % 2 === 1 ? 'user' : 'opponent',
+        sideLabel: ply % 2 === 1 ? '내 수' : '상대 수',
+        previewLine: fullLine.slice(0, ply)
+      }
+    })
+    : []
+  const moves = priorMoves.concat(suffixMoves)
+  const markerMoves = moves.filter(move => shouldDisplayReviewMoveForMarkerMode(move.ply, markerMode))
+  const summaryMove = mergedReviewClassification(markerMoves.length ? markerMoves : moves)
+  const recentCount = suffixMoves.length
+  return {
+    ...suffix,
+    fen: previous.fen,
+    reviewedMove: fullLine[0] || suffix.reviewedMove,
+    reviewedLine: fullLine,
+    moveSan: Array.isArray(fullSans) ? fullSans[0] : suffix.moveSan,
+    markerMode,
+    markerModeLabel: suffix.markerModeLabel || previous.markerModeLabel,
+    moves,
+    markerMoves,
+    classification: summaryMove ? summaryMove.classification : suffix.classification,
+    classificationLabel: summaryMove ? summaryMove.classificationLabel : suffix.classificationLabel,
+    summary: `현재 기보 ${fullLine.length}수까지의 흐름입니다. 이전 ${prefixLength}수 분석은 유지하고, 최근 ${recentCount}수를 추가 엔진 확인해 전략 해설에 연결했습니다. ${summaryMove ? `${summaryMove.ply}수 ${summaryMove.sideLabel} ${summaryMove.move}가 현재 가장 중요한 확인 지점입니다.` : ''}`,
+    requestContext: {
+      ...(previous.requestContext || {}),
+      ...(requestContext || {}),
+      incremental: true,
+      prefixLength,
+      source: requestContext && requestContext.source ? requestContext.source : 'realtime-played-line'
+    },
+    engineEvidence: {
+      ...(suffix.engineEvidence || {}),
+      incremental: true,
+      prefixLength,
+      perMoveCount: moves.length
+    },
+    overlays: markerMoves.slice(-6).flatMap(move => Array.isArray(move.overlays) ? move.overlays : []),
+    risks: markerMoves.flatMap(move => Array.isArray(move.risks) ? move.risks : []).slice(-4),
+    keyMoments: (Array.isArray(previous.keyMoments) ? previous.keyMoments : []).concat((Array.isArray(suffix.keyMoments) ? suffix.keyMoments : []).map(moment => ({ ...moment, ply: prefixLength + moment.ply }))).slice(-8),
+    generatedAt: Date.now()
+  }
+}
+
+
+function suffixOnlyReviewResultFromFull ({ result, prefixLength }) {
+  if (!result || !prefixLength) return result
+  const adjustMove = move => {
+    const ply = move.ply - prefixLength
+    return {
+      ...move,
+      ply,
+      previewLine: Array.isArray(move.previewLine) ? move.previewLine.slice(prefixLength) : move.previewLine
+    }
+  }
+  const adjustMoment = moment => ({ ...moment, ply: moment.ply - prefixLength })
+  return {
+    ...result,
+    moves: Array.isArray(result.moves) ? result.moves.filter(move => move && move.ply > prefixLength).map(adjustMove) : [],
+    markerMoves: Array.isArray(result.markerMoves) ? result.markerMoves.filter(move => move && move.ply > prefixLength).map(adjustMove) : [],
+    keyMoments: Array.isArray(result.keyMoments) ? result.keyMoments.filter(moment => moment && moment.ply > prefixLength).map(adjustMoment) : []
+  }
+}
+
+
 function enrichReviewMovePreviewFens (result, variant, is960) {
   if (!result || !Array.isArray(result.moves) || !result.fen) return result
   let board
@@ -161,6 +257,22 @@ function enrichReviewMovePreviewFens (result, variant, is960) {
     moves: result.moves.map(enrich),
     markerMoves: Array.isArray(result.markerMoves) ? result.markerMoves.map(enrich) : result.markerMoves
   }
+}
+
+
+// Realtime commentary owns only the latest played move on the live board.
+// Rich review markers remain available in review panels and hover previews.
+function primaryRealtimeBoardOverlays (result, overlays, arrowsEnabled, currentFen) {
+  if (!result || arrowsEnabled === false) return []
+  const resultContext = result.requestContext || {}
+  if (resultContext.currentFen && currentFen && resultContext.currentFen !== currentFen) return []
+  const reviewedLine = Array.isArray(result.reviewedLine) ? result.reviewedLine : []
+  const latestPly = reviewedLine.length
+  if (!latestPly) return []
+  return (Array.isArray(overlays) ? overlays : [])
+    .filter(overlay => overlay && overlay.id === `move-marker-${latestPly}` && overlay.kind === 'arrow')
+    .slice(0, 1)
+    .map(overlay => ({ ...overlay, source: 'realtime-current-move' }))
 }
 
 function previewOverlaysForMove (move) {
@@ -491,7 +603,9 @@ export const store = new Vuex.Store({
       reviewTacticalDepth: 8,
       reviewStrategicHorizon: 20,
       reviewPunishmentLineLength: 6,
-      reviewDetailLevel: 'balanced'
+      reviewDetailLevel: 'balanced',
+      realtimeGameCommentary: false,
+      realtimeCommentaryArrows: false
     },
     deepAnalysis: {
       running: false,
@@ -906,6 +1020,23 @@ export const store = new Vuex.Store({
       state.review.error = null
       state.review.preview = { active: false, fen: '', move: null, overlays: [] }
       state.review.active = true
+    },
+    reviewPrepareFullRebuild (state) {
+      const previousInteraction = state.review.sequence && state.review.sequence.previousInteraction
+      state.review.currentResult = null
+      state.review.overlays = []
+      state.review.preview = { active: false, fen: '', move: null, overlays: [] }
+      state.review.sequence = emptyReviewSequenceState()
+      state.review.resultsById = {}
+      state.review.error = null
+      state.review.lastRequestId = null
+      state.review.active = true
+      if (previousInteraction && typeof previousInteraction.analysisMode === 'boolean') {
+        state.analysisMode = previousInteraction.analysisMode
+      }
+      if (previousInteraction && typeof previousInteraction.editorMode === 'boolean') {
+        state.editorMode = previousInteraction.editorMode
+      }
     },
     reviewSetResult (state, payload) {
       const result = enrichReviewMovePreviewFens(payload, state.variant, state.board && state.board.is960 && state.board.is960())
@@ -2364,8 +2495,154 @@ export const store = new Vuex.Store({
         context.commit('reviewSetError', result && result.error ? result.error : 'Review failed')
         return null
       }
+      if (request.context && request.context.deferCommit) {
+        return result
+      }
       context.commit('reviewSetResult', result)
       return result
+    },
+
+    async replayPlayedLineReview (context, payload = {}) {
+      const line = Array.isArray(payload.line) ? payload.line.filter(Boolean) : []
+      if (line.length === 0) {
+        context.commit('reviewSetError', '분석할 기보 수순이 없습니다. 먼저 수를 입력하거나 기보를 불러와 주세요.')
+        return Promise.resolve(null)
+      }
+      context.commit('reviewPrepareFullRebuild')
+      let result = null
+      for (let idx = 0; idx < line.length; idx++) {
+        result = await context.dispatch('reviewPlayedLine', {
+          ...payload,
+          line: line.slice(0, idx + 1),
+          sans: Array.isArray(payload.sans) ? payload.sans.slice(0, idx + 1) : [],
+          incremental: true,
+          fullRebuild: false,
+          replayFromStart: true
+        })
+        if (!result) return null
+      }
+      return result
+    },
+
+    async reviewPlayedLine (context, payload = {}) {
+      const line = Array.isArray(payload.line) ? payload.line.filter(Boolean) : []
+      if (line.length === 0) {
+        context.commit('reviewSetError', '분석할 기보 수순이 없습니다. 먼저 수를 입력하거나 기보를 불러와 주세요.')
+        return Promise.resolve(null)
+      }
+      if (payload.fullRebuild === true) {
+        return context.dispatch('replayPlayedLineReview', payload)
+      }
+      const markerMode = payload.markerMode || context.state.review.markerMode
+      const baseFen = payload.fen || context.getters.startFen
+      const fullSans = Array.isArray(payload.sans) ? payload.sans : []
+      const incrementalRequested = payload.incremental === true
+      const fullRebuild = payload.fullRebuild === true || !incrementalRequested
+      const requestContext = {
+        markerMode,
+        currentFen: context.getters.fen,
+        manualGame: Boolean(payload.manualGame),
+        source: payload.source || 'played-line',
+        sequenceSans: fullSans,
+        incrementalMode: incrementalRequested,
+        fullRebuild,
+        replayFromStart: payload.replayFromStart === true
+      }
+      if (fullRebuild) context.commit('reviewPrepareFullRebuild')
+      const previous = context.state.review.currentResult
+      const previousContext = previous && previous.requestContext ? previous.requestContext : {}
+      const previousLine = previous && Array.isArray(previous.reviewedLine) ? previous.reviewedLine : []
+      const prefixLength = reviewLinePrefixLength(previousLine, line)
+      const canExtend = incrementalRequested &&
+        previous &&
+        previous.fen === baseFen &&
+        previousContext.manualGame &&
+        prefixLength >= 2 &&
+        prefixLength === previousLine.length &&
+        prefixLength < line.length &&
+        Array.isArray(previous.moves) &&
+        previous.moves[prefixLength - 1] &&
+        previous.moves[prefixLength - 1].previewFen
+      if (canExtend) {
+        const suffixLine = line.slice(prefixLength)
+        const suffixSans = fullSans.slice(prefixLength)
+        const suffixResult = await context.dispatch('requestReview', {
+          mode: REVIEW_MODES.LINE,
+          fen: previous.moves[prefixLength - 1].previewFen,
+          move: suffixLine[0],
+          moveSan: suffixSans[0] || suffixLine[0],
+          line: suffixLine,
+          markerMode,
+          context: {
+            ...requestContext,
+            deferCommit: true,
+            incremental: true,
+            prefixLength,
+            baseFen
+          }
+        })
+        if (suffixResult) {
+          const merged = mergeIncrementalReviewResult({
+            previous,
+            suffix: suffixResult,
+            fullLine: line,
+            fullSans,
+            markerMode,
+            prefixLength,
+            requestContext
+          })
+          context.commit('reviewSetResult', merged)
+          return merged
+        }
+      }
+      if (incrementalRequested &&
+        previous &&
+        previous.fen === baseFen &&
+        previousContext.manualGame &&
+        prefixLength > 0 &&
+        prefixLength < line.length
+      ) {
+        const fullResult = await context.dispatch('requestReview', {
+          mode: REVIEW_MODES.LINE,
+          fen: baseFen,
+          move: line[0],
+          moveSan: fullSans[0] || line[0],
+          line,
+          markerMode,
+          context: {
+            ...requestContext,
+            deferCommit: true,
+            incremental: true,
+            preservePrefixLength: prefixLength
+          }
+        })
+        if (!fullResult) return null
+        const suffixResult = suffixOnlyReviewResultFromFull({ result: fullResult, prefixLength })
+        if (suffixResult && Array.isArray(suffixResult.moves) && suffixResult.moves.length) {
+          const merged = mergeIncrementalReviewResult({
+            previous,
+            suffix: suffixResult,
+            fullLine: line,
+            fullSans,
+            markerMode,
+            prefixLength,
+            requestContext
+          })
+          context.commit('reviewSetResult', merged)
+          return merged
+        }
+        context.commit('reviewSetResult', previous)
+        return previous
+      }
+      return context.dispatch('requestReview', {
+        mode: REVIEW_MODES.LINE,
+        fen: baseFen,
+        move: line[0],
+        moveSan: fullSans[0] || line[0],
+        line,
+        markerMode,
+        context: requestContext
+      })
     },
     reviewCurrentMove (context) {
       const move = context.getters.currentMove[0]
@@ -2905,10 +3182,20 @@ export const store = new Vuex.Store({
       if (state.review.preview && state.review.preview.active) {
         return Array.isArray(state.review.preview.overlays) ? state.review.preview.overlays : []
       }
+      const resultContext = state.review.currentResult && state.review.currentResult.requestContext ? state.review.currentResult.requestContext : {}
+      const realtimeStrategic = resultContext.source === 'realtime-played-line'
       const resultOverlays = Array.isArray(state.review.overlays) ? state.review.overlays : []
+      const visibleResultOverlays = realtimeStrategic
+        ? primaryRealtimeBoardOverlays(
+          state.review.currentResult,
+          resultOverlays,
+          state.analysisVisualization.realtimeCommentaryArrows,
+          state.fen
+        )
+        : resultOverlays
       const sequenceOverlays = Array.isArray(state.review.sequence.overlays) ? state.review.sequence.overlays : []
-      if (!state.review.sequence.active) return resultOverlays
-      return resultOverlays.length > 0 ? resultOverlays : sequenceOverlays
+      if (!state.review.sequence.active) return visibleResultOverlays
+      return visibleResultOverlays.length > 0 ? visibleResultOverlays : sequenceOverlays
     },
     menuAtMove (state) {
       return state.menuAtMove
