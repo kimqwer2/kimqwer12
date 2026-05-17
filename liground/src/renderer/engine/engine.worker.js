@@ -14,6 +14,7 @@ let child = null
 let engine = null
 let engineCwd = ''
 let pendingEvalFile = null
+let deepAnalysisCancelled = false
 
 /**
  * Run a new engine, killing the old process.
@@ -109,6 +110,9 @@ function resolveEvalFilePath (value) {
 async function exec (cmd) {
   cmd = cmd.trim()
   msg.debug(`Received command "${cmd}"`)
+  if (cmd.toLowerCase() === 'stop') {
+    deepAnalysisCancelled = true
+  }
   if (!engine) {
     msg.error('Engine not running')
     return
@@ -248,6 +252,306 @@ function collectSearch (positionCommand, goCommand, timeout = 20000) {
   })
 }
 
+function scoreToCp (info) {
+  if (!info) return null
+  if (typeof info.cp === 'number') return info.cp
+  if (typeof info.mate === 'number') return info.mate > 0 ? 100000 - info.mate : -100000 - info.mate
+  return null
+}
+
+function scorePayload (info, perspective = 1) {
+  if (!info) return {}
+  const normalized = scoreToCp(info)
+  return {
+    cp: info.cp,
+    mate: info.mate,
+    normalized: normalized === null ? null : normalized * perspective
+  }
+}
+
+function volatilityLabel (switches, drift, samples, sensitivity) {
+  const sampleCount = Math.max(1, samples)
+  const switchRate = switches / sampleCount
+  const highDrift = Math.max(120, sensitivity * 1.8)
+  if (drift >= highDrift || switchRate >= 0.45) return 'highly volatile'
+  if (drift >= sensitivity || switchRate >= 0.20) return 'unstable'
+  return 'stable'
+}
+
+function collectDeepSearch (positionCommand, goCommand, timeout, sensitivity, perspective = 1, displayPrefix = '') {
+  return new Promise(resolve => {
+    const samples = []
+    let done = false
+    let latest = null
+    let maxDepth = 0
+    let maxScore = null
+    let minScore = null
+    let bestMoveSwitches = 0
+    let pvChanges = 0
+    let previousBestMove = ''
+    let previousPv = ''
+    const startedAt = Date.now()
+    const cleanup = () => {
+      engine.events.off('info', listener)
+      engine.events.off('bestmove', bestmoveListener)
+      clearTimeout(timer)
+    }
+    const finish = bestmove => {
+      if (done) return
+      done = true
+      cleanup()
+      const elapsedMs = Date.now() - startedAt
+      const rawFinalScore = scoreToCp(latest)
+      const finalScore = rawFinalScore === null ? null : rawFinalScore * perspective
+      const drift = maxScore !== null && minScore !== null ? Math.abs(maxScore - minScore) : 0
+      resolve({
+        bestmove,
+        final: latest,
+        finalScore: scorePayload(latest, perspective),
+        maxScore,
+        minScore,
+        evalDrift: drift,
+        depthReached: maxDepth,
+        timeMs: elapsedMs,
+        samples,
+        sampleCount: samples.length,
+        bestMoveSwitches,
+        pvChanges,
+        stability: volatilityLabel(bestMoveSwitches + pvChanges, drift, samples.length, sensitivity),
+        uncertainty: volatilityLabel(bestMoveSwitches + pvChanges, drift, samples.length, sensitivity),
+        flags: {
+          highDisagreement: drift >= Math.max(80, sensitivity),
+          lateImprovement: samples.length >= 2 && finalScore !== null && Math.abs(finalScore - samples[0].score.normalized) >= sensitivity,
+          collapsedCandidate: finalScore !== null && samples.some(sample => sample.score.normalized !== null && sample.score.normalized - finalScore >= Math.max(120, sensitivity * 1.5))
+        }
+      })
+    }
+    const listener = info => {
+      if (!('pv' in info)) return
+      const firstMove = typeof info.pv === 'string' ? info.pv.split(/\s+/)[0] : ''
+      const rawNormalized = scoreToCp(info)
+      const normalized = rawNormalized === null ? null : rawNormalized * perspective
+      latest = {
+        cp: info.cp,
+        mate: info.mate,
+        pvUCI: info.pv,
+        ucimove: firstMove,
+        depth: info.depth,
+        seldepth: info.seldepth,
+        wdl: info.wdl,
+        wdlWin: info.wdlWin,
+        wdlDraw: info.wdlDraw,
+        wdlLoss: info.wdlLoss
+      }
+      if (typeof info.depth === 'number') maxDepth = Math.max(maxDepth, info.depth)
+      if (normalized !== null) {
+        maxScore = maxScore === null ? normalized : Math.max(maxScore, normalized)
+        minScore = minScore === null ? normalized : Math.min(minScore, normalized)
+      }
+      if (previousBestMove && firstMove && previousBestMove !== firstMove) bestMoveSwitches++
+      if (previousPv && info.pv && previousPv !== info.pv) pvChanges++
+      previousBestMove = firstMove || previousBestMove
+      previousPv = info.pv || previousPv
+      const displayPv = displayPrefix ? `${displayPrefix} ${info.pv || ''}`.trim() : info.pv
+      msg.queue('info', {
+        multipv: 1,
+        cp: typeof info.cp === 'number' ? info.cp * perspective : info.cp,
+        mate: typeof info.mate === 'number' ? info.mate * perspective : info.mate,
+        pv: displayPv,
+        depth: info.depth,
+        seldepth: info.seldepth,
+        wdl: info.wdl,
+        wdlWin: info.wdlWin,
+        wdlDraw: info.wdlDraw,
+        wdlLoss: info.wdlLoss
+      })
+      samples.push({
+        atMs: Date.now() - startedAt,
+        depth: info.depth,
+        seldepth: info.seldepth,
+        bestMove: firstMove,
+        pvUCI: info.pv,
+        displayPvUCI: displayPv,
+        score: scorePayload(info, perspective)
+      })
+    }
+    const bestmoveListener = bestmove => finish(bestmove)
+    const timer = setTimeout(() => {
+      try { engine.exec('stop') } catch (err) {}
+      finish(null)
+    }, timeout)
+    engine.events.on('info', listener)
+    engine.events.once('bestmove', bestmoveListener)
+    engine.exec(positionCommand)
+    engine.exec(goCommand)
+  })
+}
+
+function deepGoCommand (settings, candidateIndex) {
+  const mode = settings.scheduleMode || 'equal'
+  const depth = Number(settings.depthPerCandidate)
+  let movetime = Number(settings.timePerCandidateMs) || 30000
+  if (mode === 'top-short-secondary-long' && candidateIndex > 0) {
+    movetime = Number(settings.secondaryTimeMs) || movetime
+  }
+  if (Number.isFinite(depth) && depth > 0) return `go depth ${depth}`
+  return `go movetime ${Math.max(1000, movetime)}`
+}
+
+function mergeDeepResults (primary, extra, sensitivity) {
+  const samples = primary.samples.concat(extra.samples || [])
+  const maxScores = [primary.maxScore, extra.maxScore].filter(value => typeof value === 'number')
+  const minScores = [primary.minScore, extra.minScore].filter(value => typeof value === 'number')
+  const maxScore = maxScores.length ? Math.max(...maxScores) : null
+  const minScore = minScores.length ? Math.min(...minScores) : null
+  const drift = maxScore !== null && minScore !== null ? Math.abs(maxScore - minScore) : Math.max(primary.evalDrift || 0, extra.evalDrift || 0)
+  return {
+    ...primary,
+    bestmove: extra.bestmove || primary.bestmove,
+    final: extra.final || primary.final,
+    finalScore: extra.finalScore || primary.finalScore,
+    maxScore,
+    minScore,
+    evalDrift: drift,
+    depthReached: Math.max(primary.depthReached || 0, extra.depthReached || 0),
+    timeMs: (primary.timeMs || 0) + (extra.timeMs || 0),
+    samples,
+    sampleCount: samples.length,
+    bestMoveSwitches: (primary.bestMoveSwitches || 0) + (extra.bestMoveSwitches || 0),
+    pvChanges: (primary.pvChanges || 0) + (extra.pvChanges || 0),
+    stability: volatilityLabel((primary.bestMoveSwitches || 0) + (extra.bestMoveSwitches || 0) + (primary.pvChanges || 0) + (extra.pvChanges || 0), drift, samples.length, sensitivity),
+    uncertainty: volatilityLabel((primary.bestMoveSwitches || 0) + (extra.bestMoveSwitches || 0) + (primary.pvChanges || 0) + (extra.pvChanges || 0), drift, samples.length, sensitivity),
+    flags: {
+      highDisagreement: primary.flags.highDisagreement || extra.flags.highDisagreement,
+      lateImprovement: primary.flags.lateImprovement || extra.flags.lateImprovement,
+      collapsedCandidate: primary.flags.collapsedCandidate || extra.flags.collapsedCandidate,
+      dynamicallyExtended: true
+    }
+  }
+}
+
+function candidateDiversityTag (item, rank) {
+  if (!item) return 'engine candidate'
+  if (typeof item.mate === 'number') return 'forcing / tactical'
+  const score = scoreToCp(item)
+  if (score !== null && Math.abs(score) >= 250) return score > 0 ? 'advantage conversion' : 'defensive resource'
+  if (rank > 1) return 'alternative plan'
+  return 'principal plan'
+}
+
+function selectDeepCandidates (root, count) {
+  const seen = new Set()
+  const candidates = []
+  for (const item of root.candidates || []) {
+    const move = item.ucimove || (typeof item.pvUCI === 'string' ? item.pvUCI.split(/\s+/)[0] : '')
+    if (move && !seen.has(move)) {
+      seen.add(move)
+      candidates.push({ move, root: item, diversityTag: candidateDiversityTag(item, candidates.length + 1) })
+    }
+    if (candidates.length >= count) break
+  }
+  if (root.bestmove && !seen.has(root.bestmove) && candidates.length < count) {
+    candidates.push({ move: root.bestmove, root: null, diversityTag: 'engine bestmove fallback' })
+  }
+  return candidates
+}
+
+async function deepAnalyze (payload) {
+  deepAnalysisCancelled = false
+  if (!engine) {
+    msg.error('Engine not running')
+    return
+  }
+  const settings = payload.settings || {}
+  const fen = payload.fen
+  const variant = payload.variant
+  const candidateCount = Math.max(1, Math.min(Number(settings.candidateCount) || 3, 8))
+  const rootTime = Math.max(1000, Number(settings.rootTimeMs) || 15000)
+  const sensitivity = Math.max(20, Number(settings.instabilitySensitivityCp) || 80)
+  const startedAt = Date.now()
+
+  try {
+    if (variant) await engine.exec(`setoption name UCI_Variant value ${variant}`)
+    await engine.exec(`setoption name MultiPV value ${candidateCount}`)
+    await engine.exec('setoption name UCI_ShowWDL value true')
+    await engine.waitForReady()
+
+    const root = await collectSearch(`position fen ${fen}`, `go movetime ${rootTime}`, rootTime + 5000)
+    if (deepAnalysisCancelled) {
+      msg.queue('deep-analysis', { error: 'Deep analysis cancelled', cancelled: true, fen, variant, settings, elapsedMs: Date.now() - startedAt })
+      return
+    }
+    const selected = selectDeepCandidates(root, candidateCount)
+    const results = []
+
+    for (let idx = 0; idx < selected.length; idx++) {
+      if (deepAnalysisCancelled) {
+        msg.queue('deep-analysis', { error: 'Deep analysis cancelled', cancelled: true, fen, variant, settings, partial: results, elapsedMs: Date.now() - startedAt })
+        return
+      }
+      const candidate = selected[idx]
+      if (settings.clearHashBetweenCandidates) {
+        await engine.exec('setoption name Clear Hash')
+        await engine.waitForReady()
+      }
+      await engine.exec('setoption name MultiPV value 1')
+      await engine.waitForReady()
+      const goCommand = deepGoCommand(settings, idx)
+      const timeout = (Number(settings.depthPerCandidate) > 0 ? Number(settings.maxDurationMs) || 300000 : Math.max(Number(settings.maxDurationMs) || 300000, (Number(settings.timePerCandidateMs) || 30000) + 5000))
+      let analyzed = await collectDeepSearch(`position fen ${fen} moves ${candidate.move}`, goCommand, timeout, sensitivity, -1, candidate.move)
+      if (deepAnalysisCancelled) {
+        msg.queue('deep-analysis', { error: 'Deep analysis cancelled', cancelled: true, fen, variant, settings, partial: results, elapsedMs: Date.now() - startedAt })
+        return
+      }
+      if (settings.scheduleMode === 'dynamic-instability' && analyzed.stability !== 'stable' && !(Number(settings.depthPerCandidate) > 0)) {
+        const extensionMs = Math.min(Number(settings.maxDurationMs) || 300000, Number(settings.timePerCandidateMs) || 30000)
+        const extra = await collectDeepSearch(`position fen ${fen} moves ${candidate.move}`, `go movetime ${extensionMs}`, extensionMs + 5000, sensitivity, -1, candidate.move)
+        if (deepAnalysisCancelled) {
+          msg.queue('deep-analysis', { error: 'Deep analysis cancelled', cancelled: true, fen, variant, settings, partial: results, elapsedMs: Date.now() - startedAt })
+          return
+        }
+        analyzed = mergeDeepResults(analyzed, extra, sensitivity)
+      }
+      results.push({
+        rank: idx + 1,
+        move: candidate.move,
+        initialRank: idx + 1,
+        diversityTag: candidate.diversityTag,
+        initial: candidate.root,
+        ...analyzed
+      })
+    }
+
+    const ranked = results.slice().sort((a, b) => {
+      const bScore = b.finalScore && typeof b.finalScore.normalized === 'number' ? b.finalScore.normalized : -Infinity
+      const aScore = a.finalScore && typeof a.finalScore.normalized === 'number' ? a.finalScore.normalized : -Infinity
+      return bScore - aScore
+    })
+    ranked.forEach((item, idx) => { item.finalRank = idx + 1; item.rankingChange = item.initialRank - item.finalRank })
+
+    msg.queue('deep-analysis', {
+      fen,
+      variant,
+      settings,
+      root,
+      candidates: ranked,
+      startedAt,
+      completedAt: Date.now(),
+      elapsedMs: Date.now() - startedAt,
+      summary: {
+        candidateCount: ranked.length,
+        volatileCount: ranked.filter(item => item.stability !== 'stable').length,
+        bestMove: ranked[0] ? ranked[0].move : '',
+        clearHash: !!settings.clearHashBetweenCandidates,
+        diversityTags: Array.from(new Set(ranked.map(item => item.diversityTag).filter(Boolean))),
+        diversityThresholdMet: Array.from(new Set(ranked.map(item => item.diversityTag).filter(Boolean))).length >= (Number(settings.diversityThreshold) || 1)
+      }
+    })
+  } catch (err) {
+    msg.queue('deep-analysis', { error: err.message, fen, variant, settings, elapsedMs: Date.now() - startedAt })
+  }
+}
+
 async function reviewAnalyze (payload) {
   if (!engine) {
     msg.error('Engine not running')
@@ -332,6 +636,9 @@ self.addEventListener('message', ({ data: { type, payload } }) => {
     }
     case 'review':
       reviewAnalyze(payload)
+      break
+    case 'deep-analysis':
+      deepAnalyze(payload)
       break
   }
 })

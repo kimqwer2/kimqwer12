@@ -539,8 +539,7 @@ export default {
   color: var(--main-text-color);
   font-size: 12px;
   text-align: left;
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  overflow: visible;
 }
 .review-header {
   position: sticky;
@@ -926,8 +925,8 @@ small {
 }
 @media (max-width: 780px) {
   .review-panel {
-    flex: 0 1 auto;
-    max-height: 48vh;
+    flex: 0 0 auto;
+    max-height: none;
   }
   .review-grid,
   .response-list {
