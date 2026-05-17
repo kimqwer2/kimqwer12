@@ -213,6 +213,26 @@ function mergeIncrementalReviewResult ({ previous, suffix, fullLine, fullSans, m
 }
 
 
+function suffixOnlyReviewResultFromFull ({ result, prefixLength }) {
+  if (!result || !prefixLength) return result
+  const adjustMove = move => {
+    const ply = move.ply - prefixLength
+    return {
+      ...move,
+      ply,
+      previewLine: Array.isArray(move.previewLine) ? move.previewLine.slice(prefixLength) : move.previewLine
+    }
+  }
+  const adjustMoment = moment => ({ ...moment, ply: moment.ply - prefixLength })
+  return {
+    ...result,
+    moves: Array.isArray(result.moves) ? result.moves.filter(move => move && move.ply > prefixLength).map(adjustMove) : [],
+    markerMoves: Array.isArray(result.markerMoves) ? result.markerMoves.filter(move => move && move.ply > prefixLength).map(adjustMove) : [],
+    keyMoments: Array.isArray(result.keyMoments) ? result.keyMoments.filter(moment => moment && moment.ply > prefixLength).map(adjustMoment) : []
+  }
+}
+
+
 function enrichReviewMovePreviewFens (result, variant, is960) {
   if (!result || !Array.isArray(result.moves) || !result.fen) return result
   let board
@@ -585,7 +605,7 @@ export const store = new Vuex.Store({
       reviewPunishmentLineLength: 6,
       reviewDetailLevel: 'balanced',
       realtimeGameCommentary: false,
-      realtimeCommentaryArrows: true
+      realtimeCommentaryArrows: false
     },
     deepAnalysis: {
       running: false,
@@ -1002,11 +1022,21 @@ export const store = new Vuex.Store({
       state.review.active = true
     },
     reviewPrepareFullRebuild (state) {
+      const previousInteraction = state.review.sequence && state.review.sequence.previousInteraction
       state.review.currentResult = null
       state.review.overlays = []
       state.review.preview = { active: false, fen: '', move: null, overlays: [] }
+      state.review.sequence = emptyReviewSequenceState()
+      state.review.resultsById = {}
       state.review.error = null
+      state.review.lastRequestId = null
       state.review.active = true
+      if (previousInteraction && typeof previousInteraction.analysisMode === 'boolean') {
+        state.analysisMode = previousInteraction.analysisMode
+      }
+      if (previousInteraction && typeof previousInteraction.editorMode === 'boolean') {
+        state.editorMode = previousInteraction.editorMode
+      }
     },
     reviewSetResult (state, payload) {
       const result = enrichReviewMovePreviewFens(payload, state.variant, state.board && state.board.is960 && state.board.is960())
@@ -2526,10 +2556,57 @@ export const store = new Vuex.Store({
           }
         })
         if (suffixResult) {
-          const merged = mergeIncrementalReviewResult({ previous, suffix: suffixResult, fullLine: line, fullSans, markerMode, prefixLength, requestContext })
+          const merged = mergeIncrementalReviewResult({
+            previous,
+            suffix: suffixResult,
+            fullLine: line,
+            fullSans,
+            markerMode,
+            prefixLength,
+            requestContext
+          })
           context.commit('reviewSetResult', merged)
           return merged
         }
+      }
+      if (incrementalRequested &&
+        previous &&
+        previous.fen === baseFen &&
+        previousContext.manualGame &&
+        prefixLength > 0 &&
+        prefixLength < line.length
+      ) {
+        const fullResult = await context.dispatch('requestReview', {
+          mode: REVIEW_MODES.LINE,
+          fen: baseFen,
+          move: line[0],
+          moveSan: fullSans[0] || line[0],
+          line,
+          markerMode,
+          context: {
+            ...requestContext,
+            deferCommit: true,
+            incremental: true,
+            preservePrefixLength: prefixLength
+          }
+        })
+        if (!fullResult) return null
+        const suffixResult = suffixOnlyReviewResultFromFull({ result: fullResult, prefixLength })
+        if (suffixResult && Array.isArray(suffixResult.moves) && suffixResult.moves.length) {
+          const merged = mergeIncrementalReviewResult({
+            previous,
+            suffix: suffixResult,
+            fullLine: line,
+            fullSans,
+            markerMode,
+            prefixLength,
+            requestContext
+          })
+          context.commit('reviewSetResult', merged)
+          return merged
+        }
+        context.commit('reviewSetResult', previous)
+        return previous
       }
       return context.dispatch('requestReview', {
         mode: REVIEW_MODES.LINE,

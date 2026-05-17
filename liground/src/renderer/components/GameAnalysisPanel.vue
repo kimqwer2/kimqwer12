@@ -367,6 +367,8 @@ export default {
       this.localAnalysis = this.activeAnalysisContext ? this.activeAnalysisContext.analysis : null
     },
     reviewCurrentGame () {
+      this.clearRealtimeTimer()
+      this.lastRealtimeReviewKey = ''
       this.$store.dispatch('reviewPlayedLine', {
         fen: this.startFen,
         line: this.activePlayedUci,
