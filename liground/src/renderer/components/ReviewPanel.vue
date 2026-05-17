@@ -527,7 +527,7 @@ export default {
 <style scoped>
 .review-panel {
   display: flex;
-  flex: 0 0 auto;
+  flex: 1 1 auto;
   flex-direction: column;
   min-height: 0;
   max-height: none;
