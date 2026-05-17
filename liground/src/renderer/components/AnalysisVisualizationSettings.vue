@@ -27,25 +27,28 @@
       <small>Deep Analysis is an analysis supervisor: it gets MultiPV candidates, then re-analyzes each candidate as an isolated worldline.</small>
 
       <template v-if="local.analysisModeType === 'deep'">
-        <label>Candidate count <input v-model.number="local.deepCandidateCount" min="1" max="8" type="number" @change="save"></label>
-        <label>Root MultiPV time (sec) <input :value="msToSec(local.deepRootTimeMs)" min="1" type="number" @change="saveMs('deepRootTimeMs', $event.target.value)"></label>
-        <label>Time per candidate (sec) <input :value="msToSec(local.deepTimePerCandidateMs)" min="1" type="number" @change="saveMs('deepTimePerCandidateMs', $event.target.value)"></label>
-        <label>Secondary time (sec) <input :value="msToSec(local.deepSecondaryTimeMs)" min="1" type="number" @change="saveMs('deepSecondaryTimeMs', $event.target.value)"></label>
-        <label>Depth per candidate <input v-model.number="local.deepDepthPerCandidate" min="0" type="number" @change="save"></label>
-        <label>Schedule
-          <select v-model="local.deepScheduleMode" @change="save">
-            <option value="equal">Equal time</option>
-            <option value="top-short-secondary-long">Top short / secondary long</option>
-            <option value="dynamic-instability">Dynamic by instability</option>
-          </select>
-        </label>
-        <label><input v-model="local.deepClearHashBetweenCandidates" type="checkbox" @change="save"> Clear hash between candidates</label>
-        <label>Instability sensitivity (cp) <input v-model.number="local.deepInstabilitySensitivityCp" min="20" type="number" @change="save"></label>
-        <label>Diversity threshold <input v-model.number="local.deepDiversityThreshold" min="1" type="number" @change="save"></label>
-        <label>Max candidate duration (sec) <input :value="msToSec(local.deepMaxDurationMs)" min="5" type="number" @change="saveMs('deepMaxDurationMs', $event.target.value)"></label>
         <button type="button" :disabled="deepAnalysis.running" @click="startDeepAnalysis">
           {{ deepAnalysis.running ? 'Deep analysis running…' : 'Run Deep Analysis' }}
         </button>
+        <details class="deep-advanced">
+          <summary>Deep Analysis Settings</summary>
+          <label>Candidate count <input v-model.number="local.deepCandidateCount" min="1" max="8" type="number" @change="save"></label>
+          <label>Root MultiPV time (sec) <input :value="msToSec(local.deepRootTimeMs)" min="1" type="number" @change="saveMs('deepRootTimeMs', $event.target.value)"></label>
+          <label>Time per candidate (sec) <input :value="msToSec(local.deepTimePerCandidateMs)" min="1" type="number" @change="saveMs('deepTimePerCandidateMs', $event.target.value)"></label>
+          <label>Secondary time (sec) <input :value="msToSec(local.deepSecondaryTimeMs)" min="1" type="number" @change="saveMs('deepSecondaryTimeMs', $event.target.value)"></label>
+          <label>Depth per candidate <input v-model.number="local.deepDepthPerCandidate" min="0" type="number" @change="save"></label>
+          <label>Schedule
+            <select v-model="local.deepScheduleMode" @change="save">
+              <option value="equal">Equal time</option>
+              <option value="top-short-secondary-long">Top short / secondary long</option>
+              <option value="dynamic-instability">Dynamic by instability</option>
+            </select>
+          </label>
+          <label><input v-model="local.deepClearHashBetweenCandidates" type="checkbox" @change="save"> Clear hash between candidates</label>
+          <label>Instability sensitivity (cp) <input v-model.number="local.deepInstabilitySensitivityCp" min="20" type="number" @change="save"></label>
+          <label>Diversity threshold <input v-model.number="local.deepDiversityThreshold" min="1" type="number" @change="save"></label>
+          <label>Max candidate duration (sec) <input :value="msToSec(local.deepMaxDurationMs)" min="5" type="number" @change="saveMs('deepMaxDurationMs', $event.target.value)"></label>
+        </details>
       </template>
     </div>
 
@@ -175,7 +178,11 @@ small { color: var(--second-text-color, #9aa0a6); overflow-wrap: anywhere; }
 .deep-box { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--main-border-color); }
 .radio-row { justify-content: flex-start; }
 .deep-error { padding: 6px; border-left: 4px solid #d7263d; background: rgba(215, 38, 61, 0.18); }
-.deep-report { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--main-border-color); }
+.deep-report { display: flex; flex-direction: column; gap: 6px; max-height: 45vh; overflow-y: auto; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--main-border-color); overscroll-behavior: contain; }
+.deep-advanced { display: flex; flex-direction: column; gap: 6px; padding: 6px; border-radius: 4px; background: rgba(127,127,127,0.08); }
+.deep-advanced[open] { display: flex; }
+.deep-advanced summary { cursor: pointer; font-weight: 700; }
+.deep-advanced label { margin-top: 6px; }
 .report-heading, .candidate-title { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
 .report-heading button { background: #555; }
 .candidate-card { padding: 7px; border-radius: 5px; border: 1px solid rgba(255,255,255,0.16); background: rgba(127,127,127,0.10); }

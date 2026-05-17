@@ -14,6 +14,7 @@ let child = null
 let engine = null
 let engineCwd = ''
 let pendingEvalFile = null
+let deepAnalysisCancelled = false
 
 /**
  * Run a new engine, killing the old process.
@@ -109,6 +110,9 @@ function resolveEvalFilePath (value) {
 async function exec (cmd) {
   cmd = cmd.trim()
   msg.debug(`Received command "${cmd}"`)
+  if (cmd.toLowerCase() === 'stop') {
+    deepAnalysisCancelled = true
+  }
   if (!engine) {
     msg.error('Engine not running')
     return
@@ -274,7 +278,7 @@ function volatilityLabel (switches, drift, samples, sensitivity) {
   return 'stable'
 }
 
-function collectDeepSearch (positionCommand, goCommand, timeout, sensitivity, perspective = 1) {
+function collectDeepSearch (positionCommand, goCommand, timeout, sensitivity, perspective = 1, displayPrefix = '') {
   return new Promise(resolve => {
     const samples = []
     let done = false
@@ -348,12 +352,26 @@ function collectDeepSearch (positionCommand, goCommand, timeout, sensitivity, pe
       if (previousPv && info.pv && previousPv !== info.pv) pvChanges++
       previousBestMove = firstMove || previousBestMove
       previousPv = info.pv || previousPv
+      const displayPv = displayPrefix ? `${displayPrefix} ${info.pv || ''}`.trim() : info.pv
+      msg.queue('info', {
+        multipv: 1,
+        cp: typeof info.cp === 'number' ? info.cp * perspective : info.cp,
+        mate: typeof info.mate === 'number' ? info.mate * perspective : info.mate,
+        pv: displayPv,
+        depth: info.depth,
+        seldepth: info.seldepth,
+        wdl: info.wdl,
+        wdlWin: info.wdlWin,
+        wdlDraw: info.wdlDraw,
+        wdlLoss: info.wdlLoss
+      })
       samples.push({
         atMs: Date.now() - startedAt,
         depth: info.depth,
         seldepth: info.seldepth,
         bestMove: firstMove,
         pvUCI: info.pv,
+        displayPvUCI: displayPv,
         score: scorePayload(info, perspective)
       })
     }
@@ -439,6 +457,7 @@ function selectDeepCandidates (root, count) {
 }
 
 async function deepAnalyze (payload) {
+  deepAnalysisCancelled = false
   if (!engine) {
     msg.error('Engine not running')
     return
@@ -458,10 +477,18 @@ async function deepAnalyze (payload) {
     await engine.waitForReady()
 
     const root = await collectSearch(`position fen ${fen}`, `go movetime ${rootTime}`, rootTime + 5000)
+    if (deepAnalysisCancelled) {
+      msg.queue('deep-analysis', { error: 'Deep analysis cancelled', cancelled: true, fen, variant, settings, elapsedMs: Date.now() - startedAt })
+      return
+    }
     const selected = selectDeepCandidates(root, candidateCount)
     const results = []
 
     for (let idx = 0; idx < selected.length; idx++) {
+      if (deepAnalysisCancelled) {
+        msg.queue('deep-analysis', { error: 'Deep analysis cancelled', cancelled: true, fen, variant, settings, partial: results, elapsedMs: Date.now() - startedAt })
+        return
+      }
       const candidate = selected[idx]
       if (settings.clearHashBetweenCandidates) {
         await engine.exec('setoption name Clear Hash')
@@ -471,10 +498,18 @@ async function deepAnalyze (payload) {
       await engine.waitForReady()
       const goCommand = deepGoCommand(settings, idx)
       const timeout = (Number(settings.depthPerCandidate) > 0 ? Number(settings.maxDurationMs) || 300000 : Math.max(Number(settings.maxDurationMs) || 300000, (Number(settings.timePerCandidateMs) || 30000) + 5000))
-      let analyzed = await collectDeepSearch(`position fen ${fen} moves ${candidate.move}`, goCommand, timeout, sensitivity, -1)
+      let analyzed = await collectDeepSearch(`position fen ${fen} moves ${candidate.move}`, goCommand, timeout, sensitivity, -1, candidate.move)
+      if (deepAnalysisCancelled) {
+        msg.queue('deep-analysis', { error: 'Deep analysis cancelled', cancelled: true, fen, variant, settings, partial: results, elapsedMs: Date.now() - startedAt })
+        return
+      }
       if (settings.scheduleMode === 'dynamic-instability' && analyzed.stability !== 'stable' && !(Number(settings.depthPerCandidate) > 0)) {
         const extensionMs = Math.min(Number(settings.maxDurationMs) || 300000, Number(settings.timePerCandidateMs) || 30000)
-        const extra = await collectDeepSearch(`position fen ${fen} moves ${candidate.move}`, `go movetime ${extensionMs}`, extensionMs + 5000, sensitivity, -1)
+        const extra = await collectDeepSearch(`position fen ${fen} moves ${candidate.move}`, `go movetime ${extensionMs}`, extensionMs + 5000, sensitivity, -1, candidate.move)
+        if (deepAnalysisCancelled) {
+          msg.queue('deep-analysis', { error: 'Deep analysis cancelled', cancelled: true, fen, variant, settings, partial: results, elapsedMs: Date.now() - startedAt })
+          return
+        }
         analyzed = mergeDeepResults(analyzed, extra, sensitivity)
       }
       results.push({

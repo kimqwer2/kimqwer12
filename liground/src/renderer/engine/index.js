@@ -42,8 +42,21 @@ export class Engine extends EventEmitter {
     // second thread for evaluation only
     /** @type {Worker} */
     this.evalWorker = new EngineWorker()
+    this.deepAnalysisActive = false
     this.evalWorker.addEventListener('message', ({ data }) => {
-      if (data.type !== 'cache') {
+      if (data.type === 'cache') {
+        if (this.deepAnalysisActive) {
+          const { pv, info } = data
+          for (const line of pv) {
+            if (line) {
+              this.emit('info', line)
+            }
+          }
+          if (Object.keys(info).length > 0) {
+            this.emit('info', info)
+          }
+        }
+      } else {
         this.emit(`eval-${data.type}`, ...arrayify(data.payload))
       }
     })
@@ -113,7 +126,7 @@ export class Engine extends EventEmitter {
       payload: command,
       type: 'cmd'
     })
-    if (command.toLowerCase().includes('uci_variant') || command.toLowerCase().includes('evalfile')) {
+    if (command.toLowerCase().includes('uci_variant') || command.toLowerCase().includes('evalfile') || command.toLowerCase() === 'stop') {
       this.evalWorker.postMessage({
         payload: command,
         type: 'cmd'
@@ -176,11 +189,13 @@ export class Engine extends EventEmitter {
    * @returns {Promise<Object>} structured deep analysis report
    */
   deepAnalysis (request) {
+    this.deepAnalysisActive = true
     return new Promise(resolve => {
       this.evalWorker.onmessage = ({ data }) => {
         if (data.type === 'cache') {
           for (const { type, payload } of data.events) {
             if (type === 'deep-analysis') {
+              this.deepAnalysisActive = false
               resolve(payload)
               delete this.evalWorker.onmessage
             }

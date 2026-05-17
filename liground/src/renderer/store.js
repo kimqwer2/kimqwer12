@@ -1592,6 +1592,9 @@ export const store = new Vuex.Store({
       engine.send('stop')
       context.commit('resetEngineTime')
       context.commit('active', false)
+      if (context.state.deepAnalysis.running) {
+        context.commit('deepAnalysisResult', { error: 'Deep analysis cancelled', cancelled: true })
+      }
     },
     restartEngine (context) {
       context.dispatch('resetEngineData')
@@ -1988,7 +1991,7 @@ export const store = new Vuex.Store({
       // only update multipv if depth is higher than cached depth
       if (stats.isEvalCached && stats.depth <= stats.cachedDepth) return
       const targetDepth = context.state.analysisVisualization.analysisTargetDepth
-      if (context.state.active && targetDepth !== 'infinite' && Number.isFinite(Number(targetDepth)) && stats.depth >= Number(targetDepth)) {
+      if (!context.state.deepAnalysis.running && context.state.active && targetDepth !== 'infinite' && Number.isFinite(Number(targetDepth)) && stats.depth >= Number(targetDepth)) {
         context.dispatch('stopEngine')
         context.commit('analysisMode', false)
         return
@@ -2180,6 +2183,8 @@ export const store = new Vuex.Store({
       }
       context.dispatch('resetEngineData')
       context.commit('deepAnalysisStart')
+      context.commit('active', true)
+      context.commit('analysisMode', true)
       const cfg = context.state.analysisVisualization
       const settings = {
         candidateCount: cfg.deepCandidateCount,
@@ -2201,6 +2206,9 @@ export const store = new Vuex.Store({
       })
       console.log('[deep-analysis] result', result)
       context.commit('deepAnalysisResult', result)
+      context.commit('resetEngineTime')
+      context.commit('active', false)
+      context.commit('analysisMode', false)
     },
     clearDeepAnalysis (context) {
       context.commit('deepAnalysisClear')

@@ -110,7 +110,8 @@ export default {
   width: 100%;
   height: 100%;
   min-height: 0;
-  overflow: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 0;
   margin: 0;
 }
