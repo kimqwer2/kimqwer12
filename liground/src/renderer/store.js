@@ -507,6 +507,7 @@ function initializeGameStateFromSettings (settings = {}) {
     moves: [],
     sideToMove: settings.sideToMove || 'white',
     variant: settings.variant || 'chess',
+    players: settings.players || { white: 'human', black: 'human' },
     clocks: {
       whiteTimeMs: normalizedBase,
       blackTimeMs: normalizedBase,
@@ -555,6 +556,7 @@ export const store = new Vuex.Store({
       moves: [],
       sideToMove: 'white',
       variant: 'chess',
+      players: { white: 'human', black: 'human' },
       clocks: {
         whiteTimeMs: null,
         blackTimeMs: null,
@@ -1490,6 +1492,7 @@ export const store = new Vuex.Store({
             context.dispatch('endGame', { result })
           }
         }
+        context.dispatch('maybeTriggerEngineMove')
       })
     },
     pushMainLine (context, payload) {
@@ -1716,6 +1719,7 @@ export const store = new Vuex.Store({
         startFen: settings.startFen || context.state.startFen,
         sideToMove: settings.sideToMove || 'white',
         variant: settings.variant || context.getters.variant,
+        players: settings.players || { white: 'human', black: 'human' },
         baseTimeMs: settings.baseTimeMs,
         incrementMs: settings.incrementMs,
         depth: settings.depth,
@@ -1730,6 +1734,25 @@ export const store = new Vuex.Store({
       context.dispatch('updateBoard')
       context.dispatch('resetEngineData')
       context.commit('bumpRuntimeSearchId')
+    },
+    maybeTriggerEngineMove (context) {
+      const side = context.state.gameState.sideToMove
+      const players = context.state.gameState.players || {}
+      if (players[side] !== 'engine') return
+      if (context.state.EvE) {
+        const cfg = context.state.EvEConfig || {}
+        const inst = side === 'white' ? context.state.engineWhiteInstance : context.state.engineBlackInstance
+        const lim = side === 'white' ? cfg.whiteLimiter : cfg.blackLimiter
+        if (inst) {
+          inst.send('stop')
+          inst.send(buildPositionCommand(context.getters.gameState))
+          inst.send(clockToGo(context.getters.gameState, limiterToGo(lim)))
+        }
+        return
+      }
+      if (context.state.PvE) {
+        context.dispatch('goEnginePvE')
+      }
     },
 
     endGame (context, payload) {
