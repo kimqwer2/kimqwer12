@@ -487,6 +487,16 @@ function limiterToGo (limiter) {
     default: return `go movetime ${parseInt(limiter.value, 10) || 1000}`
   }
 }
+function clockToGo (gameState, fallbackGo) {
+  const clocks = gameState && gameState.clocks
+  if (!clocks) return fallbackGo
+  const wt = Number(clocks.whiteTimeMs)
+  const bt = Number(clocks.blackTimeMs)
+  const wi = Number(clocks.whiteIncrementMs)
+  const bi = Number(clocks.blackIncrementMs)
+  if (![wt, bt, wi, bi].every(Number.isFinite)) return fallbackGo
+  return `go wtime ${Math.max(0, Math.floor(wt))} btime ${Math.max(0, Math.floor(bt))} winc ${Math.max(0, Math.floor(wi))} binc ${Math.max(0, Math.floor(bi))}`
+}
 
 export const store = new Vuex.Store({
   state: {
@@ -687,7 +697,9 @@ export const store = new Vuex.Store({
     shogiVariants: [
       '+ Add Custom', 'shogi'
     ],
-    clock: null
+    clock: null,
+    gameClockInterval: null,
+    runtimeSearchId: 0
   },
   mutations: { // sync
     increaseEngineNumber (state) {
@@ -1248,6 +1260,24 @@ export const store = new Vuex.Store({
     },
     resetEngineTime (state) {
       clearInterval(state.clock)
+      state.clock = null
+      state.enginetime = 0
+    },
+    setGameClockInterval (state, payload) {
+      state.gameClockInterval = payload
+    },
+    clearGameClockInterval (state) {
+      if (state.gameClockInterval) clearInterval(state.gameClockInterval)
+      state.gameClockInterval = null
+    },
+    gameStateClock (state, payload) {
+      state.gameState.clocks = { ...state.gameState.clocks, ...(payload || {}) }
+    },
+    gameStateEngineSettings (state, payload) {
+      state.gameState.engineSettings = { ...state.gameState.engineSettings, ...(payload || {}) }
+    },
+    bumpRuntimeSearchId (state) {
+      state.runtimeSearchId += 1
     },
     saveSettings (state) {
       localStorage.darkMode = state.darkMode
@@ -1409,8 +1439,15 @@ export const store = new Vuex.Store({
       context.commit('syncGameStateFromStore')
     },
     push (context, payload) {
+      const movingSide = context.state.gameState.sideToMove
       context.commit('appendMoves', payload)
       return context.dispatch('fen', context.state.board.fen()).then(() => {
+        const clocks = context.state.gameState.clocks || {}
+        if (movingSide === 'white' && Number.isFinite(Number(clocks.whiteTimeMs))) {
+          context.commit('gameStateClock', { whiteTimeMs: Number(clocks.whiteTimeMs) + (Number(clocks.whiteIncrementMs) || 0) })
+        } else if (movingSide === 'black' && Number.isFinite(Number(clocks.blackTimeMs))) {
+          context.commit('gameStateClock', { blackTimeMs: Number(clocks.blackTimeMs) + (Number(clocks.blackIncrementMs) || 0) })
+        }
         // Only check for game end if a game was started via the new game modal
         if (context.state.gameConfig) {
           if (context.state.board.isGameOver()) {
@@ -1484,6 +1521,55 @@ export const store = new Vuex.Store({
     setPvEInput (context, payload) {
       context.commit('PvEInput', payload)
     },
+    setRuntimeEngineSettings (context, payload) {
+      context.commit('gameStateEngineSettings', payload)
+      context.dispatch('restartSearchFromGameState')
+    },
+    setGameClock (context, payload) {
+      context.commit('gameStateClock', payload)
+    },
+    tickGameClock (context, deltaMs = 1000) {
+      if (!context.state.active) return
+      const clocks = context.state.gameState.clocks || {}
+      if (context.state.gameState.sideToMove === 'white' && Number.isFinite(Number(clocks.whiteTimeMs))) {
+        const next = Math.max(0, Number(clocks.whiteTimeMs) - Number(deltaMs))
+        context.commit('gameStateClock', { whiteTimeMs: next })
+        if (next === 0) context.dispatch('endGame', { result: 'black-win' })
+      } else if (context.state.gameState.sideToMove === 'black' && Number.isFinite(Number(clocks.blackTimeMs))) {
+        const next = Math.max(0, Number(clocks.blackTimeMs) - Number(deltaMs))
+        context.commit('gameStateClock', { blackTimeMs: next })
+        if (next === 0) context.dispatch('endGame', { result: 'white-win' })
+      }
+    },
+    startGameClock (context) {
+      context.commit('clearGameClockInterval')
+      const interval = setInterval(() => context.dispatch('tickGameClock', 200), 200)
+      context.commit('setGameClockInterval', interval)
+    },
+    stopGameClock (context) {
+      context.commit('clearGameClockInterval')
+    },
+    restartSearchFromGameState (context) {
+      context.commit('bumpRuntimeSearchId')
+      if (!context.state.active) return
+      if (context.state.PvE) {
+        if (context.state.PvEEngineInstance) context.state.PvEEngineInstance.send('stop')
+        context.dispatch('goEnginePvE')
+      } else if (context.state.EvE) {
+        const activeEngine = context.getters.turn ? context.state.engineWhiteInstance : context.state.engineBlackInstance
+        const cfg = context.state.EvEConfig || {}
+        const lim = context.getters.turn ? cfg.whiteLimiter : cfg.blackLimiter
+        if (activeEngine) {
+          activeEngine.send('stop')
+          activeEngine.send(buildPositionCommand(context.getters.gameState))
+          activeEngine.send(clockToGo(context.getters.gameState, limiterToGo(lim)))
+        }
+      } else {
+        context.dispatch('stopEngine')
+        context.dispatch('position')
+        context.dispatch('goEngine')
+      }
+    },
     updateLiveLimiter (context, payload = {}) {
       const limiter = {
         enabled: payload.enabled !== false,
@@ -1508,7 +1594,7 @@ export const store = new Vuex.Store({
           activeEngine.send('stop')
           const activeLimiter = context.getters.turn ? cfg.whiteLimiter : cfg.blackLimiter
           activeEngine.send(buildPositionCommand(context.getters.gameState))
-          activeEngine.send(limiterToGo(activeLimiter))
+          activeEngine.send(clockToGo(context.getters.gameState, limiterToGo(activeLimiter)))
         }
       }
       this.commit('syncGameStateFromStore')
@@ -1537,9 +1623,10 @@ export const store = new Vuex.Store({
         ? `go depth ${payload.depth || Number(targetDepth)}`
         : 'go infinite'
       console.log('[engine-order] cmd:', goCmd)
-      engine.send(goCmd)
+      engine.send(clockToGo(context.getters.gameState, goCmd))
       context.commit('setEngineClock')
       context.commit('active', true)
+      context.dispatch('startGameClock')
     },
     goEnginePvE (context) {
       // Send PvE engine command using the stored PvE engine instance and limiter
@@ -1551,12 +1638,13 @@ export const store = new Vuex.Store({
       }
       try {
         pveEngine.send(buildPositionCommand(context.getters.gameState))
-        pveEngine.send(limiterToGo(pveLimiter))
+        pveEngine.send(clockToGo(context.getters.gameState, limiterToGo(pveLimiter)))
       } catch (err) {
         console.error('[goEnginePvE] Failed to send position/go to PvE engine:', err)
       }
       context.commit('setEngineClock')
       context.commit('active', true)
+      context.dispatch('startGameClock')
     },
     PvEMakeMove (context, payload) {
       // Triggered when the engine emits 'bestmove'. Apply the move only if:
@@ -1658,7 +1746,7 @@ export const store = new Vuex.Store({
         const sendPositionAndGo = (inst, lim) => {
           try {
             inst.send(buildPositionCommand(context.getters.gameState))
-            inst.send(limiterToGo(lim))
+            inst.send(clockToGo(context.getters.gameState, limiterToGo(lim)))
           } catch (err) {
             console.error('[PvE] Failed to send position/go:', err)
           }
@@ -1745,7 +1833,7 @@ export const store = new Vuex.Store({
         const sendPositionAndGo = (inst, lim) => {
           try {
             inst.send(buildPositionCommand(context.getters.gameState))
-            inst.send(limiterToGo(lim))
+            inst.send(clockToGo(context.getters.gameState, limiterToGo(lim)))
           } catch (err) {
             console.error('[EvE] Failed to send position/go:', err)
           }
@@ -1819,6 +1907,7 @@ export const store = new Vuex.Store({
         console.error('[EvEfalse] Error stopping EvE engines:', err)
       }
       context.commit('active', false)
+      context.dispatch('stopGameClock')
       context.dispatch('resetEngineData')
     },
     stopEnginePvE (context) {
@@ -1841,6 +1930,7 @@ export const store = new Vuex.Store({
       } else {
         context.commit('resetEngineTime')
         context.commit('active', false)
+        context.dispatch('stopGameClock')
       }
       context.dispatch('resetEngineData')
     },
@@ -1848,6 +1938,7 @@ export const store = new Vuex.Store({
       engine.send('stop')
       context.commit('resetEngineTime')
       context.commit('active', false)
+      context.dispatch('stopGameClock')
       if (context.state.deepAnalysis.running) {
         context.commit('deepAnalysisResult', { error: 'Deep analysis cancelled', cancelled: true })
       }
