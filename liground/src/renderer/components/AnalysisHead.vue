@@ -286,38 +286,12 @@ export default {
       this.$store.dispatch('EvEfalse')
       this.$store.dispatch('resetBoard', { is960: false })
       this.$store.dispatch('setGameConfig', payload)
-      const activeLimiter = payload.white === 'engine' ? payload.whiteLimiter : payload.blackLimiter
-      const engineSettings = activeLimiter
-        ? {
-            depth: activeLimiter.type === 'depth' ? activeLimiter.value : null,
-            nodes: activeLimiter.type === 'nodes' ? activeLimiter.value : null,
-            movetime: activeLimiter.type === 'time' ? activeLimiter.value : null
-          }
-        : {}
       const isPvP = payload.white === 'player' && payload.black === 'player'
       const isEvE = payload.white === 'engine' && payload.black === 'engine'
       const isPvE = !isPvP && !isEvE
-      const players = {
-        white: payload.white === 'engine' ? 'engine' : 'human',
-        black: payload.black === 'engine' ? 'engine' : 'human'
-      }
-      this.$store.dispatch('initializeNewGameState', {
-        startFen: this.$store.getters.startFen,
-        sideToMove: 'white',
-        variant: payload.gameMode || this.$store.getters.variant,
-        baseTimeMs: payload.baseTimeMs,
-        incrementMs: payload.incrementMs,
-        players,
-        ...engineSettings
-      })
       if (isPvE) {
         const playerIsWhite = payload.white === 'player'
-        this.$store.dispatch('PvEtrue', {
-          playerIsWhite,
-          pveLimiter: playerIsWhite ? payload.blackLimiter : payload.whiteLimiter,
-          engine: playerIsWhite ? payload.blackEngine : payload.whiteEngine,
-          gameMode: payload.gameMode
-        })
+        this.$store.dispatch('PvEtrue', { playerIsWhite })
       } else if (isEvE) {
         // start Engine vs Engine with provided engine names and limiter settings
         this.$store.dispatch('EvEtrue', {

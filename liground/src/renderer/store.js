@@ -110,44 +110,17 @@ function normalizeFen (fen) {
   return parts.join(' ')
 }
 
-function normalizedMoveLineFromHistory (moves) {
-  if (!Array.isArray(moves) || moves.length === 0) return ''
+function buildPositionCommand (startFen, currentMove) {
+  const base = typeof startFen === 'string' ? startFen.trim() : ''
+  if (!base) throw new Error('Missing startFen for engine position sync')
   const line = []
-  let node = moves[moves.length - 1]
+  let node = currentMove || null
   while (node) {
     if (node.uci) line.push(node.uci)
     node = node.prev
   }
-  return line.reverse().join(' ')
-}
-
-function buildPositionCommand (gameState) {
-  const safeFen = typeof gameState.fen === 'string' ? gameState.fen.trim() : ''
-  const safeStartFen = typeof gameState.startFen === 'string' ? gameState.startFen.trim() : ''
-  const moves = Array.isArray(gameState.moves) ? gameState.moves : []
-  const variant = gameState.variant || 'chess'
-  const is960 = !!gameState.is960
-  const moveLine = normalizedMoveLineFromHistory(moves)
-  if (!safeStartFen) {
-    throw new Error('Invalid GameState: missing startFen. Refusing to fallback to startpos.')
-  }
-  // Reconstruct authoritative position from startFen + move history.
-  let reconstructedFen = safeStartFen
-  if (moveLine) {
-    try {
-      const board = is960 ? new ffish.Board(variant, safeStartFen, true) : new ffish.Board(variant, safeStartFen)
-      for (const mv of moveLine.split(/\s+/).filter(Boolean)) {
-        board.push(mv)
-      }
-      reconstructedFen = board.fen()
-    } catch (err) {
-      throw new Error(`Failed to reconstruct position from GameState: ${err.message}`)
-    }
-  }
-  if (safeFen && normalizeFen(safeFen) !== normalizeFen(reconstructedFen)) {
-    throw new Error(`[GameState] fen mismatch detected: live=${safeFen} reconstructed=${reconstructedFen}`)
-  }
-  return `position fen ${reconstructedFen}`
+  const moves = line.reverse().join(' ')
+  return moves ? `position fen ${base} moves ${moves}` : `position fen ${base}`
 }
 
 function reviewMoveToOverlaySquares (move) {
@@ -487,45 +460,6 @@ function limiterToGo (limiter) {
     default: return `go movetime ${parseInt(limiter.value, 10) || 1000}`
   }
 }
-function clockToGo (gameState, fallbackGo) {
-  const clocks = gameState && gameState.clocks
-  if (!clocks) return fallbackGo
-  const wt = Number(clocks.whiteTimeMs)
-  const bt = Number(clocks.blackTimeMs)
-  const wi = Number(clocks.whiteIncrementMs)
-  const bi = Number(clocks.blackIncrementMs)
-  if (![wt, bt, wi, bi].every(Number.isFinite)) return fallbackGo
-  return `go wtime ${Math.max(0, Math.floor(wt))} btime ${Math.max(0, Math.floor(bt))} winc ${Math.max(0, Math.floor(wi))} binc ${Math.max(0, Math.floor(bi))}`
-}
-function initializeGameStateFromSettings (settings = {}) {
-  const baseTimeMs = Number(settings.baseTimeMs)
-  const incrementMs = Number(settings.incrementMs)
-  const normalizedBase = Number.isFinite(baseTimeMs) && baseTimeMs > 0 ? baseTimeMs : 300000
-  const normalizedInc = Number.isFinite(incrementMs) && incrementMs >= 0 ? incrementMs : 0
-  const normalized = {
-    startFen: settings.startFen,
-    moves: [],
-    sideToMove: settings.sideToMove || 'white',
-    variant: settings.variant || 'chess',
-    players: settings.players || { white: 'human', black: 'human' },
-    clocks: {
-      whiteTimeMs: normalizedBase,
-      blackTimeMs: normalizedBase,
-      whiteIncrementMs: normalizedInc,
-      blackIncrementMs: normalizedInc
-    },
-    engineSettings: {
-      depth: settings.depth || null,
-      nodes: settings.nodes || null,
-      movetime: settings.movetime || null,
-      strength: settings.strength || null
-    }
-  }
-  if (normalized.clocks.whiteTimeMs <= 0 || normalized.clocks.blackTimeMs <= 0) {
-    throw new Error('Invalid GameState clocks: base time must be > 0')
-  }
-  return normalized
-}
 
 export const store = new Vuex.Store({
   state: {
@@ -551,20 +485,6 @@ export const store = new Vuex.Store({
     normalizedFen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -',
     lastFen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1', // to track the end of the current line
     startFen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
-    gameState: {
-      startFen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
-      moves: [],
-      sideToMove: 'white',
-      variant: 'chess',
-      players: { white: 'human', black: 'human' },
-      clocks: {
-        whiteTimeMs: null,
-        blackTimeMs: null,
-        whiteIncrementMs: 0,
-        blackIncrementMs: 0
-      },
-      engineSettings: {}
-    },
     moves: [],
     firstMoves: [],
     mainFirstMove: null,
@@ -727,9 +647,7 @@ export const store = new Vuex.Store({
     shogiVariants: [
       '+ Add Custom', 'shogi'
     ],
-    clock: null,
-    gameClockInterval: null,
-    runtimeSearchId: 0
+    clock: null
   },
   mutations: { // sync
     increaseEngineNumber (state) {
@@ -757,45 +675,12 @@ export const store = new Vuex.Store({
     },
     startFen (state, payload) {
       state.startFen = payload
-      state.gameState.startFen = payload
     },
     lastFen (state, payload) {
       state.lastFen = payload
     },
     turn (state, payload) {
       state.turn = payload
-      state.gameState.sideToMove = payload ? 'white' : 'black'
-    },
-    syncGameStateFromStore (state) {
-      const current = state.moves.find(m => m.fen === state.fen)
-      const line = []
-      let node = current
-      while (node) {
-        line.push(node)
-        node = node.prev
-      }
-      state.gameState.moves = line.reverse()
-      state.gameState.startFen = state.startFen
-      state.gameState.sideToMove = state.turn ? 'white' : 'black'
-      state.gameState.variant = state.variant
-      state.gameState.engineSettings = { ...(state.engineSettings || {}) }
-    },
-    commitEditorPositionAsStart (state) {
-      const committedFen = state.board.fen()
-      state.moves = []
-      state.firstMoves = []
-      state.mainFirstMove = null
-      state.startFen = committedFen
-      state.fen = committedFen
-      state.lastFen = committedFen
-      state.turn = state.board.turn()
-      state.legalMoves = state.board.legalMoves()
-      state.normalizedFen = normalizeFen(committedFen)
-      state.fenply = 1
-      state.gameState.startFen = committedFen
-      state.gameState.moves = []
-      state.gameState.sideToMove = state.turn ? 'white' : 'black'
-      state.gameState.variant = state.variant
     },
     mainFirstMove (state, payload) {
       state.mainFirstMove = payload
@@ -905,7 +790,6 @@ export const store = new Vuex.Store({
         state.orientation = 'white'
       }
       state.variant = payload
-      state.gameState.variant = payload
     },
     selectedEngines (state, payload) {
       state.selectedEngines = payload
@@ -1018,7 +902,6 @@ export const store = new Vuex.Store({
       state.fenply = 1
       this.commit('resetEngineStats')
       state.normalizedFen = normalizeFen(state.fen)
-      this.commit('syncGameStateFromStore')
     },
     resetBoard (state, payload) {
       if (!payload.is960) {
@@ -1027,7 +910,6 @@ export const store = new Vuex.Store({
       this.commit('newBoard', payload)
       state.selectedGame = null
       state.moves = []
-      this.commit('syncGameStateFromStore')
     },
     appendMoves (state, payload) {
       const mov = payload.move.split(' ')
@@ -1290,27 +1172,6 @@ export const store = new Vuex.Store({
     },
     resetEngineTime (state) {
       clearInterval(state.clock)
-      state.clock = null
-      state.enginetime = 0
-    },
-    setGameClockInterval (state, payload) {
-      state.gameClockInterval = payload
-    },
-    clearGameClockInterval (state) {
-      if (state.gameClockInterval) clearInterval(state.gameClockInterval)
-      state.gameClockInterval = null
-    },
-    gameStateClock (state, payload) {
-      state.gameState.clocks = { ...state.gameState.clocks, ...(payload || {}) }
-    },
-    gameStateEngineSettings (state, payload) {
-      state.gameState.engineSettings = { ...state.gameState.engineSettings, ...(payload || {}) }
-    },
-    bumpRuntimeSearchId (state) {
-      state.runtimeSearchId += 1
-    },
-    replaceGameState (state, payload) {
-      state.gameState = payload
     },
     saveSettings (state) {
       localStorage.darkMode = state.darkMode
@@ -1469,18 +1330,10 @@ export const store = new Vuex.Store({
       board.setFen(context.state.fen)
       context.commit('turn', board.turn())
       context.commit('legalMoves', board.legalMoves())
-      context.commit('syncGameStateFromStore')
     },
     push (context, payload) {
-      const movingSide = context.state.gameState.sideToMove
       context.commit('appendMoves', payload)
       return context.dispatch('fen', context.state.board.fen()).then(() => {
-        const clocks = context.state.gameState.clocks || {}
-        if (movingSide === 'white' && Number.isFinite(Number(clocks.whiteTimeMs))) {
-          context.commit('gameStateClock', { whiteTimeMs: Number(clocks.whiteTimeMs) + (Number(clocks.whiteIncrementMs) || 0) })
-        } else if (movingSide === 'black' && Number.isFinite(Number(clocks.blackTimeMs))) {
-          context.commit('gameStateClock', { blackTimeMs: Number(clocks.blackTimeMs) + (Number(clocks.blackIncrementMs) || 0) })
-        }
         // Only check for game end if a game was started via the new game modal
         if (context.state.gameConfig) {
           if (context.state.board.isGameOver()) {
@@ -1492,7 +1345,6 @@ export const store = new Vuex.Store({
             context.dispatch('endGame', { result })
           }
         }
-        context.dispatch('maybeTriggerEngineMove')
       })
     },
     pushMainLine (context, payload) {
@@ -1555,84 +1407,6 @@ export const store = new Vuex.Store({
     setPvEInput (context, payload) {
       context.commit('PvEInput', payload)
     },
-    setRuntimeEngineSettings (context, payload) {
-      context.commit('gameStateEngineSettings', payload)
-      context.dispatch('restartSearchFromGameState')
-    },
-    setGameClock (context, payload) {
-      context.commit('gameStateClock', payload)
-    },
-    tickGameClock (context, deltaMs = 1000) {
-      if (!context.state.active) return
-      const clocks = context.state.gameState.clocks || {}
-      if (context.state.gameState.sideToMove === 'white' && Number.isFinite(Number(clocks.whiteTimeMs))) {
-        const next = Math.max(0, Number(clocks.whiteTimeMs) - Number(deltaMs))
-        context.commit('gameStateClock', { whiteTimeMs: next })
-        if (next === 0) context.dispatch('endGame', { result: 'black-win' })
-      } else if (context.state.gameState.sideToMove === 'black' && Number.isFinite(Number(clocks.blackTimeMs))) {
-        const next = Math.max(0, Number(clocks.blackTimeMs) - Number(deltaMs))
-        context.commit('gameStateClock', { blackTimeMs: next })
-        if (next === 0) context.dispatch('endGame', { result: 'white-win' })
-      }
-    },
-    startGameClock (context) {
-      context.commit('clearGameClockInterval')
-      const interval = setInterval(() => context.dispatch('tickGameClock', 200), 200)
-      context.commit('setGameClockInterval', interval)
-    },
-    stopGameClock (context) {
-      context.commit('clearGameClockInterval')
-    },
-    restartSearchFromGameState (context) {
-      context.commit('bumpRuntimeSearchId')
-      if (!context.state.active) return
-      if (context.state.PvE) {
-        if (context.state.PvEEngineInstance) context.state.PvEEngineInstance.send('stop')
-        context.dispatch('goEnginePvE')
-      } else if (context.state.EvE) {
-        const activeEngine = context.getters.turn ? context.state.engineWhiteInstance : context.state.engineBlackInstance
-        const cfg = context.state.EvEConfig || {}
-        const lim = context.getters.turn ? cfg.whiteLimiter : cfg.blackLimiter
-        if (activeEngine) {
-          activeEngine.send('stop')
-          activeEngine.send(buildPositionCommand(context.getters.gameState))
-          activeEngine.send(clockToGo(context.getters.gameState, limiterToGo(lim)))
-        }
-      } else {
-        context.dispatch('stopEngine')
-        context.dispatch('position')
-        context.dispatch('goEngine')
-      }
-    },
-    updateLiveLimiter (context, payload = {}) {
-      const limiter = {
-        enabled: payload.enabled !== false,
-        type: payload.type || 'time',
-        value: Number(payload.value) || 1000
-      }
-      const side = payload.side || 'both'
-      if (side === 'pve' || side === 'both') {
-        context.commit('PvELimiter', limiter)
-        if (context.state.PvE && context.state.PvEEngineInstance) {
-          context.state.PvEEngineInstance.send('stop')
-          context.dispatch('goEnginePvE')
-        }
-      }
-      if ((side === 'white' || side === 'black' || side === 'both') && context.state.EvE) {
-        const cfg = { ...(context.state.EvEConfig || {}) }
-        if (side === 'white' || side === 'both') cfg.whiteLimiter = limiter
-        if (side === 'black' || side === 'both') cfg.blackLimiter = limiter
-        context.commit('EvEConfig', cfg)
-        const activeEngine = context.getters.turn ? context.state.engineWhiteInstance : context.state.engineBlackInstance
-        if (activeEngine) {
-          activeEngine.send('stop')
-          const activeLimiter = context.getters.turn ? cfg.whiteLimiter : cfg.blackLimiter
-          activeEngine.send(buildPositionCommand(context.getters.gameState))
-          activeEngine.send(clockToGo(context.getters.gameState, limiterToGo(activeLimiter)))
-        }
-      }
-      this.commit('syncGameStateFromStore')
-    },
     setDimNumber (context, payload) {
       context.commit('dimNumber', payload)
     },
@@ -1657,10 +1431,9 @@ export const store = new Vuex.Store({
         ? `go depth ${payload.depth || Number(targetDepth)}`
         : 'go infinite'
       console.log('[engine-order] cmd:', goCmd)
-      engine.send(clockToGo(context.getters.gameState, goCmd))
+      engine.send(goCmd)
       context.commit('setEngineClock')
       context.commit('active', true)
-      context.dispatch('startGameClock')
     },
     goEnginePvE (context) {
       // Send PvE engine command using the stored PvE engine instance and limiter
@@ -1671,14 +1444,13 @@ export const store = new Vuex.Store({
         return
       }
       try {
-        pveEngine.send(buildPositionCommand(context.getters.gameState))
-        pveEngine.send(clockToGo(context.getters.gameState, limiterToGo(pveLimiter)))
+        pveEngine.send(buildPositionCommand(context.getters.startFen, context.getters.currentMove[0]))
+        pveEngine.send(limiterToGo(pveLimiter))
       } catch (err) {
         console.error('[goEnginePvE] Failed to send position/go to PvE engine:', err)
       }
       context.commit('setEngineClock')
       context.commit('active', true)
-      context.dispatch('startGameClock')
     },
     PvEMakeMove (context, payload) {
       // Triggered when the engine emits 'bestmove'. Apply the move only if:
@@ -1713,46 +1485,6 @@ export const store = new Vuex.Store({
 
     setGameConfig (context, payload) {
       context.commit('gameConfig', payload)
-    },
-    initializeNewGameState (context, settings = {}) {
-      const gs = initializeGameStateFromSettings({
-        startFen: settings.startFen || context.state.startFen,
-        sideToMove: settings.sideToMove || 'white',
-        variant: settings.variant || context.getters.variant,
-        players: settings.players || { white: 'human', black: 'human' },
-        baseTimeMs: settings.baseTimeMs,
-        incrementMs: settings.incrementMs,
-        depth: settings.depth,
-        nodes: settings.nodes,
-        movetime: settings.movetime,
-        strength: settings.strength
-      })
-      context.commit('replaceGameState', gs)
-      context.commit('turn', gs.sideToMove === 'white')
-      context.commit('startFen', gs.startFen)
-      context.commit('fen', gs.startFen)
-      context.dispatch('updateBoard')
-      context.dispatch('resetEngineData')
-      context.commit('bumpRuntimeSearchId')
-    },
-    maybeTriggerEngineMove (context) {
-      const side = context.state.gameState.sideToMove
-      const players = context.state.gameState.players || {}
-      if (players[side] !== 'engine') return
-      if (context.state.EvE) {
-        const cfg = context.state.EvEConfig || {}
-        const inst = side === 'white' ? context.state.engineWhiteInstance : context.state.engineBlackInstance
-        const lim = side === 'white' ? cfg.whiteLimiter : cfg.blackLimiter
-        if (inst) {
-          inst.send('stop')
-          inst.send(buildPositionCommand(context.getters.gameState))
-          inst.send(clockToGo(context.getters.gameState, limiterToGo(lim)))
-        }
-        return
-      }
-      if (context.state.PvE) {
-        context.dispatch('goEnginePvE')
-      }
     },
 
     endGame (context, payload) {
@@ -1819,8 +1551,8 @@ export const store = new Vuex.Store({
         // send position and go to the engine instance
         const sendPositionAndGo = (inst, lim) => {
           try {
-            inst.send(buildPositionCommand(context.getters.gameState))
-            inst.send(clockToGo(context.getters.gameState, limiterToGo(lim)))
+            inst.send(buildPositionCommand(context.getters.startFen, context.getters.currentMove[0]))
+            inst.send(limiterToGo(lim))
           } catch (err) {
             console.error('[PvE] Failed to send position/go:', err)
           }
@@ -1906,8 +1638,8 @@ export const store = new Vuex.Store({
         // send position and go to a specific engine instance
         const sendPositionAndGo = (inst, lim) => {
           try {
-            inst.send(buildPositionCommand(context.getters.gameState))
-            inst.send(clockToGo(context.getters.gameState, limiterToGo(lim)))
+            inst.send(buildPositionCommand(context.getters.startFen, context.getters.currentMove[0]))
+            inst.send(limiterToGo(lim))
           } catch (err) {
             console.error('[EvE] Failed to send position/go:', err)
           }
@@ -1981,7 +1713,6 @@ export const store = new Vuex.Store({
         console.error('[EvEfalse] Error stopping EvE engines:', err)
       }
       context.commit('active', false)
-      context.dispatch('stopGameClock')
       context.dispatch('resetEngineData')
     },
     stopEnginePvE (context) {
@@ -2004,7 +1735,6 @@ export const store = new Vuex.Store({
       } else {
         context.commit('resetEngineTime')
         context.commit('active', false)
-        context.dispatch('stopGameClock')
       }
       context.dispatch('resetEngineData')
     },
@@ -2012,7 +1742,6 @@ export const store = new Vuex.Store({
       engine.send('stop')
       context.commit('resetEngineTime')
       context.commit('active', false)
-      context.dispatch('stopGameClock')
       if (context.state.deepAnalysis.running) {
         context.commit('deepAnalysisResult', { error: 'Deep analysis cancelled', cancelled: true })
       }
@@ -2039,14 +1768,7 @@ export const store = new Vuex.Store({
       const engineName = context.getters.engineName
 
       console.log('[engine-order] cmd: position fen', context.getters.fen)
-      try {
-        engine.send(buildPositionCommand(context.getters.gameState))
-      } catch (err) {
-        console.error('[GameState] position sync mismatch. Rebuilding UI state from canonical GameState startFen.', err)
-        context.commit('fen', context.state.gameState.startFen)
-        context.dispatch('updateBoard')
-        engine.send(buildPositionCommand(context.getters.gameState))
-      }
+      engine.send(buildPositionCommand(context.getters.startFen, context.getters.currentMove[0]))
       const eve = new CustomEvent('position', { detail: { fen: context.getters.fen } })
       document.dispatchEvent(eve)
       if (!ipcRenderer) {
@@ -2599,14 +2321,6 @@ export const store = new Vuex.Store({
       context.commit('editorMode', enteringEditor)
       if (enteringEditor) {
         context.commit('analysisMode', false)
-      } else {
-        context.commit('commitEditorPositionAsStart')
-        context.commit('reviewPrepareFullRebuild')
-        context.dispatch('resetEngineData')
-        context.dispatch('position')
-        if (context.state.analysisMode) {
-          context.dispatch('goEngine')
-        }
       }
     },
     analysisVisualization (context, payload) {
@@ -3099,13 +2813,6 @@ export const store = new Vuex.Store({
     },
     currentMove (state) {
       return state.moves.filter(moves => moves.fen === state.fen)
-    },
-    gameState (state) {
-      return {
-        ...state.gameState,
-        fen: state.fen,
-        is960: state.board && state.board.is960 && state.board.is960()
-      }
     },
     getMoveByUCIAndPrev (state, uci, prev) {
       return (uci, prev) => state.moves.filter(moves => moves.uci === uci && moves.prev === prev)

@@ -472,9 +472,7 @@ export default {
               type: this.blackLimiterType,
               value: this.blackLimiterValue
             }
-          : null,
-        baseTimeMs: 300000,
-        incrementMs: 0
+          : null
       }
 
       // PvP: both are players
@@ -491,7 +489,22 @@ export default {
         return
       }
 
-      // PvE: parent orchestrates canonical initialization and engine lifecycle.
+      // PvE: one side player, other engine
+      const playerIsWhite = (this.whiteChoice === 'player')
+      // Dispatch PvEtrue with information about which side is the player
+      // (existing behavior; actual logic remains in the store)
+      this.$store.dispatch('PvEtrue', {
+        playerIsWhite,
+        pveLimiter: playerIsWhite
+          ? payload.blackLimiter
+          : payload.whiteLimiter,
+        engine: playerIsWhite
+          ? payload.blackEngine
+          : payload.whiteEngine,
+        gameMode: payload.gameMode
+      })
+
+      // Emit a start event as well (UI layer hook), then close
       this.$emit('start', payload)
       this.close()
     }
