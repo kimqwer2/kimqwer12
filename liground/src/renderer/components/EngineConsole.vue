@@ -513,7 +513,16 @@ export default {
             this.$store.dispatch('position')
             this.$store.dispatch('goEngine')
           } else {
-            this.newEngine.send(`position fen ${this.$store.getters.fen}`)
+            const startFen = this.$store.getters.startFen
+            const current = this.$store.getters.currentMove[0]
+            const line = []
+            let node = current || null
+            while (node) {
+              if (node.uci) line.push(node.uci)
+              node = node.prev
+            }
+            const moves = line.reverse().join(' ')
+            this.newEngine.send(moves ? `position fen ${startFen} moves ${moves}` : `position fen ${startFen}`)
             this.newEngine.send('go infinite')
           }
         }
