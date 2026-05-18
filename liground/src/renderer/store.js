@@ -497,6 +497,34 @@ function clockToGo (gameState, fallbackGo) {
   if (![wt, bt, wi, bi].every(Number.isFinite)) return fallbackGo
   return `go wtime ${Math.max(0, Math.floor(wt))} btime ${Math.max(0, Math.floor(bt))} winc ${Math.max(0, Math.floor(wi))} binc ${Math.max(0, Math.floor(bi))}`
 }
+function initializeGameStateFromSettings (settings = {}) {
+  const baseTimeMs = Number(settings.baseTimeMs)
+  const incrementMs = Number(settings.incrementMs)
+  const normalizedBase = Number.isFinite(baseTimeMs) && baseTimeMs > 0 ? baseTimeMs : 300000
+  const normalizedInc = Number.isFinite(incrementMs) && incrementMs >= 0 ? incrementMs : 0
+  const normalized = {
+    startFen: settings.startFen,
+    moves: [],
+    sideToMove: settings.sideToMove || 'white',
+    variant: settings.variant || 'chess',
+    clocks: {
+      whiteTimeMs: normalizedBase,
+      blackTimeMs: normalizedBase,
+      whiteIncrementMs: normalizedInc,
+      blackIncrementMs: normalizedInc
+    },
+    engineSettings: {
+      depth: settings.depth || null,
+      nodes: settings.nodes || null,
+      movetime: settings.movetime || null,
+      strength: settings.strength || null
+    }
+  }
+  if (normalized.clocks.whiteTimeMs <= 0 || normalized.clocks.blackTimeMs <= 0) {
+    throw new Error('Invalid GameState clocks: base time must be > 0')
+  }
+  return normalized
+}
 
 export const store = new Vuex.Store({
   state: {
@@ -1279,6 +1307,9 @@ export const store = new Vuex.Store({
     bumpRuntimeSearchId (state) {
       state.runtimeSearchId += 1
     },
+    replaceGameState (state, payload) {
+      state.gameState = payload
+    },
     saveSettings (state) {
       localStorage.darkMode = state.darkMode
       localStorage.muteButton = state.muteButton
@@ -1679,6 +1710,26 @@ export const store = new Vuex.Store({
 
     setGameConfig (context, payload) {
       context.commit('gameConfig', payload)
+    },
+    initializeNewGameState (context, settings = {}) {
+      const gs = initializeGameStateFromSettings({
+        startFen: settings.startFen || context.state.startFen,
+        sideToMove: settings.sideToMove || 'white',
+        variant: settings.variant || context.getters.variant,
+        baseTimeMs: settings.baseTimeMs,
+        incrementMs: settings.incrementMs,
+        depth: settings.depth,
+        nodes: settings.nodes,
+        movetime: settings.movetime,
+        strength: settings.strength
+      })
+      context.commit('replaceGameState', gs)
+      context.commit('turn', gs.sideToMove === 'white')
+      context.commit('startFen', gs.startFen)
+      context.commit('fen', gs.startFen)
+      context.dispatch('updateBoard')
+      context.dispatch('resetEngineData')
+      context.commit('bumpRuntimeSearchId')
     },
 
     endGame (context, payload) {

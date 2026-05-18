@@ -286,6 +286,22 @@ export default {
       this.$store.dispatch('EvEfalse')
       this.$store.dispatch('resetBoard', { is960: false })
       this.$store.dispatch('setGameConfig', payload)
+      const activeLimiter = payload.white === 'engine' ? payload.whiteLimiter : payload.blackLimiter
+      const engineSettings = activeLimiter
+        ? {
+            depth: activeLimiter.type === 'depth' ? activeLimiter.value : null,
+            nodes: activeLimiter.type === 'nodes' ? activeLimiter.value : null,
+            movetime: activeLimiter.type === 'time' ? activeLimiter.value : null
+          }
+        : {}
+      this.$store.dispatch('initializeNewGameState', {
+        startFen: this.$store.getters.startFen,
+        sideToMove: 'white',
+        variant: payload.gameMode || this.$store.getters.variant,
+        baseTimeMs: payload.baseTimeMs,
+        incrementMs: payload.incrementMs,
+        ...engineSettings
+      })
       const isPvP = payload.white === 'player' && payload.black === 'player'
       const isEvE = payload.white === 'engine' && payload.black === 'engine'
       const isPvE = !isPvP && !isEvE
