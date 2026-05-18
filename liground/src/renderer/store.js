@@ -110,17 +110,11 @@ function normalizeFen (fen) {
   return parts.join(' ')
 }
 
-function buildPositionCommand (startFen, currentMove) {
+function buildPositionCommand (startFen, moves) {
   const base = typeof startFen === 'string' ? startFen.trim() : ''
   if (!base) throw new Error('Missing startFen for engine position sync')
-  const line = []
-  let node = currentMove || null
-  while (node) {
-    if (node.uci) line.push(node.uci)
-    node = node.prev
-  }
-  const moves = line.reverse().join(' ')
-  return moves ? `position fen ${base} moves ${moves}` : `position fen ${base}`
+  const line = Array.isArray(moves) ? moves.filter(Boolean) : []
+  return line.length > 0 ? `position fen ${base} moves ${line.join(' ')}` : `position fen ${base}`
 }
 
 function reviewMoveToOverlaySquares (move) {
@@ -1444,7 +1438,7 @@ export const store = new Vuex.Store({
         return
       }
       try {
-        pveEngine.send(buildPositionCommand(context.getters.startFen, context.getters.currentMove[0]))
+        pveEngine.send(buildPositionCommand(context.getters.startFen, context.getters.currentLineUciMoves))
         pveEngine.send(limiterToGo(pveLimiter))
       } catch (err) {
         console.error('[goEnginePvE] Failed to send position/go to PvE engine:', err)
@@ -1551,7 +1545,7 @@ export const store = new Vuex.Store({
         // send position and go to the engine instance
         const sendPositionAndGo = (inst, lim) => {
           try {
-            inst.send(buildPositionCommand(context.getters.startFen, context.getters.currentMove[0]))
+            inst.send(buildPositionCommand(context.getters.startFen, context.getters.currentLineUciMoves))
             inst.send(limiterToGo(lim))
           } catch (err) {
             console.error('[PvE] Failed to send position/go:', err)
@@ -1638,7 +1632,7 @@ export const store = new Vuex.Store({
         // send position and go to a specific engine instance
         const sendPositionAndGo = (inst, lim) => {
           try {
-            inst.send(buildPositionCommand(context.getters.startFen, context.getters.currentMove[0]))
+            inst.send(buildPositionCommand(context.getters.startFen, context.getters.currentLineUciMoves))
             inst.send(limiterToGo(lim))
           } catch (err) {
             console.error('[EvE] Failed to send position/go:', err)
@@ -1768,7 +1762,7 @@ export const store = new Vuex.Store({
       const engineName = context.getters.engineName
 
       console.log('[engine-order] cmd: position fen', context.getters.fen)
-      engine.send(buildPositionCommand(context.getters.startFen, context.getters.currentMove[0]))
+      engine.send(buildPositionCommand(context.getters.startFen, context.getters.currentLineUciMoves))
       const eve = new CustomEvent('position', { detail: { fen: context.getters.fen } })
       document.dispatchEvent(eve)
       if (!ipcRenderer) {
@@ -2813,6 +2807,17 @@ export const store = new Vuex.Store({
     },
     currentMove (state) {
       return state.moves.filter(moves => moves.fen === state.fen)
+    },
+    currentLineUciMoves (state, getters) {
+      const current = getters.currentMove[0]
+      if (!current) return []
+      const line = []
+      let node = current
+      while (node) {
+        if (node.uci) line.push(node.uci)
+        node = node.prev
+      }
+      return line.reverse()
     },
     getMoveByUCIAndPrev (state, uci, prev) {
       return (uci, prev) => state.moves.filter(moves => moves.uci === uci && moves.prev === prev)
