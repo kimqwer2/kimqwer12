@@ -121,15 +121,36 @@ function normalizedMoveLineFromHistory (moves) {
   return line.reverse().join(' ')
 }
 
-function buildPositionCommand ({ fen, startFen, moves }) {
-  const safeFen = typeof fen === 'string' ? fen.trim() : ''
-  const safeStartFen = typeof startFen === 'string' ? startFen.trim() : ''
+function buildPositionCommand (gameState) {
+  const safeFen = typeof gameState.fen === 'string' ? gameState.fen.trim() : ''
+  const safeStartFen = typeof gameState.startFen === 'string' ? gameState.startFen.trim() : ''
+  const moves = Array.isArray(gameState.moves) ? gameState.moves : []
+  const variant = gameState.variant || 'chess'
+  const is960 = !!gameState.is960
   const moveLine = normalizedMoveLineFromHistory(moves)
-  // Prefer authoritative current fen if provided.
-  if (safeFen) return `position fen ${safeFen}`
-  if (safeStartFen && moveLine) return `position fen ${safeStartFen} moves ${moveLine}`
-  if (safeStartFen) return `position fen ${safeStartFen}`
-  return 'position startpos'
+  if (!safeStartFen) {
+    throw new Error('Invalid GameState: missing startFen. Refusing to fallback to startpos.')
+  }
+  // Reconstruct authoritative position from startFen + move history.
+  let reconstructedFen = safeStartFen
+  if (moveLine) {
+    try {
+      const board = is960 ? new ffish.Board(variant, safeStartFen, true) : new ffish.Board(variant, safeStartFen)
+      for (const mv of moveLine.split(/\s+/).filter(Boolean)) {
+        board.push(mv)
+      }
+      reconstructedFen = board.fen()
+    } catch (err) {
+      throw new Error(`Failed to reconstruct position from GameState: ${err.message}`)
+    }
+  }
+  if (safeFen && normalizeFen(safeFen) !== normalizeFen(reconstructedFen)) {
+    console.warn('[GameState] fen mismatch detected; using reconstructed position from startFen+moves', {
+      fen: safeFen,
+      reconstructedFen
+    })
+  }
+  return `position fen ${reconstructedFen}`
 }
 
 function reviewMoveToOverlaySquares (move) {
@@ -1439,7 +1460,7 @@ export const store = new Vuex.Store({
         if (activeEngine) {
           activeEngine.send('stop')
           const activeLimiter = context.getters.turn ? cfg.whiteLimiter : cfg.blackLimiter
-          activeEngine.send(buildPositionCommand({ fen: context.getters.fen, startFen: context.getters.startFen, moves: context.state.currentMove }))
+          activeEngine.send(buildPositionCommand(context.getters.gameState))
           activeEngine.send(limiterToGo(activeLimiter))
         }
       }
@@ -1481,7 +1502,7 @@ export const store = new Vuex.Store({
         return
       }
       try {
-        pveEngine.send(buildPositionCommand({ fen: context.getters.fen, startFen: context.getters.startFen, moves: context.state.currentMove }))
+        pveEngine.send(buildPositionCommand(context.getters.gameState))
         pveEngine.send(limiterToGo(pveLimiter))
       } catch (err) {
         console.error('[goEnginePvE] Failed to send position/go to PvE engine:', err)
@@ -1588,7 +1609,7 @@ export const store = new Vuex.Store({
         // send position and go to the engine instance
         const sendPositionAndGo = (inst, lim) => {
           try {
-            inst.send(buildPositionCommand({ fen: context.getters.fen, startFen: context.getters.startFen, moves: context.state.currentMove }))
+            inst.send(buildPositionCommand(context.getters.gameState))
             inst.send(limiterToGo(lim))
           } catch (err) {
             console.error('[PvE] Failed to send position/go:', err)
@@ -1675,7 +1696,7 @@ export const store = new Vuex.Store({
         // send position and go to a specific engine instance
         const sendPositionAndGo = (inst, lim) => {
           try {
-            inst.send(buildPositionCommand({ fen: context.getters.fen, startFen: context.getters.startFen, moves: context.state.currentMove }))
+            inst.send(buildPositionCommand(context.getters.gameState))
             inst.send(limiterToGo(lim))
           } catch (err) {
             console.error('[EvE] Failed to send position/go:', err)
@@ -1805,7 +1826,7 @@ export const store = new Vuex.Store({
       const engineName = context.getters.engineName
 
       console.log('[engine-order] cmd: position fen', context.getters.fen)
-      engine.send(buildPositionCommand({ fen: context.getters.fen, startFen: context.getters.startFen, moves: context.state.currentMove }))
+      engine.send(buildPositionCommand(context.getters.gameState))
       const eve = new CustomEvent('position', { detail: { fen: context.getters.fen } })
       document.dispatchEvent(eve)
       if (!ipcRenderer) {
@@ -2850,6 +2871,29 @@ export const store = new Vuex.Store({
     },
     currentMove (state) {
       return state.moves.filter(moves => moves.fen === state.fen)
+    },
+    currentLineMoves (state, getters) {
+      const current = getters.currentMove[0]
+      if (!current) return []
+      const line = []
+      let node = current
+      while (node) {
+        line.push(node)
+        node = node.prev
+      }
+      return line.reverse()
+    },
+    gameState (state, getters) {
+      return {
+        startFen: state.startFen,
+        moves: getters.currentLineMoves,
+        fen: state.fen,
+        sideToMove: state.turn ? 'white' : 'black',
+        variant: state.variant,
+        is960: state.board && state.board.is960 && state.board.is960(),
+        clocks: state.clock || null,
+        engineSettings: state.engineSettings || {}
+      }
     },
     getMoveByUCIAndPrev (state, uci, prev) {
       return (uci, prev) => state.moves.filter(moves => moves.uci === uci && moves.prev === prev)
