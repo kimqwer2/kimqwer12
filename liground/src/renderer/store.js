@@ -110,6 +110,28 @@ function normalizeFen (fen) {
   return parts.join(' ')
 }
 
+function normalizedMoveLineFromHistory (moves) {
+  if (!Array.isArray(moves) || moves.length === 0) return ''
+  const line = []
+  let node = moves[moves.length - 1]
+  while (node) {
+    if (node.uci) line.push(node.uci)
+    node = node.prev
+  }
+  return line.reverse().join(' ')
+}
+
+function buildPositionCommand ({ fen, startFen, moves }) {
+  const safeFen = typeof fen === 'string' ? fen.trim() : ''
+  const safeStartFen = typeof startFen === 'string' ? startFen.trim() : ''
+  const moveLine = normalizedMoveLineFromHistory(moves)
+  // Prefer authoritative current fen if provided.
+  if (safeFen) return `position fen ${safeFen}`
+  if (safeStartFen && moveLine) return `position fen ${safeStartFen} moves ${moveLine}`
+  if (safeStartFen) return `position fen ${safeStartFen}`
+  return 'position startpos'
+}
+
 function reviewMoveToOverlaySquares (move) {
   if (typeof move !== 'string') return null
   if (move.includes('@')) {
@@ -1394,6 +1416,34 @@ export const store = new Vuex.Store({
     setPvEInput (context, payload) {
       context.commit('PvEInput', payload)
     },
+    updateLiveLimiter (context, payload = {}) {
+      const limiter = {
+        enabled: payload.enabled !== false,
+        type: payload.type || 'time',
+        value: Number(payload.value) || 1000
+      }
+      const side = payload.side || 'both'
+      if (side === 'pve' || side === 'both') {
+        context.commit('PvELimiter', limiter)
+        if (context.state.PvE && context.state.PvEEngineInstance) {
+          context.state.PvEEngineInstance.send('stop')
+          context.dispatch('goEnginePvE')
+        }
+      }
+      if ((side === 'white' || side === 'black' || side === 'both') && context.state.EvE) {
+        const cfg = { ...(context.state.EvEConfig || {}) }
+        if (side === 'white' || side === 'both') cfg.whiteLimiter = limiter
+        if (side === 'black' || side === 'both') cfg.blackLimiter = limiter
+        context.commit('EvEConfig', cfg)
+        const activeEngine = context.getters.turn ? context.state.engineWhiteInstance : context.state.engineBlackInstance
+        if (activeEngine) {
+          activeEngine.send('stop')
+          const activeLimiter = context.getters.turn ? cfg.whiteLimiter : cfg.blackLimiter
+          activeEngine.send(buildPositionCommand({ fen: context.getters.fen, startFen: context.getters.startFen, moves: context.state.currentMove }))
+          activeEngine.send(limiterToGo(activeLimiter))
+        }
+      }
+    },
     setDimNumber (context, payload) {
       context.commit('dimNumber', payload)
     },
@@ -1431,7 +1481,7 @@ export const store = new Vuex.Store({
         return
       }
       try {
-        pveEngine.send(`position fen ${context.getters.fen}`)
+        pveEngine.send(buildPositionCommand({ fen: context.getters.fen, startFen: context.getters.startFen, moves: context.state.currentMove }))
         pveEngine.send(limiterToGo(pveLimiter))
       } catch (err) {
         console.error('[goEnginePvE] Failed to send position/go to PvE engine:', err)
@@ -1538,7 +1588,7 @@ export const store = new Vuex.Store({
         // send position and go to the engine instance
         const sendPositionAndGo = (inst, lim) => {
           try {
-            inst.send(`position fen ${context.getters.fen}`)
+            inst.send(buildPositionCommand({ fen: context.getters.fen, startFen: context.getters.startFen, moves: context.state.currentMove }))
             inst.send(limiterToGo(lim))
           } catch (err) {
             console.error('[PvE] Failed to send position/go:', err)
@@ -1625,7 +1675,7 @@ export const store = new Vuex.Store({
         // send position and go to a specific engine instance
         const sendPositionAndGo = (inst, lim) => {
           try {
-            inst.send(`position fen ${context.getters.fen}`)
+            inst.send(buildPositionCommand({ fen: context.getters.fen, startFen: context.getters.startFen, moves: context.state.currentMove }))
             inst.send(limiterToGo(lim))
           } catch (err) {
             console.error('[EvE] Failed to send position/go:', err)
@@ -1755,7 +1805,7 @@ export const store = new Vuex.Store({
       const engineName = context.getters.engineName
 
       console.log('[engine-order] cmd: position fen', context.getters.fen)
-      engine.send(`position fen ${context.getters.fen}`)
+      engine.send(buildPositionCommand({ fen: context.getters.fen, startFen: context.getters.startFen, moves: context.state.currentMove }))
       const eve = new CustomEvent('position', { detail: { fen: context.getters.fen } })
       document.dispatchEvent(eve)
       if (!ipcRenderer) {
