@@ -514,9 +514,15 @@ export default {
             this.$store.dispatch('goEngine')
           } else {
             const startFen = this.$store.getters.startFen
-            const moves = this.$store.getters.currentLineUciMoves || []
-            const posCmd = moves.length > 0 ? `position fen ${startFen} moves ${moves.join(' ')}` : `position fen ${startFen}`
-            this.newEngine.send(posCmd)
+            const current = this.$store.getters.currentMove[0]
+            const line = []
+            let node = current || null
+            while (node) {
+              if (node.uci) line.push(node.uci)
+              node = node.prev
+            }
+            const moves = line.reverse().join(' ')
+            this.newEngine.send(moves ? `position fen ${startFen} moves ${moves}` : `position fen ${startFen}`)
             this.newEngine.send('go infinite')
           }
         }
