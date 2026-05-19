@@ -258,6 +258,10 @@ export default {
           event.preventDefault()
           this.$store.dispatch('playSingleEngineMove')
         }
+        if (event.ctrlKey && keyName.toLowerCase() === 't') {
+          event.preventDefault()
+          this.$store.dispatch('toggleEvEFromShortcut')
+        }
       }
     }
     window.addEventListener('keydown', this.keydownHandler, false)
