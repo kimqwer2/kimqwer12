@@ -3328,6 +3328,19 @@ export const store = new Vuex.Store({
         return 1 / (1 + Math.exp(-0.003 * getters.cpForWhite))
       }
     },
+    cpForBarPerc (state, getters) {
+      const currentMove = getters.currentMove[0]
+      const mate = typeof state.multipv[0].mate === 'number' ? state.multipv[0].mate : state.lastAnalysisResult.mate
+      if (typeof mate === 'number') {
+        // Bar visualization uses fixed board-side perspective (Cho positive),
+        // normalized from transient side-to-move engine outputs.
+        return (calcForSide(Math.sign(mate), state.turn) + 1) / 2
+      } else if (currentMove && currentMove.name.includes('#')) {
+        return state.turn ? 0 : 1
+      }
+      const stableCp = calcForSide(getters.cpForWhite, state.turn)
+      return 1 / (1 + Math.exp(-0.003 * stableCp))
+    },
     wdlForWhiteWin (state) {
       const wdl = normalizeWdl(state.multipv[0])
       if (wdl) {
