@@ -610,6 +610,15 @@ export const store = new Vuex.Store({
       tbhits: 0,
       time: 0
     },
+    lastEngineStats: {
+      depth: 0,
+      seldepth: 0,
+      nodes: 0,
+      nps: 0,
+      hashfull: 0,
+      tbhits: 0,
+      time: 0
+    },
     enginetime: 0,
     lastWdlWin: null,
     lastWdlDraw: null,
@@ -621,7 +630,6 @@ export const store = new Vuex.Store({
         ucimove: ''
       }
     ],
-    evalGraphByFen: {},
     lastAnalysisResult: { cp: 0, mate: null, pv: '', ucimove: '' },
     numberOfEngines: [
       {
@@ -931,6 +939,9 @@ export const store = new Vuex.Store({
     },
     engineStats (state, payload) {
       state.engineStats = payload
+      if (payload && (payload.depth > 0 || payload.nodes > 0 || payload.time > 0)) {
+        state.lastEngineStats = { ...state.lastEngineStats, ...payload }
+      }
     },
     nnueStatus (state, payload) {
       state.nnueStatus = payload
@@ -953,21 +964,6 @@ export const store = new Vuex.Store({
       state.lastWdlWin = null
       state.lastWdlDraw = null
       state.lastWdlLoss = null
-    },
-    evalGraphByFen (state, payload) {
-      state.evalGraphByFen = payload || {}
-    },
-    recordEvalGraphPoint (state, payload) {
-      if (!payload || !payload.fen) return
-      state.evalGraphByFen = {
-        ...state.evalGraphByFen,
-        [payload.fen]: {
-          cp: typeof payload.cp === 'number' ? payload.cp : null,
-          mate: typeof payload.mate === 'number' ? payload.mate : null,
-          ts: Date.now(),
-          source: payload.source || 'engine'
-        }
-      }
     },
     lastAnalysisResult (state, payload) {
       state.lastAnalysisResult = { ...state.lastAnalysisResult, ...(payload || {}) }
@@ -1028,8 +1024,8 @@ export const store = new Vuex.Store({
       state.startFen = state.board.fen()
       state.selectedGame = null
       state.fenply = 1
-      state.evalGraphByFen = {}
       state.lastAnalysisResult = { cp: 0, mate: null, pv: '', ucimove: '' }
+      state.lastEngineStats = { depth: 0, seldepth: 0, nodes: 0, nps: 0, hashfull: 0, tbhits: 0, time: 0 }
       this.commit('resetEngineStats')
       state.normalizedFen = normalizeFen(state.fen)
       this.commit('syncGameStateFromStore')
@@ -1041,8 +1037,8 @@ export const store = new Vuex.Store({
       this.commit('newBoard', payload)
       state.selectedGame = null
       state.moves = []
-      state.evalGraphByFen = {}
       state.lastAnalysisResult = { cp: 0, mate: null, pv: '', ucimove: '' }
+      state.lastEngineStats = { depth: 0, seldepth: 0, nodes: 0, nps: 0, hashfull: 0, tbhits: 0, time: 0 }
       this.commit('syncGameStateFromStore')
     },
     appendMoves (state, payload) {
@@ -2425,12 +2421,6 @@ export const store = new Vuex.Store({
           pv: payload.pv || '',
           ucimove: payload.pv ? payload.pv.split(/\s/)[0] : ''
         })
-        context.commit('recordEvalGraphPoint', {
-          fen: context.state.fen,
-          cp: payload.cp,
-          mate: payload.mate,
-          source: 'live'
-        })
         const multipv = context.getters.multipv.slice(0)
 
         // handle checkmate
@@ -3253,28 +3243,29 @@ export const store = new Vuex.Store({
       return state.hoveredpv
     },
     cp (state) {
-      return state.multipv[0].cp
+      if (typeof state.multipv[0].cp === 'number' && (state.multipv[0].pv || typeof state.multipv[0].mate === 'number')) return state.multipv[0].cp
+      return state.lastAnalysisResult.cp
     },
     wdl (state) {
       return state.multipv[0].wdl
     },
     depth (state) {
-      return state.engineStats.depth
+      return state.engineStats.depth || state.lastEngineStats.depth
     },
     nps (state) {
-      return state.engineStats.nps
+      return state.engineStats.nps || state.lastEngineStats.nps
     },
     seldepth (state) {
-      return state.engineStats.seldepth
+      return state.engineStats.seldepth || state.lastEngineStats.seldepth
     },
     nodes (state) {
-      return state.engineStats.nodes
+      return state.engineStats.nodes || state.lastEngineStats.nodes
     },
     hashfull (state) {
-      return state.engineStats.hashfull
+      return state.engineStats.hashfull || state.lastEngineStats.hashfull
     },
     tbhits (state) {
-      return state.engineStats.tbhits
+      return state.engineStats.tbhits || state.lastEngineStats.tbhits
     },
     isEvalCached (state) {
       return state.engineStats.isEvalCached
@@ -3283,16 +3274,17 @@ export const store = new Vuex.Store({
       return state.engineStats.cachedDepth
     },
     time (state) {
-      return state.engineStats.time
+      return state.engineStats.time || state.lastEngineStats.time
     },
     enginetime (state) {
       return state.enginetime
     },
     pv (state) {
-      return state.multipv[0].pv
+      return state.multipv[0].pv || state.lastAnalysisResult.pv
     },
     cpForWhite (state) {
-      const cp = typeof state.multipv[0].cp === 'number' ? state.multipv[0].cp : state.lastAnalysisResult.cp
+      const hasLiveCp = typeof state.multipv[0].cp === 'number' && (state.multipv[0].pv || typeof state.multipv[0].mate === 'number')
+      const cp = hasLiveCp ? state.multipv[0].cp : state.lastAnalysisResult.cp
       return calcForSide(cp, state.turn)
     },
     cpForWhiteStr (state, getters) {
@@ -3482,9 +3474,6 @@ export const store = new Vuex.Store({
     },
     analysisVisualization (state) {
       return state.analysisVisualization
-    },
-    evalGraphByFen (state) {
-      return state.evalGraphByFen
     },
     lastAnalysisResult (state) {
       return state.lastAnalysisResult

@@ -24,7 +24,6 @@ export default {
       setBetterValuesRunning: false,
       mainMoves: [],
       depthArr: [],
-      snapshotTsArr: [],
       currentCalcPos: undefined,
       first: 0,
       break: false,
@@ -133,7 +132,7 @@ export default {
     }
   },
   computed: {
-    ...mapGetters(['variant', 'board', 'startFen', 'moves', 'openedPGN', 'cpForWhiteStr', 'depth', 'evalPlotDepth', 'evalGraphByFen'])
+    ...mapGetters(['variant', 'board', 'startFen', 'moves', 'openedPGN', 'cpForWhiteStr', 'depth', 'evalPlotDepth'])
   },
   watch: {
     board () {
@@ -183,12 +182,6 @@ export default {
         this.clear()
       }
       this.first++
-    },
-    evalGraphByFen: {
-      deep: true,
-      handler () {
-        this.evaluateHistory()
-      }
     }
   },
   created () {
@@ -214,7 +207,6 @@ export default {
       this.series = [{
         data: []
       }]
-      this.snapshotTsArr = []
       this.chartOptions.fill.gradient.colorStops[1].opacity = 0
       this.chartOptions.fill.gradient.colorStops[0].offset = 100
     },
@@ -315,23 +307,13 @@ export default {
         if (this.series[0].data.length > xlength) {
           this.series[0].data.splice(0, xlength)
         }
-        const snapshot = this.evalGraphByFen[this.mainMoves[index].fen]
-        const snapshotTs = snapshot && snapshot.ts ? snapshot.ts : 0
-        const shouldRefreshFromSnapshot = snapshotTs > (this.snapshotTsArr[index] || 0)
-        if (depth > this.depthArr[index] || this.series[0].data[index + 1] === undefined || shouldRefreshFromSnapshot) {
-          if (snapshot && typeof snapshot.mate === 'number') {
-            points = snapshot.mate === 0 ? '#0' : (snapshot.mate > 0 ? `#${snapshot.mate}` : `#-${Math.abs(snapshot.mate)}`)
-          } else if (snapshot && typeof snapshot.cp === 'number') {
-            points = String(snapshot.cp)
-          } else {
-            points = await engine.evaluate(this.mainMoves[index].fen, depth)
-          }
+        if (depth > this.depthArr[index] || this.series[0].data[index + 1] === undefined) {
+          points = await engine.evaluate(this.mainMoves[index].fen, depth)
           if (this.break) { // stops evaluating
             this.break = false
             return
           }
           this.depthArr[index] = depth
-          this.snapshotTsArr[index] = snapshotTs
           points = this.adjustPoints(points, index + 1)
           tmpArray[index + 1] = points
           this.series = [{
