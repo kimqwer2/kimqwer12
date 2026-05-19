@@ -971,7 +971,7 @@ export const store = new Vuex.Store({
     multipv (state, payload) {
       for (const pvline of payload) {
         if (pvline) {
-          pvline.cpDisplay = typeof pvline.mate === 'number' ? `#${calcForSide(pvline.mate, state.turn)}` : cpToString(calcForSide(pvline.cp, state.turn))
+          pvline.cpDisplay = typeof pvline.mate === 'number' ? `#${pvline.mate}` : cpToString(pvline.cp)
         }
       }
       state.multipv = payload
@@ -3284,8 +3284,7 @@ export const store = new Vuex.Store({
     },
     cpForWhite (state) {
       const hasLiveCp = typeof state.multipv[0].cp === 'number' && (state.multipv[0].pv || typeof state.multipv[0].mate === 'number')
-      const cp = hasLiveCp ? state.multipv[0].cp : state.lastAnalysisResult.cp
-      return calcForSide(cp, state.turn)
+      return hasLiveCp ? state.multipv[0].cp : state.lastAnalysisResult.cp
     },
     cpForWhiteStr (state, getters) {
       const currentMove = getters.currentMove[0]
@@ -3311,7 +3310,7 @@ export const store = new Vuex.Store({
       }
 
       if (typeof mate === 'number') {
-        return `#${calcForSide(mate, state.turn)}`
+        return `#${mate}`
       } else if (state.board != null && state.board.isGameOver()) {
         return state.board.result()
       } else {
@@ -3322,7 +3321,7 @@ export const store = new Vuex.Store({
       const currentMove = getters.currentMove[0]
       const mate = typeof state.multipv[0].mate === 'number' ? state.multipv[0].mate : state.lastAnalysisResult.mate
       if (typeof mate === 'number') {
-        return (calcForSide(Math.sign(mate), state.turn) + 1) / 2
+        return (Math.sign(mate) + 1) / 2
       } else if (currentMove && currentMove.name.includes('#')) {
         return state.turn ? 0 : 1
       } else {
