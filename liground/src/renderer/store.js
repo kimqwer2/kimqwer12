@@ -487,6 +487,9 @@ function limiterToGo (limiter) {
     default: return `go movetime ${parseInt(limiter.value, 10) || 1000}`
   }
 }
+function sanitizeEngineMove (move) {
+  return String(move || '').trim().split(/\s+/)[0] || ''
+}
 
 export const store = new Vuex.Store({
   state: {
@@ -501,6 +504,16 @@ export const store = new Vuex.Store({
     PvEInput: 1000,
     PvELimiter: null, // stores the limiter config for the PvE engine
     PvEEngineInstance: null,
+    playVsEngineEnabled: false,
+    playVsEngineHumanSide: 'white',
+    engineTimeControlsEnabled: false,
+    engineTimeControlMode: 'depth', // depth | movesInTime | increment | perMove
+    engineTimeControlConfig: {
+      movesInTime: { moves: 40, minutes: 5 },
+      increment: { baseMinutes: 5, incrementSeconds: 3 },
+      perMove: { seconds: 3 }
+    },
+    engineSideClockMs: null,
     resized: 0,
     resized9x9height: 0,
     resized9x9width: 0,
@@ -597,6 +610,15 @@ export const store = new Vuex.Store({
       tbhits: 0,
       time: 0
     },
+    lastEngineStats: {
+      depth: 0,
+      seldepth: 0,
+      nodes: 0,
+      nps: 0,
+      hashfull: 0,
+      tbhits: 0,
+      time: 0
+    },
     enginetime: 0,
     lastWdlWin: null,
     lastWdlDraw: null,
@@ -608,12 +630,14 @@ export const store = new Vuex.Store({
         ucimove: ''
       }
     ],
+    lastAnalysisResult: { cp: 0, mate: null, pv: '', ucimove: '', turn: true },
     numberOfEngines: [
       {
         number: 1
       }
     ],
     engineCounter: 1,
+    singleMoveRequestSeq: 0,
     hoveredpv: -1,
     counter: 0,
     pieceStyle: 'cburnett',
@@ -788,6 +812,27 @@ export const store = new Vuex.Store({
     PvEEngineInstance (state, payload) {
       state.PvEEngineInstance = payload
     },
+    playVsEngineEnabled (state, payload) {
+      state.playVsEngineEnabled = !!payload
+    },
+    playVsEngineHumanSide (state, payload) {
+      state.playVsEngineHumanSide = payload === 'black' ? 'black' : 'white'
+    },
+    engineTimeControlsEnabled (state, payload) {
+      state.engineTimeControlsEnabled = !!payload
+    },
+    engineTimeControlMode (state, payload) {
+      state.engineTimeControlMode = payload || 'depth'
+    },
+    engineTimeControlConfig (state, payload) {
+      state.engineTimeControlConfig = {
+        ...state.engineTimeControlConfig,
+        ...(payload || {})
+      }
+    },
+    engineSideClockMs (state, payload) {
+      state.engineSideClockMs = Number.isFinite(Number(payload)) ? Number(payload) : null
+    },
     PvEParam (state, payload) {
       state.PvEParam = payload
     },
@@ -895,6 +940,9 @@ export const store = new Vuex.Store({
     },
     engineStats (state, payload) {
       state.engineStats = payload
+      if (payload && (payload.depth > 0 || payload.nodes > 0 || payload.time > 0)) {
+        state.lastEngineStats = { ...state.lastEngineStats, ...payload }
+      }
     },
     nnueStatus (state, payload) {
       state.nnueStatus = payload
@@ -918,10 +966,13 @@ export const store = new Vuex.Store({
       state.lastWdlDraw = null
       state.lastWdlLoss = null
     },
+    lastAnalysisResult (state, payload) {
+      state.lastAnalysisResult = { ...state.lastAnalysisResult, ...(payload || {}) }
+    },
     multipv (state, payload) {
       for (const pvline of payload) {
         if (pvline) {
-          pvline.cpDisplay = typeof pvline.mate === 'number' ? `#${calcForSide(pvline.mate, state.turn)}` : cpToString(calcForSide(pvline.cp, state.turn))
+          pvline.cpDisplay = typeof pvline.mate === 'number' ? `#${pvline.mate}` : cpToString(pvline.cp)
         }
       }
       state.multipv = payload
@@ -931,6 +982,9 @@ export const store = new Vuex.Store({
     },
     increment (state, payload) {
       state.counter += payload
+    },
+    nextSingleMoveRequestSeq (state) {
+      state.singleMoveRequestSeq += 1
     },
     resetMultiPV (state) {
       state.multipv = [
@@ -974,6 +1028,8 @@ export const store = new Vuex.Store({
       state.startFen = state.board.fen()
       state.selectedGame = null
       state.fenply = 1
+      state.lastAnalysisResult = { cp: 0, mate: null, pv: '', ucimove: '', turn: true }
+      state.lastEngineStats = { depth: 0, seldepth: 0, nodes: 0, nps: 0, hashfull: 0, tbhits: 0, time: 0 }
       this.commit('resetEngineStats')
       state.normalizedFen = normalizeFen(state.fen)
       this.commit('syncGameStateFromStore')
@@ -985,6 +1041,8 @@ export const store = new Vuex.Store({
       this.commit('newBoard', payload)
       state.selectedGame = null
       state.moves = []
+      state.lastAnalysisResult = { cp: 0, mate: null, pv: '', ucimove: '', turn: true }
+      state.lastEngineStats = { depth: 0, seldepth: 0, nodes: 0, nps: 0, hashfull: 0, tbhits: 0, time: 0 }
       this.commit('syncGameStateFromStore')
     },
     appendMoves (state, payload) {
@@ -1244,6 +1302,7 @@ export const store = new Vuex.Store({
       state.moves = payload
     },
     setEngineClock (state) {
+      clearInterval(state.clock)
       state.clock = setInterval(function () { state.enginetime = state.enginetime + 1000 }, 1000)
     },
     resetEngineTime (state) {
@@ -1531,15 +1590,114 @@ export const store = new Vuex.Store({
     setResized9x10height (context, payload) {
       context.commit('resized9x10height', payload)
     },
-    goEngine (context, payload = {}) {
-      const targetDepth = context.state.analysisVisualization.analysisTargetDepth
-      const goCmd = (payload.depth || (targetDepth !== 'infinite' && Number.isFinite(Number(targetDepth))))
-        ? `go depth ${payload.depth || Number(targetDepth)}`
-        : 'go infinite'
+    setPlayVsEngineEnabled (context, payload) {
+      context.commit('playVsEngineEnabled', payload)
+      if (payload) {
+        context.dispatch('EvEfalse')
+        context.dispatch('PvEfalse')
+      } else {
+        context.dispatch('stopEngine')
+      }
+    },
+    setPlayVsEngineHumanSide (context, payload) {
+      context.dispatch('stopEngine')
+      context.commit('playVsEngineHumanSide', payload)
+    },
+    setEngineTimeControlsEnabled (context, payload) {
+      context.commit('engineTimeControlsEnabled', payload)
+      context.commit('engineSideClockMs', null)
+    },
+    setEngineTimeControlMode (context, payload) {
+      context.commit('engineTimeControlMode', payload)
+      context.commit('engineSideClockMs', null)
+    },
+    setEngineTimeControlConfig (context, payload) {
+      context.commit('engineTimeControlConfig', payload)
+    },
+    computeEngineSearchLimits (context, payload = {}) {
+      if (!context.state.engineTimeControlsEnabled || context.state.engineTimeControlMode === 'depth') {
+        const targetDepth = context.state.analysisVisualization.analysisTargetDepth
+        const goCmd = (payload.depth || (targetDepth !== 'infinite' && Number.isFinite(Number(targetDepth))))
+          ? `go depth ${payload.depth || Number(targetDepth)}`
+          : 'go infinite'
+        return { goCmd }
+      }
+
+      const mode = context.state.engineTimeControlMode
+      const cfg = context.state.engineTimeControlConfig || {}
+      if (mode === 'perMove') {
+        const ms = Math.max(1, parseInt((cfg.perMove && cfg.perMove.seconds) || 3, 10)) * 1000
+        return { goCmd: `go movetime ${ms}` }
+      }
+      if (mode === 'movesInTime') {
+        const movesToGo = Math.max(1, parseInt((cfg.movesInTime && cfg.movesInTime.moves) || 40, 10))
+        const totalMs = Math.max(1, parseInt((cfg.movesInTime && cfg.movesInTime.minutes) || 5, 10)) * 60 * 1000
+        const clockMs = Number.isFinite(context.state.engineSideClockMs) && context.state.engineSideClockMs > 0 ? context.state.engineSideClockMs : totalMs
+        if (!Number.isFinite(context.state.engineSideClockMs) || context.state.engineSideClockMs === null) {
+          context.commit('engineSideClockMs', clockMs)
+        }
+        return { goCmd: `go movestogo ${movesToGo} wtime ${clockMs} btime ${clockMs}` }
+      }
+      const baseMs = Math.max(1, parseInt((cfg.increment && cfg.increment.baseMinutes) || 5, 10)) * 60 * 1000
+      const incMs = Math.max(0, parseInt((cfg.increment && cfg.increment.incrementSeconds) || 3, 10)) * 1000
+      const clockMs = Number.isFinite(context.state.engineSideClockMs) && context.state.engineSideClockMs > 0 ? context.state.engineSideClockMs : baseMs
+      if (!Number.isFinite(context.state.engineSideClockMs) || context.state.engineSideClockMs === null) {
+        context.commit('engineSideClockMs', clockMs)
+      }
+      return { goCmd: `go wtime ${clockMs} btime ${clockMs} winc ${incMs} binc ${incMs}` }
+    },
+    async analyzePosition (context, payload = {}) {
+      // Manual analysis action: think on the exact current board state without playing a move.
+      context.dispatch('position')
+      context.dispatch('stopEngine')
+      context.dispatch('goEngine', payload)
+    },
+    async playSingleEngineMove (context, payload = {}) {
+      // Manual single-action engine move:
+      // position -> go -> receive bestmove once -> apply exactly one move -> stop.
+      context.dispatch('stopEngine')
+      context.dispatch('position')
+
+      context.commit('nextSingleMoveRequestSeq')
+      const requestSeq = context.state.singleMoveRequestSeq
+      let handleBestMove
+      const bestMovePromise = new Promise(resolve => {
+        handleBestMove = move => resolve(move)
+        engine.on('bestmove', handleBestMove)
+      })
+
+      context.dispatch('goEngine', payload)
+
+      try {
+        const bestmove = sanitizeEngineMove(await bestMovePromise)
+        if (requestSeq !== context.state.singleMoveRequestSeq) return
+        if (!bestmove) return
+        await context.dispatch('push', { move: bestmove, prev: context.getters.currentMove[0] })
+      } catch (err) {
+        console.error('[playSingleEngineMove] Failed to apply single engine move:', err)
+      } finally {
+        if (handleBestMove) {
+          engine.off('bestmove', handleBestMove)
+        }
+        context.dispatch('stopEngine')
+      }
+    },
+    async goEngine (context, payload = {}) {
+      const { goCmd } = await context.dispatch('computeEngineSearchLimits', payload)
       console.log('[engine-order] cmd:', goCmd)
       engine.send(goCmd)
       context.commit('setEngineClock')
       context.commit('active', true)
+    },
+    async playVsEngineMove (context) {
+      if (!context.state.playVsEngineEnabled) return
+      const engineSide = context.state.playVsEngineHumanSide === 'white' ? 'black' : 'white'
+      const turnSide = context.getters.turn ? 'white' : 'black'
+      if (engineSide !== turnSide) return
+      await context.dispatch('playSingleEngineMove')
+    },
+    async onHumanMoveComplete (context) {
+      await context.dispatch('playVsEngineMove')
     },
     goEnginePvE (context) {
       // Send PvE engine command using the stored PvE engine instance and limiter
@@ -1566,13 +1724,14 @@ export const store = new Vuex.Store({
       const engineIsWhite = !playerIsWhite
       const turnIsWhite = state.turn
       const engineToMoveNow = (turnIsWhite && engineIsWhite) || (!turnIsWhite && !engineIsWhite)
-      if (state.active && state.PvE && engineToMoveNow) {
+      const move = sanitizeEngineMove(payload)
+      if (state.active && state.PvE && engineToMoveNow && move) {
         // Dispatch push and handle failure (invalid uci for current position)
-        context.dispatch('push', { move: payload, prev: context.getters.currentMove[0] }).then(() => {
+        context.dispatch('push', { move, prev: context.getters.currentMove[0] }).then(() => {
         }).catch((err) => {
           // If engine returned a move invalid for the current position, log and restart engine on the
           // current position so it recalculates for the correct state.
-          console.error('[PvEMakeMove] Engine provided invalid move for current position:', payload, err)
+          console.error('[PvEMakeMove] Engine provided invalid move for current position:', move, err)
           context.dispatch('position')
           context.dispatch('goEnginePvE')
         })
@@ -1671,7 +1830,9 @@ export const store = new Vuex.Store({
 
           if (!context.state.PvE || !engineToMoveNow) return
           try {
-            await context.dispatch('push', { move: ucimove, prev: context.getters.currentMove[0] })
+            const move = sanitizeEngineMove(ucimove)
+            if (!move) return
+            await context.dispatch('push', { move, prev: context.getters.currentMove[0] })
           } catch (err) {
             console.error('[PvEMakeMove] Engine provided invalid move:', ucimove, err)
             // try to restart the engine calculation on current position
@@ -1757,7 +1918,9 @@ export const store = new Vuex.Store({
           const turnIsWhite = context.getters.turn
           if (!context.state.EvE || !turnIsWhite) return
           try {
-            await context.dispatch('push', { move: ucimove, prev: context.getters.currentMove[0] })
+            const move = sanitizeEngineMove(ucimove)
+            if (!move) return
+            await context.dispatch('push', { move, prev: context.getters.currentMove[0] })
             // after white move, trigger black
             const cfg = context.state.EvEConfig || {}
             sendPositionAndGo(context.state.engineBlackInstance, cfg.blackLimiter)
@@ -1773,7 +1936,9 @@ export const store = new Vuex.Store({
           const turnIsWhite = context.getters.turn
           if (!context.state.EvE || turnIsWhite) return
           try {
-            await context.dispatch('push', { move: ucimove, prev: context.getters.currentMove[0] })
+            const move = sanitizeEngineMove(ucimove)
+            if (!move) return
+            await context.dispatch('push', { move, prev: context.getters.currentMove[0] })
             // after black move, trigger white
             const cfg = context.state.EvEConfig || {}
             sendPositionAndGo(context.state.engineWhiteInstance, cfg.whiteLimiter)
@@ -1819,7 +1984,6 @@ export const store = new Vuex.Store({
         console.error('[EvEfalse] Error stopping EvE engines:', err)
       }
       context.commit('active', false)
-      context.dispatch('resetEngineData')
     },
     stopEnginePvE (context) {
       engine.send('stop')
@@ -1842,7 +2006,6 @@ export const store = new Vuex.Store({
         context.commit('resetEngineTime')
         context.commit('active', false)
       }
-      context.dispatch('resetEngineData')
     },
     stopEngine (context) {
       engine.send('stop')
@@ -2262,6 +2425,13 @@ export const store = new Vuex.Store({
 
       // update pvline
       if ('pv' in payload) {
+        context.commit('lastAnalysisResult', {
+          cp: typeof payload.cp === 'number' ? payload.cp : context.state.lastAnalysisResult.cp,
+          mate: typeof payload.mate === 'number' ? payload.mate : null,
+          pv: payload.pv || '',
+          ucimove: payload.pv ? payload.pv.split(/\s/)[0] : '',
+          turn: context.state.turn
+        })
         const multipv = context.getters.multipv.slice(0)
 
         // handle checkmate
@@ -2920,6 +3090,50 @@ export const store = new Vuex.Store({
       try {
         await dispatch('initialize')
       } catch (e) {}
+    },
+
+    // Hard runtime reset: clear session/runtime state while preserving user preferences.
+    async fullResetSession ({ state, getters, commit, dispatch }) {
+      const keepVariant = state.variant
+      const selectedEngineBinary = getters.engineBinary
+      const selectedEngineCwd = getters.selectedEngine && getters.selectedEngine.cwd
+
+      // Stop all engine activity and invalidate pending single-move async responses.
+      commit('nextSingleMoveRequestSeq')
+      try { await dispatch('EvEfalse') } catch (e) {}
+      try { await dispatch('PvEfalse') } catch (e) {}
+      try { await dispatch('stopEngine') } catch (e) {}
+      try { commit('resetEngineTime') } catch (e) {}
+
+      // Clear transient runtime/session state.
+      try { dispatch('resetEngineData') } catch (e) {}
+      try { commit('clearIO') } catch (e) {}
+      try { commit('reviewClear') } catch (e) {}
+      try { commit('reviewSequenceEnd') } catch (e) {}
+      try { commit('showGameEndModal', false) } catch (e) {}
+      commit('PvE', false)
+      commit('EvE', false)
+      commit('PvEEngineInstance', null)
+      commit('engineWhiteInstance', null)
+      commit('engineBlackInstance', null)
+      commit('enginesActive', [false, false])
+      commit('active', false)
+      commit('playVsEngineEnabled', false)
+
+      // Rebuild board/session domain akin to fresh launch (preserve user settings/theme).
+      commit('variant', keepVariant)
+      commit('newBoard', { is960: false, fen: '' })
+      dispatch('updateBoard')
+      dispatch('position')
+
+      // Recreate engine runtime process instance for long-session stability.
+      if (selectedEngineBinary && selectedEngineCwd) {
+        try {
+          await dispatch('runBinary', { binary: selectedEngineBinary, cwd: selectedEngineCwd })
+        } catch (e) {
+          console.warn('[fullResetSession] Failed to recreate engine runtime:', e)
+        }
+      }
     }
   },
   getters: {
@@ -2966,6 +3180,24 @@ export const store = new Vuex.Store({
     },
     PvE (state) {
       return state.PvE
+    },
+    playVsEngineEnabled (state) {
+      return state.playVsEngineEnabled
+    },
+    playVsEngineHumanSide (state) {
+      return state.playVsEngineHumanSide
+    },
+    engineTimeControlsEnabled (state) {
+      return state.engineTimeControlsEnabled
+    },
+    engineTimeControlMode (state) {
+      return state.engineTimeControlMode
+    },
+    engineTimeControlConfig (state) {
+      return state.engineTimeControlConfig
+    },
+    engineSideClockMs (state) {
+      return state.engineSideClockMs
     },
     EvE (state) {
       return state.EvE
@@ -3066,28 +3298,29 @@ export const store = new Vuex.Store({
       return state.hoveredpv
     },
     cp (state) {
-      return state.multipv[0].cp
+      if (typeof state.multipv[0].cp === 'number' && (state.multipv[0].pv || typeof state.multipv[0].mate === 'number')) return state.multipv[0].cp
+      return state.lastAnalysisResult.cp
     },
     wdl (state) {
       return state.multipv[0].wdl
     },
     depth (state) {
-      return state.engineStats.depth
+      return state.engineStats.depth || state.lastEngineStats.depth
     },
     nps (state) {
-      return state.engineStats.nps
+      return state.engineStats.nps || state.lastEngineStats.nps
     },
     seldepth (state) {
-      return state.engineStats.seldepth
+      return state.engineStats.seldepth || state.lastEngineStats.seldepth
     },
     nodes (state) {
-      return state.engineStats.nodes
+      return state.engineStats.nodes || state.lastEngineStats.nodes
     },
     hashfull (state) {
-      return state.engineStats.hashfull
+      return state.engineStats.hashfull || state.lastEngineStats.hashfull
     },
     tbhits (state) {
-      return state.engineStats.tbhits
+      return state.engineStats.tbhits || state.lastEngineStats.tbhits
     },
     isEvalCached (state) {
       return state.engineStats.isEvalCached
@@ -3096,20 +3329,21 @@ export const store = new Vuex.Store({
       return state.engineStats.cachedDepth
     },
     time (state) {
-      return state.engineStats.time
+      return state.engineStats.time || state.lastEngineStats.time
     },
     enginetime (state) {
       return state.enginetime
     },
     pv (state) {
-      return state.multipv[0].pv
+      return state.multipv[0].pv || state.lastAnalysisResult.pv
     },
     cpForWhite (state) {
-      return calcForSide(state.multipv[0].cp, state.turn)
+      const hasLiveCp = typeof state.multipv[0].cp === 'number' && (state.multipv[0].pv || typeof state.multipv[0].mate === 'number')
+      return hasLiveCp ? state.multipv[0].cp : state.lastAnalysisResult.cp
     },
     cpForWhiteStr (state, getters) {
       const currentMove = getters.currentMove[0]
-      const { mate } = state.multipv[0]
+      const mate = typeof state.multipv[0].mate === 'number' ? state.multipv[0].mate : state.lastAnalysisResult.mate
 
       // TODO: Update this block when ffish.board.is_terminal() or ffish.board.check_result() is available
       // Temporary fix, as lang as we don't have an `is_terminal()` or `check_result` function
@@ -3131,7 +3365,7 @@ export const store = new Vuex.Store({
       }
 
       if (typeof mate === 'number') {
-        return `#${calcForSide(mate, state.turn)}`
+        return `#${mate}`
       } else if (state.board != null && state.board.isGameOver()) {
         return state.board.result()
       } else {
@@ -3140,14 +3374,42 @@ export const store = new Vuex.Store({
     },
     cpForWhitePerc (state, getters) {
       const currentMove = getters.currentMove[0]
-      const { mate } = state.multipv[0]
+      const mate = typeof state.multipv[0].mate === 'number' ? state.multipv[0].mate : state.lastAnalysisResult.mate
       if (typeof mate === 'number') {
-        return (calcForSide(Math.sign(mate), state.turn) + 1) / 2
+        return (Math.sign(mate) + 1) / 2
       } else if (currentMove && currentMove.name.includes('#')) {
         return state.turn ? 0 : 1
       } else {
         return 1 / (1 + Math.exp(-0.003 * getters.cpForWhite))
       }
+    },
+    cpForBarPerc (state, getters) {
+      const currentMove = getters.currentMove[0]
+      const liveHasPv = Boolean(state.multipv[0] && (state.multipv[0].pv || typeof state.multipv[0].mate === 'number'))
+      const effectiveTurn = liveHasPv ? state.turn : (typeof state.lastAnalysisResult.turn === 'boolean' ? state.lastAnalysisResult.turn : state.turn)
+      const mate = typeof state.multipv[0].mate === 'number' ? state.multipv[0].mate : state.lastAnalysisResult.mate
+      if (typeof mate === 'number') {
+        // Bar visualization uses fixed board-side perspective (Cho positive),
+        // normalized from transient side-to-move engine outputs.
+        return (calcForSide(Math.sign(mate), effectiveTurn) + 1) / 2
+      } else if (currentMove && currentMove.name.includes('#')) {
+        return state.turn ? 0 : 1
+      }
+      const liveCpRaw = typeof state.multipv[0].cp === 'number' ? state.multipv[0].cp : null
+      const lastCpRaw = typeof state.lastAnalysisResult.cp === 'number' ? state.lastAnalysisResult.cp : null
+      const liveCpStable = liveCpRaw === null ? null : calcForSide(liveCpRaw, state.turn)
+      const lastCpStable = lastCpRaw === null ? null : calcForSide(lastCpRaw, typeof state.lastAnalysisResult.turn === 'boolean' ? state.lastAnalysisResult.turn : state.turn)
+
+      let stableCp = calcForSide(getters.cpForWhite, effectiveTurn)
+      // Live search can temporarily emit opposite-perspective scores.
+      // Keep bar perspective stable by anchoring sign to last completed analysis when signs conflict.
+      if (liveHasPv && liveCpStable !== null) {
+        stableCp = liveCpStable
+        if (lastCpStable !== null && Math.sign(liveCpStable) !== 0 && Math.sign(lastCpStable) !== 0 && Math.sign(liveCpStable) !== Math.sign(lastCpStable)) {
+          stableCp = Math.sign(lastCpStable) * Math.abs(liveCpStable)
+        }
+      }
+      return 1 / (1 + Math.exp(-0.003 * stableCp))
     },
     wdlForWhiteWin (state) {
       const wdl = normalizeWdl(state.multipv[0])
@@ -3294,6 +3556,9 @@ export const store = new Vuex.Store({
     },
     analysisVisualization (state) {
       return state.analysisVisualization
+    },
+    lastAnalysisResult (state) {
+      return state.lastAnalysisResult
     },
     deepAnalysis (state) {
       return state.deepAnalysis

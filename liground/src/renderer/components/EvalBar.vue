@@ -6,7 +6,7 @@
     <div class="progress">
       <div
         class="progress-value"
-        :style="{ height: `${100 - cpForWhitePerc * 100}%` }"
+        :style="{ height: `${100 - cpForBarPerc * 100}%` }"
       />
     </div>
     <div
@@ -35,7 +35,7 @@ import { mapGetters } from 'vuex'
 export default {
   name: 'EvalBar',
   computed: {
-    ...mapGetters(['orientation', 'cpForWhitePerc', 'cpForWhite', 'wdlForWhiteWinPct', 'wdlForWhiteDrawPct', 'wdlForWhiteLossPct', 'currentMove']),
+    ...mapGetters(['orientation', 'cpForBarPerc', 'cpForWhite', 'wdlForWhiteWinPct', 'wdlForWhiteDrawPct', 'wdlForWhiteLossPct', 'currentMove']),
     wdlWinPct () {
       return this.wdlForWhiteWinPct ?? 0
     },
