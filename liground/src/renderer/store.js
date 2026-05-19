@@ -3338,7 +3338,21 @@ export const store = new Vuex.Store({
       } else if (currentMove && currentMove.name.includes('#')) {
         return state.turn ? 0 : 1
       }
-      const stableCp = calcForSide(getters.cpForWhite, state.turn)
+      const liveHasPv = Boolean(state.multipv[0] && (state.multipv[0].pv || typeof state.multipv[0].mate === 'number'))
+      const liveCpRaw = typeof state.multipv[0].cp === 'number' ? state.multipv[0].cp : null
+      const lastCpRaw = typeof state.lastAnalysisResult.cp === 'number' ? state.lastAnalysisResult.cp : null
+      const liveCpStable = liveCpRaw === null ? null : calcForSide(liveCpRaw, state.turn)
+      const lastCpStable = lastCpRaw === null ? null : calcForSide(lastCpRaw, state.turn)
+
+      let stableCp = calcForSide(getters.cpForWhite, state.turn)
+      // Live search can temporarily emit opposite-perspective scores.
+      // Keep bar perspective stable by anchoring sign to last completed analysis when signs conflict.
+      if (liveHasPv && liveCpStable !== null) {
+        stableCp = liveCpStable
+        if (lastCpStable !== null && Math.sign(liveCpStable) !== 0 && Math.sign(lastCpStable) !== 0 && Math.sign(liveCpStable) !== Math.sign(lastCpStable)) {
+          stableCp = Math.sign(lastCpStable) * Math.abs(liveCpStable)
+        }
+      }
       return 1 / (1 + Math.exp(-0.003 * stableCp))
     },
     wdlForWhiteWin (state) {
