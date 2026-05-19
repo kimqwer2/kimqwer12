@@ -630,7 +630,7 @@ export const store = new Vuex.Store({
         ucimove: ''
       }
     ],
-    lastAnalysisResult: { cp: 0, mate: null, pv: '', ucimove: '' },
+    lastAnalysisResult: { cp: 0, mate: null, pv: '', ucimove: '', turn: true },
     numberOfEngines: [
       {
         number: 1
@@ -1024,7 +1024,7 @@ export const store = new Vuex.Store({
       state.startFen = state.board.fen()
       state.selectedGame = null
       state.fenply = 1
-      state.lastAnalysisResult = { cp: 0, mate: null, pv: '', ucimove: '' }
+      state.lastAnalysisResult = { cp: 0, mate: null, pv: '', ucimove: '', turn: true }
       state.lastEngineStats = { depth: 0, seldepth: 0, nodes: 0, nps: 0, hashfull: 0, tbhits: 0, time: 0 }
       this.commit('resetEngineStats')
       state.normalizedFen = normalizeFen(state.fen)
@@ -1037,7 +1037,7 @@ export const store = new Vuex.Store({
       this.commit('newBoard', payload)
       state.selectedGame = null
       state.moves = []
-      state.lastAnalysisResult = { cp: 0, mate: null, pv: '', ucimove: '' }
+      state.lastAnalysisResult = { cp: 0, mate: null, pv: '', ucimove: '', turn: true }
       state.lastEngineStats = { depth: 0, seldepth: 0, nodes: 0, nps: 0, hashfull: 0, tbhits: 0, time: 0 }
       this.commit('syncGameStateFromStore')
     },
@@ -2419,7 +2419,8 @@ export const store = new Vuex.Store({
           cp: typeof payload.cp === 'number' ? payload.cp : context.state.lastAnalysisResult.cp,
           mate: typeof payload.mate === 'number' ? payload.mate : null,
           pv: payload.pv || '',
-          ucimove: payload.pv ? payload.pv.split(/\s/)[0] : ''
+          ucimove: payload.pv ? payload.pv.split(/\s/)[0] : '',
+          turn: context.state.turn
         })
         const multipv = context.getters.multipv.slice(0)
 
@@ -3330,21 +3331,22 @@ export const store = new Vuex.Store({
     },
     cpForBarPerc (state, getters) {
       const currentMove = getters.currentMove[0]
+      const liveHasPv = Boolean(state.multipv[0] && (state.multipv[0].pv || typeof state.multipv[0].mate === 'number'))
+      const effectiveTurn = liveHasPv ? state.turn : (typeof state.lastAnalysisResult.turn === 'boolean' ? state.lastAnalysisResult.turn : state.turn)
       const mate = typeof state.multipv[0].mate === 'number' ? state.multipv[0].mate : state.lastAnalysisResult.mate
       if (typeof mate === 'number') {
         // Bar visualization uses fixed board-side perspective (Cho positive),
         // normalized from transient side-to-move engine outputs.
-        return (calcForSide(Math.sign(mate), state.turn) + 1) / 2
+        return (calcForSide(Math.sign(mate), effectiveTurn) + 1) / 2
       } else if (currentMove && currentMove.name.includes('#')) {
         return state.turn ? 0 : 1
       }
-      const liveHasPv = Boolean(state.multipv[0] && (state.multipv[0].pv || typeof state.multipv[0].mate === 'number'))
       const liveCpRaw = typeof state.multipv[0].cp === 'number' ? state.multipv[0].cp : null
       const lastCpRaw = typeof state.lastAnalysisResult.cp === 'number' ? state.lastAnalysisResult.cp : null
       const liveCpStable = liveCpRaw === null ? null : calcForSide(liveCpRaw, state.turn)
-      const lastCpStable = lastCpRaw === null ? null : calcForSide(lastCpRaw, state.turn)
+      const lastCpStable = lastCpRaw === null ? null : calcForSide(lastCpRaw, typeof state.lastAnalysisResult.turn === 'boolean' ? state.lastAnalysisResult.turn : state.turn)
 
-      let stableCp = calcForSide(getters.cpForWhite, state.turn)
+      let stableCp = calcForSide(getters.cpForWhite, effectiveTurn)
       // Live search can temporarily emit opposite-perspective scores.
       // Keep bar perspective stable by anchoring sign to last completed analysis when signs conflict.
       if (liveHasPv && liveCpStable !== null) {
