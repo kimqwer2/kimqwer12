@@ -3090,6 +3090,50 @@ export const store = new Vuex.Store({
       try {
         await dispatch('initialize')
       } catch (e) {}
+    },
+
+    // Hard runtime reset: clear session/runtime state while preserving user preferences.
+    async fullResetSession ({ state, getters, commit, dispatch }) {
+      const keepVariant = state.variant
+      const selectedEngineBinary = getters.engineBinary
+      const selectedEngineCwd = getters.selectedEngine && getters.selectedEngine.cwd
+
+      // Stop all engine activity and invalidate pending single-move async responses.
+      commit('nextSingleMoveRequestSeq')
+      try { await dispatch('EvEfalse') } catch (e) {}
+      try { await dispatch('PvEfalse') } catch (e) {}
+      try { await dispatch('stopEngine') } catch (e) {}
+      try { commit('resetEngineTime') } catch (e) {}
+
+      // Clear transient runtime/session state.
+      try { dispatch('resetEngineData') } catch (e) {}
+      try { commit('clearIO') } catch (e) {}
+      try { commit('reviewClear') } catch (e) {}
+      try { commit('reviewSequenceEnd') } catch (e) {}
+      try { commit('showGameEndModal', false) } catch (e) {}
+      commit('PvE', false)
+      commit('EvE', false)
+      commit('PvEEngineInstance', null)
+      commit('engineWhiteInstance', null)
+      commit('engineBlackInstance', null)
+      commit('enginesActive', [false, false])
+      commit('active', false)
+      commit('playVsEngineEnabled', false)
+
+      // Rebuild board/session domain akin to fresh launch (preserve user settings/theme).
+      commit('variant', keepVariant)
+      commit('newBoard', { is960: false, fen: '' })
+      dispatch('updateBoard')
+      dispatch('position')
+
+      // Recreate engine runtime process instance for long-session stability.
+      if (selectedEngineBinary && selectedEngineCwd) {
+        try {
+          await dispatch('runBinary', { binary: selectedEngineBinary, cwd: selectedEngineCwd })
+        } catch (e) {
+          console.warn('[fullResetSession] Failed to recreate engine runtime:', e)
+        }
+      }
     }
   },
   getters: {

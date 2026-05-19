@@ -9,6 +9,12 @@
         class="reset"
         @click="resetBoard"
       >
+      <input
+        type="button"
+        value="Full Reset"
+        class="reset full-reset"
+        @click="fullResetSession"
+      >
     </div>
 
     <!-- Start New Game button -->
@@ -330,6 +336,16 @@ export default {
         this.$emit('resetMultiEngine')
       }
     },
+    async fullResetSession () {
+      if (!confirm('Do a full session reset? This will stop engines, clear runtime state, and restart the board session.')) return
+      this.autoPlayEnabled = false
+      if (this.autoPlayTimer) {
+        clearInterval(this.autoPlayTimer)
+        this.autoPlayTimer = null
+      }
+      await this.$store.dispatch('fullResetSession')
+      this.$emit('resetMultiEngine')
+    },
 
     openStartModal () {
       this.showStartModal = true
@@ -452,6 +468,10 @@ export default {
 .reset:hover {
   background-color: darkred;
   cursor:pointer;
+}
+.full-reset {
+  margin-left: 8px;
+  background-color: #6d2f2f;
 }
 .ceval {
   /* display: table */
