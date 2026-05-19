@@ -132,6 +132,28 @@
       🔄 Flip
     </button>
 
+
+    <div class="engine-manual-controls">
+      <button
+        class="engineManualBtn"
+        @click="engineAnalyze"
+      >
+        Engine Analyze
+      </button>
+      <button
+        class="engineManualBtn"
+        @click="engineMove"
+      >
+        Engine Move
+      </button>
+      <button
+        class="engineManualBtn"
+        @click="toggleEngineAutoPlay"
+      >
+        {{ autoPlayEnabled ? 'Stop Auto Play' : 'Engine Auto Play' }}
+      </button>
+    </div>
+
     <!-- 960 Board -->
     <Mode960 v-if="QuickTourIndex !== 8 && (variant === 'fischerandom' || variant === 'chess960')" />
     <Mode960
@@ -196,7 +218,9 @@ export default {
     return {
       selected: '♟️ Standard',
       showStartModal: false, // controls visibility of the start game modal
-      showPgnModal: false // controls visibility of the PGN browser modal
+      showPgnModal: false, // controls visibility of the PGN browser modal
+      autoPlayEnabled: false,
+      autoPlayTimer: null
     }
   },
   computed: {
@@ -229,6 +253,12 @@ export default {
         moveCount: this.$store.getters.moves.length,
         gameLength: null
       }
+    }
+  },
+  beforeDestroy () {
+    if (this.autoPlayTimer) {
+      clearInterval(this.autoPlayTimer)
+      this.autoPlayTimer = null
     }
   },
   methods: {
@@ -308,6 +338,31 @@ export default {
       this.closeStartModal()
     },
 
+    async engineAnalyze () {
+      await this.$store.dispatch('EvEfalse')
+      await this.$store.dispatch('PvEfalse')
+      await this.$store.dispatch('analyzePosition')
+    },
+    async engineMove () {
+      await this.$store.dispatch('EvEfalse')
+      await this.$store.dispatch('PvEfalse')
+      await this.$store.dispatch('playSingleEngineMove')
+    },
+    async toggleEngineAutoPlay () {
+      this.autoPlayEnabled = !this.autoPlayEnabled
+      if (!this.autoPlayEnabled) {
+        if (this.autoPlayTimer) {
+          clearInterval(this.autoPlayTimer)
+          this.autoPlayTimer = null
+        }
+        await this.$store.dispatch('stopEngine')
+        return
+      }
+      this.autoPlayTimer = setInterval(async () => {
+        if (!this.autoPlayEnabled) return
+        await this.engineMove()
+      }, 250)
+    },
     closeGameEndModal () {
       this.$store.dispatch('closeGameEndModal')
     }
@@ -592,4 +647,9 @@ export default {
   z-index: 100;
 }
 
+</style>
+
+<style scoped>
+.engine-manual-controls { display: flex; gap: 6px; align-items: center; }
+.engineManualBtn { padding: 6px 10px; border-radius: 4px; border: 1px solid var(--main-border-color, #ccc); background: var(--second-bg-color, #fff); cursor: pointer; }
 </style>

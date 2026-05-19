@@ -1531,6 +1531,38 @@ export const store = new Vuex.Store({
     setResized9x10height (context, payload) {
       context.commit('resized9x10height', payload)
     },
+    async analyzePosition (context, payload = {}) {
+      // Manual analysis action: think on the exact current board state without playing a move.
+      context.dispatch('position')
+      context.dispatch('stopEngine')
+      context.dispatch('resetEngineData')
+      context.dispatch('goEngine', payload)
+    },
+    async playSingleEngineMove (context, payload = {}) {
+      // Manual single-action engine move:
+      // position -> go -> receive bestmove once -> apply exactly one move -> stop.
+      context.dispatch('stopEngine')
+      context.dispatch('position')
+
+      const bestMovePromise = new Promise(resolve => {
+        const handleBestMove = move => {
+          resolve(move)
+        }
+        engine.once('bestmove', handleBestMove)
+      })
+
+      context.dispatch('goEngine', payload)
+
+      try {
+        const bestmove = await bestMovePromise
+        if (!bestmove) return
+        await context.dispatch('push', { move: bestmove, prev: context.getters.currentMove[0] })
+      } catch (err) {
+        console.error('[playSingleEngineMove] Failed to apply single engine move:', err)
+      } finally {
+        context.dispatch('stopEngine')
+      }
+    },
     goEngine (context, payload = {}) {
       const targetDepth = context.state.analysisVisualization.analysisTargetDepth
       const goCmd = (payload.depth || (targetDepth !== 'infinite' && Number.isFinite(Number(targetDepth))))
