@@ -487,6 +487,9 @@ function limiterToGo (limiter) {
     default: return `go movetime ${parseInt(limiter.value, 10) || 1000}`
   }
 }
+function sanitizeEngineMove (move) {
+  return String(move || '').trim().split(/\s+/)[0] || ''
+}
 
 export const store = new Vuex.Store({
   state: {
@@ -1442,6 +1445,7 @@ export const store = new Vuex.Store({
     push (context, payload) {
       context.commit('appendMoves', payload)
       return context.dispatch('fen', context.state.board.fen()).then(() => {
+        document.dispatchEvent(new Event('startEval'))
         // Only check for game end if a game was started via the new game modal
         if (context.state.gameConfig) {
           if (context.state.board.isGameOver()) {
@@ -1622,7 +1626,6 @@ export const store = new Vuex.Store({
       // Manual analysis action: think on the exact current board state without playing a move.
       context.dispatch('position')
       context.dispatch('stopEngine')
-      context.dispatch('resetEngineData')
       context.dispatch('goEngine', payload)
     },
     async playSingleEngineMove (context, payload = {}) {
@@ -1641,7 +1644,7 @@ export const store = new Vuex.Store({
       context.dispatch('goEngine', payload)
 
       try {
-        const bestmove = await bestMovePromise
+        const bestmove = sanitizeEngineMove(await bestMovePromise)
         if (!bestmove) return
         await context.dispatch('push', { move: bestmove, prev: context.getters.currentMove[0] })
       } catch (err) {
@@ -1692,13 +1695,14 @@ export const store = new Vuex.Store({
       const engineIsWhite = !playerIsWhite
       const turnIsWhite = state.turn
       const engineToMoveNow = (turnIsWhite && engineIsWhite) || (!turnIsWhite && !engineIsWhite)
-      if (state.active && state.PvE && engineToMoveNow) {
+      const move = sanitizeEngineMove(payload)
+      if (state.active && state.PvE && engineToMoveNow && move) {
         // Dispatch push and handle failure (invalid uci for current position)
-        context.dispatch('push', { move: payload, prev: context.getters.currentMove[0] }).then(() => {
+        context.dispatch('push', { move, prev: context.getters.currentMove[0] }).then(() => {
         }).catch((err) => {
           // If engine returned a move invalid for the current position, log and restart engine on the
           // current position so it recalculates for the correct state.
-          console.error('[PvEMakeMove] Engine provided invalid move for current position:', payload, err)
+          console.error('[PvEMakeMove] Engine provided invalid move for current position:', move, err)
           context.dispatch('position')
           context.dispatch('goEnginePvE')
         })
@@ -1797,7 +1801,9 @@ export const store = new Vuex.Store({
 
           if (!context.state.PvE || !engineToMoveNow) return
           try {
-            await context.dispatch('push', { move: ucimove, prev: context.getters.currentMove[0] })
+            const move = sanitizeEngineMove(ucimove)
+            if (!move) return
+            await context.dispatch('push', { move, prev: context.getters.currentMove[0] })
           } catch (err) {
             console.error('[PvEMakeMove] Engine provided invalid move:', ucimove, err)
             // try to restart the engine calculation on current position
@@ -1883,7 +1889,9 @@ export const store = new Vuex.Store({
           const turnIsWhite = context.getters.turn
           if (!context.state.EvE || !turnIsWhite) return
           try {
-            await context.dispatch('push', { move: ucimove, prev: context.getters.currentMove[0] })
+            const move = sanitizeEngineMove(ucimove)
+            if (!move) return
+            await context.dispatch('push', { move, prev: context.getters.currentMove[0] })
             // after white move, trigger black
             const cfg = context.state.EvEConfig || {}
             sendPositionAndGo(context.state.engineBlackInstance, cfg.blackLimiter)
@@ -1899,7 +1907,9 @@ export const store = new Vuex.Store({
           const turnIsWhite = context.getters.turn
           if (!context.state.EvE || turnIsWhite) return
           try {
-            await context.dispatch('push', { move: ucimove, prev: context.getters.currentMove[0] })
+            const move = sanitizeEngineMove(ucimove)
+            if (!move) return
+            await context.dispatch('push', { move, prev: context.getters.currentMove[0] })
             // after black move, trigger white
             const cfg = context.state.EvEConfig || {}
             sendPositionAndGo(context.state.engineWhiteInstance, cfg.whiteLimiter)
@@ -1945,7 +1955,6 @@ export const store = new Vuex.Store({
         console.error('[EvEfalse] Error stopping EvE engines:', err)
       }
       context.commit('active', false)
-      context.dispatch('resetEngineData')
     },
     stopEnginePvE (context) {
       engine.send('stop')
@@ -1968,7 +1977,6 @@ export const store = new Vuex.Store({
         context.commit('resetEngineTime')
         context.commit('active', false)
       }
-      context.dispatch('resetEngineData')
     },
     stopEngine (context) {
       engine.send('stop')
