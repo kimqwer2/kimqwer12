@@ -622,6 +622,7 @@ export const store = new Vuex.Store({
       }
     ],
     evalGraphByFen: {},
+    lastAnalysisResult: { cp: 0, mate: null, pv: '', ucimove: '' },
     numberOfEngines: [
       {
         number: 1
@@ -968,6 +969,9 @@ export const store = new Vuex.Store({
         }
       }
     },
+    lastAnalysisResult (state, payload) {
+      state.lastAnalysisResult = { ...state.lastAnalysisResult, ...(payload || {}) }
+    },
     multipv (state, payload) {
       for (const pvline of payload) {
         if (pvline) {
@@ -1025,6 +1029,7 @@ export const store = new Vuex.Store({
       state.selectedGame = null
       state.fenply = 1
       state.evalGraphByFen = {}
+      state.lastAnalysisResult = { cp: 0, mate: null, pv: '', ucimove: '' }
       this.commit('resetEngineStats')
       state.normalizedFen = normalizeFen(state.fen)
       this.commit('syncGameStateFromStore')
@@ -1037,6 +1042,7 @@ export const store = new Vuex.Store({
       state.selectedGame = null
       state.moves = []
       state.evalGraphByFen = {}
+      state.lastAnalysisResult = { cp: 0, mate: null, pv: '', ucimove: '' }
       this.commit('syncGameStateFromStore')
     },
     appendMoves (state, payload) {
@@ -2413,6 +2419,12 @@ export const store = new Vuex.Store({
 
       // update pvline
       if ('pv' in payload) {
+        context.commit('lastAnalysisResult', {
+          cp: typeof payload.cp === 'number' ? payload.cp : context.state.lastAnalysisResult.cp,
+          mate: typeof payload.mate === 'number' ? payload.mate : null,
+          pv: payload.pv || '',
+          ucimove: payload.pv ? payload.pv.split(/\s/)[0] : ''
+        })
         context.commit('recordEvalGraphPoint', {
           fen: context.state.fen,
           cp: payload.cp,
@@ -3280,11 +3292,12 @@ export const store = new Vuex.Store({
       return state.multipv[0].pv
     },
     cpForWhite (state) {
-      return calcForSide(state.multipv[0].cp, state.turn)
+      const cp = typeof state.multipv[0].cp === 'number' ? state.multipv[0].cp : state.lastAnalysisResult.cp
+      return calcForSide(cp, state.turn)
     },
     cpForWhiteStr (state, getters) {
       const currentMove = getters.currentMove[0]
-      const { mate } = state.multipv[0]
+      const mate = typeof state.multipv[0].mate === 'number' ? state.multipv[0].mate : state.lastAnalysisResult.mate
 
       // TODO: Update this block when ffish.board.is_terminal() or ffish.board.check_result() is available
       // Temporary fix, as lang as we don't have an `is_terminal()` or `check_result` function
@@ -3315,7 +3328,7 @@ export const store = new Vuex.Store({
     },
     cpForWhitePerc (state, getters) {
       const currentMove = getters.currentMove[0]
-      const { mate } = state.multipv[0]
+      const mate = typeof state.multipv[0].mate === 'number' ? state.multipv[0].mate : state.lastAnalysisResult.mate
       if (typeof mate === 'number') {
         return (calcForSide(Math.sign(mate), state.turn) + 1) / 2
       } else if (currentMove && currentMove.name.includes('#')) {
@@ -3472,6 +3485,9 @@ export const store = new Vuex.Store({
     },
     evalGraphByFen (state) {
       return state.evalGraphByFen
+    },
+    lastAnalysisResult (state) {
+      return state.lastAnalysisResult
     },
     deepAnalysis (state) {
       return state.deepAnalysis
