@@ -208,7 +208,10 @@ export default {
   mounted () { // EventListener für Keyboardinput, ruft direkt die jeweilige Methode auf
     this.keydownHandler = (event) => {
       const keyName = event.key
-      if (event.target.nodeName.toLowerCase() !== 'input' || event.target.type.toLowerCase() === 'checkbox') {
+      const target = event.target
+      const tag = target && target.nodeName ? target.nodeName.toLowerCase() : ''
+      const isEditable = target && (target.isContentEditable || tag === 'textarea' || tag === 'select' || (tag === 'input' && target.type.toLowerCase() !== 'checkbox'))
+      if (!isEditable) {
         if (keyName === 'ArrowUp') {
           event.preventDefault()
           this.moveToStart()
@@ -240,6 +243,24 @@ export default {
         if (event.ctrlKey && keyName.toLowerCase() === 'e') {
           event.preventDefault()
           this.$store.dispatch('toggleEditorMode')
+        }
+        if (keyName === 'F2') {
+          event.preventDefault()
+          this.flipBoard()
+        }
+        if (event.ctrlKey && keyName.toLowerCase() === 'g') {
+          event.preventDefault()
+          this.$store.dispatch('analysisVisualization', {
+            realtimeGameCommentary: !this.$store.getters.analysisVisualization.realtimeGameCommentary
+          })
+        }
+        if (event.ctrlKey && keyName.toLowerCase() === 'w') {
+          event.preventDefault()
+          this.$store.dispatch('playSingleEngineMove')
+        }
+        if (event.ctrlKey && keyName.toLowerCase() === 't') {
+          event.preventDefault()
+          this.$store.dispatch('toggleEngineAutoPlay')
         }
       }
     }
