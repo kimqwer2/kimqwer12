@@ -312,6 +312,10 @@ export default {
       clearInterval(this.autoPlayTimer)
       this.autoPlayTimer = null
     }
+    document.removeEventListener('toggleEngineAutoPlayShortcut', this.toggleEngineAutoPlay)
+  },
+  mounted () {
+    document.addEventListener('toggleEngineAutoPlayShortcut', this.toggleEngineAutoPlay)
   },
   methods: {
     updateVariant (payload) {

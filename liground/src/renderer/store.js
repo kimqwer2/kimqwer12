@@ -3136,29 +3136,6 @@ export const store = new Vuex.Store({
       }
     },
 
-    async toggleEvEFromShortcut ({ state, getters, dispatch }) {
-      if (state.EvE) {
-        await dispatch('EvEfalse')
-        return
-      }
-
-      const selectedEngine = getters.selectedEngine && getters.selectedEngine.name
-      const whiteEngine = (state.startGameModal && state.startGameModal.whiteEngineName) || selectedEngine
-      const blackEngine = (state.startGameModal && state.startGameModal.blackEngineName) || selectedEngine
-      if (!whiteEngine || !blackEngine) return
-
-      await dispatch('PvEfalse')
-      await dispatch('EvEtrue', {
-        gameMode: getters.variant,
-        whiteEngine,
-        blackEngine,
-        whiteLimiter: state.startGameModal && state.startGameModal.whiteLimiterEnabled
-          ? { enabled: true, type: state.startGameModal.whiteLimiterType, value: state.startGameModal.whiteLimiterValue }
-          : { enabled: false, type: 'time', value: 1000 },
-        blackLimiter: state.startGameModal && state.startGameModal.blackLimiterEnabled
-          ? { enabled: true, type: state.startGameModal.blackLimiterType, value: state.startGameModal.blackLimiterValue }
-          : { enabled: false, type: 'time', value: 1000 }
-      })
     }
   },
   getters: {
