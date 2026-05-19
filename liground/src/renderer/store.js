@@ -637,6 +637,7 @@ export const store = new Vuex.Store({
       }
     ],
     engineCounter: 1,
+    singleMoveRequestSeq: 0,
     hoveredpv: -1,
     counter: 0,
     pieceStyle: 'cburnett',
@@ -982,6 +983,9 @@ export const store = new Vuex.Store({
     increment (state, payload) {
       state.counter += payload
     },
+    nextSingleMoveRequestSeq (state) {
+      state.singleMoveRequestSeq += 1
+    },
     resetMultiPV (state) {
       state.multipv = [
         {
@@ -1298,6 +1302,7 @@ export const store = new Vuex.Store({
       state.moves = payload
     },
     setEngineClock (state) {
+      clearInterval(state.clock)
       state.clock = setInterval(function () { state.enginetime = state.enginetime + 1000 }, 1000)
     },
     resetEngineTime (state) {
@@ -1653,22 +1658,27 @@ export const store = new Vuex.Store({
       context.dispatch('stopEngine')
       context.dispatch('position')
 
+      context.commit('nextSingleMoveRequestSeq')
+      const requestSeq = context.state.singleMoveRequestSeq
+      let handleBestMove
       const bestMovePromise = new Promise(resolve => {
-        const handleBestMove = move => {
-          resolve(move)
-        }
-        engine.once('bestmove', handleBestMove)
+        handleBestMove = move => resolve(move)
+        engine.on('bestmove', handleBestMove)
       })
 
       context.dispatch('goEngine', payload)
 
       try {
         const bestmove = sanitizeEngineMove(await bestMovePromise)
+        if (requestSeq !== context.state.singleMoveRequestSeq) return
         if (!bestmove) return
         await context.dispatch('push', { move: bestmove, prev: context.getters.currentMove[0] })
       } catch (err) {
         console.error('[playSingleEngineMove] Failed to apply single engine move:', err)
       } finally {
+        if (handleBestMove) {
+          engine.off('bestmove', handleBestMove)
+        }
         context.dispatch('stopEngine')
       }
     },
