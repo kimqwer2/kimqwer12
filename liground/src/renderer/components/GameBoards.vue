@@ -260,7 +260,7 @@ export default {
         }
         if (event.ctrlKey && keyName.toLowerCase() === 't') {
           event.preventDefault()
-          document.dispatchEvent(new Event('toggleEngineAutoPlayShortcut'))
+          this.$store.dispatch('toggleEngineAutoPlay')
         }
       }
     }
