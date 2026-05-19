@@ -501,6 +501,16 @@ export const store = new Vuex.Store({
     PvEInput: 1000,
     PvELimiter: null, // stores the limiter config for the PvE engine
     PvEEngineInstance: null,
+    playVsEngineEnabled: false,
+    playVsEngineHumanSide: 'white',
+    engineTimeControlsEnabled: false,
+    engineTimeControlMode: 'depth', // depth | movesInTime | increment | perMove
+    engineTimeControlConfig: {
+      movesInTime: { moves: 40, minutes: 5 },
+      increment: { baseMinutes: 5, incrementSeconds: 3 },
+      perMove: { seconds: 3 }
+    },
+    engineSideClockMs: null,
     resized: 0,
     resized9x9height: 0,
     resized9x9width: 0,
@@ -787,6 +797,27 @@ export const store = new Vuex.Store({
     },
     PvEEngineInstance (state, payload) {
       state.PvEEngineInstance = payload
+    },
+    playVsEngineEnabled (state, payload) {
+      state.playVsEngineEnabled = !!payload
+    },
+    playVsEngineHumanSide (state, payload) {
+      state.playVsEngineHumanSide = payload === 'black' ? 'black' : 'white'
+    },
+    engineTimeControlsEnabled (state, payload) {
+      state.engineTimeControlsEnabled = !!payload
+    },
+    engineTimeControlMode (state, payload) {
+      state.engineTimeControlMode = payload || 'depth'
+    },
+    engineTimeControlConfig (state, payload) {
+      state.engineTimeControlConfig = {
+        ...state.engineTimeControlConfig,
+        ...(payload || {})
+      }
+    },
+    engineSideClockMs (state, payload) {
+      state.engineSideClockMs = Number.isFinite(Number(payload)) ? Number(payload) : null
     },
     PvEParam (state, payload) {
       state.PvEParam = payload
@@ -1531,6 +1562,62 @@ export const store = new Vuex.Store({
     setResized9x10height (context, payload) {
       context.commit('resized9x10height', payload)
     },
+    setPlayVsEngineEnabled (context, payload) {
+      context.commit('playVsEngineEnabled', payload)
+      if (payload) {
+        context.dispatch('EvEfalse')
+        context.dispatch('PvEfalse')
+      } else {
+        context.dispatch('stopEngine')
+      }
+    },
+    setPlayVsEngineHumanSide (context, payload) {
+      context.dispatch('stopEngine')
+      context.commit('playVsEngineHumanSide', payload)
+    },
+    setEngineTimeControlsEnabled (context, payload) {
+      context.commit('engineTimeControlsEnabled', payload)
+      context.commit('engineSideClockMs', null)
+    },
+    setEngineTimeControlMode (context, payload) {
+      context.commit('engineTimeControlMode', payload)
+      context.commit('engineSideClockMs', null)
+    },
+    setEngineTimeControlConfig (context, payload) {
+      context.commit('engineTimeControlConfig', payload)
+    },
+    computeEngineSearchLimits (context, payload = {}) {
+      if (!context.state.engineTimeControlsEnabled || context.state.engineTimeControlMode === 'depth') {
+        const targetDepth = context.state.analysisVisualization.analysisTargetDepth
+        const goCmd = (payload.depth || (targetDepth !== 'infinite' && Number.isFinite(Number(targetDepth))))
+          ? `go depth ${payload.depth || Number(targetDepth)}`
+          : 'go infinite'
+        return { goCmd }
+      }
+
+      const mode = context.state.engineTimeControlMode
+      const cfg = context.state.engineTimeControlConfig || {}
+      if (mode === 'perMove') {
+        const ms = Math.max(1, parseInt((cfg.perMove && cfg.perMove.seconds) || 3, 10)) * 1000
+        return { goCmd: `go movetime ${ms}` }
+      }
+      if (mode === 'movesInTime') {
+        const movesToGo = Math.max(1, parseInt((cfg.movesInTime && cfg.movesInTime.moves) || 40, 10))
+        const totalMs = Math.max(1, parseInt((cfg.movesInTime && cfg.movesInTime.minutes) || 5, 10)) * 60 * 1000
+        const clockMs = Number.isFinite(context.state.engineSideClockMs) && context.state.engineSideClockMs > 0 ? context.state.engineSideClockMs : totalMs
+        if (!Number.isFinite(context.state.engineSideClockMs) || context.state.engineSideClockMs === null) {
+          context.commit('engineSideClockMs', clockMs)
+        }
+        return { goCmd: `go movestogo ${movesToGo} wtime ${clockMs} btime ${clockMs}` }
+      }
+      const baseMs = Math.max(1, parseInt((cfg.increment && cfg.increment.baseMinutes) || 5, 10)) * 60 * 1000
+      const incMs = Math.max(0, parseInt((cfg.increment && cfg.increment.incrementSeconds) || 3, 10)) * 1000
+      const clockMs = Number.isFinite(context.state.engineSideClockMs) && context.state.engineSideClockMs > 0 ? context.state.engineSideClockMs : baseMs
+      if (!Number.isFinite(context.state.engineSideClockMs) || context.state.engineSideClockMs === null) {
+        context.commit('engineSideClockMs', clockMs)
+      }
+      return { goCmd: `go wtime ${clockMs} btime ${clockMs} winc ${incMs} binc ${incMs}` }
+    },
     async analyzePosition (context, payload = {}) {
       // Manual analysis action: think on the exact current board state without playing a move.
       context.dispatch('position')
@@ -1563,15 +1650,22 @@ export const store = new Vuex.Store({
         context.dispatch('stopEngine')
       }
     },
-    goEngine (context, payload = {}) {
-      const targetDepth = context.state.analysisVisualization.analysisTargetDepth
-      const goCmd = (payload.depth || (targetDepth !== 'infinite' && Number.isFinite(Number(targetDepth))))
-        ? `go depth ${payload.depth || Number(targetDepth)}`
-        : 'go infinite'
+    async goEngine (context, payload = {}) {
+      const { goCmd } = await context.dispatch('computeEngineSearchLimits', payload)
       console.log('[engine-order] cmd:', goCmd)
       engine.send(goCmd)
       context.commit('setEngineClock')
       context.commit('active', true)
+    },
+    async playVsEngineMove (context) {
+      if (!context.state.playVsEngineEnabled) return
+      const engineSide = context.state.playVsEngineHumanSide === 'white' ? 'black' : 'white'
+      const turnSide = context.getters.turn ? 'white' : 'black'
+      if (engineSide !== turnSide) return
+      await context.dispatch('playSingleEngineMove')
+    },
+    async onHumanMoveComplete (context) {
+      await context.dispatch('playVsEngineMove')
     },
     goEnginePvE (context) {
       // Send PvE engine command using the stored PvE engine instance and limiter
@@ -2998,6 +3092,24 @@ export const store = new Vuex.Store({
     },
     PvE (state) {
       return state.PvE
+    },
+    playVsEngineEnabled (state) {
+      return state.playVsEngineEnabled
+    },
+    playVsEngineHumanSide (state) {
+      return state.playVsEngineHumanSide
+    },
+    engineTimeControlsEnabled (state) {
+      return state.engineTimeControlsEnabled
+    },
+    engineTimeControlMode (state) {
+      return state.engineTimeControlMode
+    },
+    engineTimeControlConfig (state) {
+      return state.engineTimeControlConfig
+    },
+    engineSideClockMs (state) {
+      return state.engineSideClockMs
     },
     EvE (state) {
       return state.EvE

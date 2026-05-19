@@ -152,6 +152,43 @@
       >
         {{ autoPlayEnabled ? 'Stop Auto Play' : 'Engine Auto Play' }}
       </button>
+      <button
+        class="engineManualBtn"
+        @click="togglePlayVsEngine"
+      >
+        {{ playVsEngineEnabled ? 'Stop Play vs Engine' : 'Play vs Engine' }}
+      </button>
+      <select
+        v-model="playVsEngineHumanSide"
+        class="engineManualBtn"
+        @change="onHumanSideChange"
+      >
+        <option value="white">
+          Human plays Cho (White)
+        </option>
+        <option value="black">
+          Human plays Han (Black)
+        </option>
+      </select>
+    </div>
+    <div class="engine-time-controls">
+      <label><input v-model="engineTimeControlsEnabled" type="checkbox" @change="onEngineTimeControlsToggle"> Use Engine Time Controls</label>
+      <span class="engine-time-note">Engine-only clock. Human time is unlimited.</span>
+      <select v-model="engineTimeControlMode" class="engineManualBtn" @change="onEngineTimeModeChange">
+        <option value="depth">Depth</option>
+        <option value="movesInTime">Moves in Time</option>
+        <option value="increment">Base + Increment</option>
+        <option value="perMove">Per Move</option>
+      </select>
+      <div v-if="engineTimeControlMode === 'movesInTime'" class="engine-time-fields">
+        <input v-model.number="movesInTimeMoves" type="number" min="1" @change="syncEngineTimeConfig"> moves / <input v-model.number="movesInTimeMinutes" type="number" min="1" @change="syncEngineTimeConfig"> minutes
+      </div>
+      <div v-if="engineTimeControlMode === 'increment'" class="engine-time-fields">
+        <input v-model.number="incrementBaseMinutes" type="number" min="1" @change="syncEngineTimeConfig"> min + <input v-model.number="incrementSeconds" type="number" min="0" @change="syncEngineTimeConfig"> sec
+      </div>
+      <div v-if="engineTimeControlMode === 'perMove'" class="engine-time-fields">
+        <input v-model.number="perMoveSeconds" type="number" min="1" @change="syncEngineTimeConfig"> sec per move
+      </div>
     </div>
 
     <!-- 960 Board -->
@@ -220,7 +257,16 @@ export default {
       showStartModal: false, // controls visibility of the start game modal
       showPgnModal: false, // controls visibility of the PGN browser modal
       autoPlayEnabled: false,
-      autoPlayTimer: null
+      autoPlayTimer: null,
+      playVsEngineEnabled: false,
+      playVsEngineHumanSide: 'white',
+      engineTimeControlsEnabled: false,
+      engineTimeControlMode: 'depth',
+      movesInTimeMoves: 40,
+      movesInTimeMinutes: 5,
+      incrementBaseMinutes: 5,
+      incrementSeconds: 3,
+      perMoveSeconds: 3
     }
   },
   computed: {
@@ -362,6 +408,26 @@ export default {
         if (!this.autoPlayEnabled) return
         await this.engineMove()
       }, 250)
+    },
+    togglePlayVsEngine () {
+      this.playVsEngineEnabled = !this.playVsEngineEnabled
+      this.$store.dispatch('setPlayVsEngineEnabled', this.playVsEngineEnabled)
+    },
+    onHumanSideChange () {
+      this.$store.dispatch('setPlayVsEngineHumanSide', this.playVsEngineHumanSide)
+    },
+    onEngineTimeControlsToggle () {
+      this.$store.dispatch('setEngineTimeControlsEnabled', this.engineTimeControlsEnabled)
+    },
+    onEngineTimeModeChange () {
+      this.$store.dispatch('setEngineTimeControlMode', this.engineTimeControlMode)
+    },
+    syncEngineTimeConfig () {
+      this.$store.dispatch('setEngineTimeControlConfig', {
+        movesInTime: { moves: this.movesInTimeMoves, minutes: this.movesInTimeMinutes },
+        increment: { baseMinutes: this.incrementBaseMinutes, incrementSeconds: this.incrementSeconds },
+        perMove: { seconds: this.perMoveSeconds }
+      })
     },
     closeGameEndModal () {
       this.$store.dispatch('closeGameEndModal')
@@ -652,4 +718,7 @@ export default {
 <style scoped>
 .engine-manual-controls { display: flex; gap: 6px; align-items: center; }
 .engineManualBtn { padding: 6px 10px; border-radius: 4px; border: 1px solid var(--main-border-color, #ccc); background: var(--second-bg-color, #fff); cursor: pointer; }
+.engine-time-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
+.engine-time-note { font-size: 12px; opacity: 0.8; }
+.engine-time-fields { display: inline-flex; gap: 4px; align-items: center; }
 </style>

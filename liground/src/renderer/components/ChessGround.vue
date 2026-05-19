@@ -858,7 +858,9 @@ export default {
       }
       this.lastMoveSan = this.$store.getters.sanMove(this.promotionMove)
       const prevMov = this.currentMove
-      this.$store.dispatch('push', { move: this.promotionMove, prev: prevMov })
+      this.$store.dispatch('push', { move: this.promotionMove, prev: prevMov }).then(() => {
+        this.$store.dispatch('onHumanMoveComplete')
+      })
       this.updateHand()
       this.afterMove()
     },
@@ -1057,7 +1059,9 @@ export default {
         const move = pieces[role] + '@' + key
         const prevMov = this.currentMove
         if (this.$store.getters.legalMoves.includes(move)) {
-          this.$store.dispatch('push', { move: move, prev: prevMov })
+          this.$store.dispatch('push', { move: move, prev: prevMov }).then(() => {
+            this.$store.dispatch('onHumanMoveComplete')
+          })
           this.updateHand()
         } else {
           this.updateBoard()
@@ -1087,7 +1091,9 @@ export default {
           if (this.variant === 'makruk') {
             const move = uciMove + 'm'
             const prevMov = this.currentMove
-            this.$store.dispatch('push', { move: move, prev: prevMov })
+            this.$store.dispatch('push', { move: move, prev: prevMov }).then(() => {
+              this.$store.dispatch('onHumanMoveComplete')
+            })
           } else {
             this.setPromotionOptions(uciMove)
             this.promotionMove = uciMove
@@ -1096,7 +1102,9 @@ export default {
         } else {
           this.lastMoveSan = this.$store.getters.sanMove(uciMove)
           const prevMov = this.currentMove
-          this.$store.dispatch('push', { move: uciMove, prev: prevMov })
+          this.$store.dispatch('push', { move: uciMove, prev: prevMov }).then(() => {
+            this.$store.dispatch('onHumanMoveComplete')
+          })
           this.updateHand()
           this.afterMove()
         }
