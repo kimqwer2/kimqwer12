@@ -3134,8 +3134,6 @@ export const store = new Vuex.Store({
           console.warn('[fullResetSession] Failed to recreate engine runtime:', e)
         }
       }
-    },
-
     }
   },
   getters: {
