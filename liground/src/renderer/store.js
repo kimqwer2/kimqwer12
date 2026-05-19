@@ -621,6 +621,7 @@ export const store = new Vuex.Store({
         ucimove: ''
       }
     ],
+    evalGraphByFen: {},
     numberOfEngines: [
       {
         number: 1
@@ -952,6 +953,21 @@ export const store = new Vuex.Store({
       state.lastWdlDraw = null
       state.lastWdlLoss = null
     },
+    evalGraphByFen (state, payload) {
+      state.evalGraphByFen = payload || {}
+    },
+    recordEvalGraphPoint (state, payload) {
+      if (!payload || !payload.fen) return
+      state.evalGraphByFen = {
+        ...state.evalGraphByFen,
+        [payload.fen]: {
+          cp: typeof payload.cp === 'number' ? payload.cp : null,
+          mate: typeof payload.mate === 'number' ? payload.mate : null,
+          ts: Date.now(),
+          source: payload.source || 'engine'
+        }
+      }
+    },
     multipv (state, payload) {
       for (const pvline of payload) {
         if (pvline) {
@@ -1008,6 +1024,7 @@ export const store = new Vuex.Store({
       state.startFen = state.board.fen()
       state.selectedGame = null
       state.fenply = 1
+      state.evalGraphByFen = {}
       this.commit('resetEngineStats')
       state.normalizedFen = normalizeFen(state.fen)
       this.commit('syncGameStateFromStore')
@@ -1019,6 +1036,7 @@ export const store = new Vuex.Store({
       this.commit('newBoard', payload)
       state.selectedGame = null
       state.moves = []
+      state.evalGraphByFen = {}
       this.commit('syncGameStateFromStore')
     },
     appendMoves (state, payload) {
@@ -1445,7 +1463,6 @@ export const store = new Vuex.Store({
     push (context, payload) {
       context.commit('appendMoves', payload)
       return context.dispatch('fen', context.state.board.fen()).then(() => {
-        document.dispatchEvent(new Event('startEval'))
         // Only check for game end if a game was started via the new game modal
         if (context.state.gameConfig) {
           if (context.state.board.isGameOver()) {
@@ -2396,6 +2413,12 @@ export const store = new Vuex.Store({
 
       // update pvline
       if ('pv' in payload) {
+        context.commit('recordEvalGraphPoint', {
+          fen: context.state.fen,
+          cp: payload.cp,
+          mate: payload.mate,
+          source: 'live'
+        })
         const multipv = context.getters.multipv.slice(0)
 
         // handle checkmate
@@ -3446,6 +3469,9 @@ export const store = new Vuex.Store({
     },
     analysisVisualization (state) {
       return state.analysisVisualization
+    },
+    evalGraphByFen (state) {
+      return state.evalGraphByFen
     },
     deepAnalysis (state) {
       return state.deepAnalysis

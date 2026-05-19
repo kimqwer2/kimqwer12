@@ -132,7 +132,7 @@ export default {
     }
   },
   computed: {
-    ...mapGetters(['variant', 'board', 'startFen', 'moves', 'openedPGN', 'cpForWhiteStr', 'depth', 'evalPlotDepth'])
+    ...mapGetters(['variant', 'board', 'startFen', 'moves', 'openedPGN', 'cpForWhiteStr', 'depth', 'evalPlotDepth', 'evalGraphByFen'])
   },
   watch: {
     board () {
@@ -308,7 +308,14 @@ export default {
           this.series[0].data.splice(0, xlength)
         }
         if (depth > this.depthArr[index] || this.series[0].data[index + 1] === undefined) {
-          points = await engine.evaluate(this.mainMoves[index].fen, depth)
+          const snapshot = this.evalGraphByFen[this.mainMoves[index].fen]
+          if (snapshot && typeof snapshot.mate === 'number') {
+            points = snapshot.mate === 0 ? '#0' : (snapshot.mate > 0 ? `#${snapshot.mate}` : `#-${Math.abs(snapshot.mate)}`)
+          } else if (snapshot && typeof snapshot.cp === 'number') {
+            points = String(snapshot.cp)
+          } else {
+            points = await engine.evaluate(this.mainMoves[index].fen, depth)
+          }
           if (this.break) { // stops evaluating
             this.break = false
             return
