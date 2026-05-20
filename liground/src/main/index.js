@@ -95,7 +95,6 @@ app.on('activate', () => {
   }
 })
 
-
 ipcMain.handle('review-analyze', async (_event, payload) => {
   try {
     if (!payload || !payload.id) {

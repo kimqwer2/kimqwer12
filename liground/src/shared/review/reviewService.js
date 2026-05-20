@@ -108,7 +108,6 @@ function summarizeIntentFromFeatures (features) {
   return { type: 'candidate_intent', label: '아이디어 검토', text: '엔진 수치보다 먼저 방향, 착점, 실전적 의미를 기준으로 후보 아이디어를 검토합니다.', confidence: 0.48 }
 }
 
-
 function normalizeEngineCandidate (candidate, idx = 0) {
   if (!candidate) return null
   const move = candidate.ucimove || candidate.move || candidate.bestmove || ''
@@ -248,7 +247,6 @@ function buildOverlays ({ reviewedMove, reviewedLine, bestLine, punishmentLine, 
 
   return overlays
 }
-
 
 function markerModeLabel (mode) {
   const labels = {

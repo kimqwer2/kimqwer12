@@ -52,6 +52,15 @@ npm run dev
 # build electron application for production
 npm run build
 
+# build unpacked output only (no installer)
+npm run build:dir
+
+# build Windows artifacts explicitly
+npx electron-builder --win
+
+# build Windows unpacked directory explicitly
+npx electron-builder --win --dir
+
 # lint all JS/Vue component files
 npm run lint
 ```
