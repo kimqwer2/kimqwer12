@@ -260,7 +260,8 @@ export default {
         }
         if (event.ctrlKey && keyName.toLowerCase() === 't') {
           event.preventDefault()
-          this.$store.dispatch('toggleEngineAutoPlay')
+          const autoPlayBtn = document.getElementById('engine-auto-play-btn')
+          if (autoPlayBtn) autoPlayBtn.click()
         }
       }
     }

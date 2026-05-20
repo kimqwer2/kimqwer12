@@ -153,6 +153,7 @@
         Engine Move
       </button>
       <button
+        id="engine-auto-play-btn"
         class="engineManualBtn"
         @click="toggleEngineAutoPlay"
       >
@@ -262,6 +263,8 @@ export default {
       selected: '♟️ Standard',
       showStartModal: false, // controls visibility of the start game modal
       showPgnModal: false, // controls visibility of the PGN browser modal
+      autoPlayEnabled: false,
+      autoPlayTimer: null,
       playVsEngineEnabled: false,
       playVsEngineHumanSide: 'white',
       engineTimeControlsEnabled: false,
@@ -288,10 +291,7 @@ export default {
     displayVariant () { // retuns the "nice" name of the current variant
       return this.variantOptions.revGet(this.variant)
     },
-    ...mapGetters(['QuickTourIndex', 'gameConfig', 'showGameEndModal', 'engineAutoPlayEnabled']),
-    autoPlayEnabled () {
-      return this.engineAutoPlayEnabled
-    },
+    ...mapGetters(['QuickTourIndex', 'gameConfig', 'showGameEndModal']),
     showGameEndModal () {
       return this.$store.getters.showGameEndModal
     },
@@ -308,7 +308,12 @@ export default {
       }
     }
   },
-  beforeDestroy () {},
+  beforeDestroy () {
+    if (this.autoPlayTimer) {
+      clearInterval(this.autoPlayTimer)
+      this.autoPlayTimer = null
+    }
+  },
   methods: {
     updateVariant (payload) {
       this.$emit('updateVariant')
@@ -334,7 +339,11 @@ export default {
     },
     async fullResetSession () {
       if (!confirm('Do a full session reset? This will stop engines, clear runtime state, and restart the board session.')) return
-      await this.$store.dispatch('setEngineAutoPlayEnabled', false)
+      this.autoPlayEnabled = false
+      if (this.autoPlayTimer) {
+        clearInterval(this.autoPlayTimer)
+        this.autoPlayTimer = null
+      }
       await this.$store.dispatch('fullResetSession')
       this.$emit('resetMultiEngine')
     },
@@ -403,7 +412,19 @@ export default {
       await this.$store.dispatch('playSingleEngineMove')
     },
     async toggleEngineAutoPlay () {
-      await this.$store.dispatch('toggleEngineAutoPlay')
+      this.autoPlayEnabled = !this.autoPlayEnabled
+      if (!this.autoPlayEnabled) {
+        if (this.autoPlayTimer) {
+          clearInterval(this.autoPlayTimer)
+          this.autoPlayTimer = null
+        }
+        await this.$store.dispatch('stopEngine')
+        return
+      }
+      this.autoPlayTimer = setInterval(async () => {
+        if (!this.autoPlayEnabled) return
+        await this.engineMove()
+      }, 250)
     },
     togglePlayVsEngine () {
       this.playVsEngineEnabled = !this.playVsEngineEnabled
