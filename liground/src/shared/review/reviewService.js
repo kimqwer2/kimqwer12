@@ -317,8 +317,8 @@ function summaryForMoveReview ({ ply, sideLabel, move, classification, intent, e
   const lossText = typeof evalLoss === 'number' && evalLoss >= 180
     ? ' 평가상 손해가 크게 잡힙니다.'
     : (typeof evalLoss === 'number' && evalLoss >= 120
-      ? ' 평가상 손해가 뚜렷합니다.'
-      : (typeof evalLoss === 'number' && evalLoss >= 70 ? ' 평가상 손해가 보입니다.' : ''))
+        ? ' 평가상 손해가 뚜렷합니다.'
+        : (typeof evalLoss === 'number' && evalLoss >= 70 ? ' 평가상 손해가 보입니다.' : ''))
   const practicalText = practical ? ` ${practicalLabel(practical)} 관점의 의도는 함께 확인할 수 있습니다.` : ''
   if (classification.tone === 'critical') return `${ply}수 ${sideLabel} ${move}: ${classification.label}입니다.${lossText}${practicalText} 표시된 상대 응수와 목표 지점을 먼저 확인해 보세요.`
   if (classification.tone === 'caution') return `${ply}수 ${sideLabel} ${move}: ${classification.label}입니다.${lossText}${practicalText} 실전적으로 둘 수 있어도 응수와 수비 균형을 한 번 확인하면 좋습니다.`
@@ -521,7 +521,6 @@ function buildRisks ({ bestLine, punishmentLine, reviewedMove, classification, f
   }
   return risks
 }
-
 
 function featureLabel (type) {
   const labels = {
