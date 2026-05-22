@@ -62,15 +62,20 @@ if (process.env.NODE_ENV !== 'production') {
  * Adjust mainConfig for production settings
  */
 if (process.env.NODE_ENV === 'production') {
-  mainConfig.plugins.push(
-    new ESLintPlugin({
-      extensions: 'js',
-      formatter: require('eslint-friendly-formatter')
-    }),
+  const productionPlugins = [
     new webpack.DefinePlugin({
       'process.env.NODE_ENV': '"production"'
     })
-  )
+  ]
+
+  if (process.env.SKIP_ESLINT !== 'true') {
+    productionPlugins.unshift(new ESLintPlugin({
+      extensions: 'js',
+      formatter: require('eslint-friendly-formatter')
+    }))
+  }
+
+  mainConfig.plugins.push(...productionPlugins)
 }
 
 module.exports = mainConfig
