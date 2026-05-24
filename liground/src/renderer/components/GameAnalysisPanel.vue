@@ -286,7 +286,7 @@ export default {
       return Boolean(this.activeAnalysisContext)
     },
     canReviewCurrentGame () {
-      return Boolean(!this.reviewLoading && this.activePlayedUci.length)
+      return Boolean(this.activePlayedUci.length)
     },
     analysis () {
       return this.localAnalysis || (this.activeAnalysisContext ? this.activeAnalysisContext.analysis : null)
@@ -353,10 +353,9 @@ export default {
       this.realtimeTimer = setTimeout(() => {
         if (sessionId !== this.realtimeSessionId || key !== this.realtimeReviewKey || this.reviewLoading) return
         this.lastRealtimeReviewKey = key
-        if (key.startsWith('temporary:')) {
-          this.$store.dispatch('reviewCurrentSequence')
-        } else if (key.startsWith('played:')) {
-          this.$store.dispatch('reviewPlayedLine', {
+        const dispatch = key.startsWith('temporary:')
+          ? this.$store.dispatch('reviewCurrentSequence')
+          : this.$store.dispatch('reviewPlayedLine', {
             fen: this.startFen,
             line: this.activePlayedUci,
             sans: this.activePlayedSans,
@@ -365,7 +364,11 @@ export default {
             incremental: true,
             realtimeSessionId: sessionId
           })
-        }
+        Promise.resolve(dispatch).catch(err => {
+          console.warn('[realtime-commentary] review dispatch failed; releasing to manual mode:', err)
+          this.lastRealtimeReviewKey = ''
+          this.$store.commit('reviewSetError', err && err.message ? err.message : '실시간 해설 엔진 요청이 실패했습니다. 수동 리뷰를 사용해 주세요.')
+        })
       }, 1500)
     },
     refreshAnalysis () {
@@ -373,7 +376,11 @@ export default {
     },
     reviewCurrentGame () {
       this.clearRealtimeTimer()
+      this.realtimeSessionId += 1
       this.lastRealtimeReviewKey = ''
+      if (this.reviewLoading) {
+        this.$store.dispatch('sendEngineCommand', 'stop')
+      }
       this.$store.dispatch('reviewPlayedLine', {
         fen: this.startFen,
         line: this.activePlayedUci,

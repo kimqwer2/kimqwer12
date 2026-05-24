@@ -1311,6 +1311,11 @@ export const store = new Vuex.Store({
       state.review.error = payload
       state.review.active = true
     },
+    reviewReleaseLoading (state, payload) {
+      if (!payload || state.review.lastRequestId === payload.requestId) {
+        state.review.loading = false
+      }
+    },
     reviewClear (state) {
       const previousInteraction = state.review.sequence && state.review.sequence.previousInteraction
       const markerMode = state.review.markerMode
@@ -2898,6 +2903,8 @@ export const store = new Vuex.Store({
         source: request.context && request.context.source
       })
       context.commit('reviewSetRequest', request.id)
+      let result = null
+      let finalized = false
       try {
         replayTrace(debug, 'request:engine-dispatch', { requestId: request.id })
         request.engineAnalysis = await engine.reviewAnalysis({
@@ -2922,7 +2929,7 @@ export const store = new Vuex.Store({
         request.engineAnalysis = { error: err.message }
         replayTrace(debug, 'request:engine-error', { requestId: request.id, error: err.message })
       }
-      let result
+
       if (ipcRenderer && ipcRenderer.invoke) {
         result = await ipcRenderer.invoke('review-analyze', request)
       } else {
@@ -2940,6 +2947,7 @@ export const store = new Vuex.Store({
       }
       if (!result || result.error) {
         context.commit('reviewSetError', result && result.error ? result.error : 'Review failed')
+        finalized = true
         return null
       }
       if (reviewCfg.debugReviewPipeline) {
@@ -2970,15 +2978,28 @@ export const store = new Vuex.Store({
         })
       }
       if (request.context && request.context.deferCommit) {
+        context.commit('reviewReleaseLoading', { requestId: request.id })
+        finalized = true
         replayTrace(debug, 'request:return-defer-commit', { requestId: request.id })
         return result
       }
       context.commit('reviewSetResult', result)
+      finalized = true
       replayTrace(debug, 'request:commit', {
         requestId: request.id,
         moveCount: Array.isArray(result.moves) ? result.moves.length : 0
       })
       return result
+      } catch (err) {
+        context.commit('reviewSetError', err && err.message ? err.message : 'Review failed')
+        finalized = true
+        replayTrace(debug, 'request:fatal', { requestId: request.id, error: err && err.message ? err.message : String(err) })
+        return null
+      } finally {
+        if (!finalized) {
+          context.commit('reviewReleaseLoading', { requestId: request.id })
+        }
+      }
     },
 
     async replayPlayedLineReview (context, payload = {}) {
