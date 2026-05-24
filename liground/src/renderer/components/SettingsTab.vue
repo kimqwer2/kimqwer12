@@ -55,6 +55,7 @@
                 v-model="settings[option.name]"
                 size="1"
                 class="input"
+                @change="updateSettings"
               >
                 <option
                   v-for="selOption in option.var"
@@ -73,6 +74,7 @@
                 type="checkbox"
                 :name="option.name"
                 class="input"
+                @change="updateSettings"
               >
             </td>
           </template>
@@ -85,6 +87,7 @@
                 :min="option.min"
                 :max="option.max"
                 class="input"
+                @change="updateSettings"
               >
             </td>
           </template>
@@ -95,6 +98,7 @@
                 type="text"
                 :name="option.name"
                 class="input"
+                @change="updateSettings"
               >
             </td>
           </template>

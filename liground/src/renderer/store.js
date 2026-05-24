@@ -2445,12 +2445,17 @@ export const store = new Vuex.Store({
     },
     async runBinary (context, payload) {
       const { binary, cwd } = payload
+      console.log('[engine-lifecycle] runBinary:start', { binary, cwd, activeEngine: context.state.activeEngine })
       if (context.getters.active) {
         context.commit('active', false)
       }
       context.commit('clearIO')
       await context.dispatch('resetEngineData')
       context.commit('engineInfo', await engine.run(binary, cwd))
+      console.log('[engine-lifecycle] runBinary:active', {
+        activeEngine: context.state.activeEngine,
+        optionCount: Array.isArray(context.state.engineInfo.options) ? context.state.engineInfo.options.length : 0
+      })
       await context.dispatch('initEngineOptions')
     },
     initEngineOptions (context) {
@@ -2467,11 +2472,20 @@ export const store = new Vuex.Store({
       if (stored) {
         Object.assign(options, JSON.parse(stored))
       }
+      console.log('[engine-options] initEngineOptions', {
+        activeEngine: context.state.activeEngine,
+        variant: context.getters.variant,
+        options
+      })
 
       // this will update the settings in store & local storage
       context.dispatch('setEngineOptions', options)
     },
     setEngineOptions (context, payload) {
+      console.log('[engine-options] setEngineOptions:requested', {
+        activeEngine: context.state.activeEngine,
+        payload
+      })
       if (context.getters.active && !context.getters.PvE) {
         context.dispatch('stopEngine')
       } else if (context.getters.active && context.getters.PvE && !context.getters.turn) {
@@ -2492,6 +2506,10 @@ export const store = new Vuex.Store({
           engine.send(`setoption name ${name}`)
         }
       }
+      console.log('[engine-options] setEngineOptions:applied-snapshot', {
+        activeEngine: context.state.activeEngine,
+        settings: context.state.engineSettings
+      })
       localStorage.setItem('engine' + context.state.activeEngine, JSON.stringify(context.state.engineSettings))
     },
     idName (context, payload) {
@@ -3893,6 +3911,12 @@ ffish.onRuntimeInitialized = () => {
     } else if (status.status === 'rejected') {
       console.error(prefix, `Review engine rejected EvalFile: ${status.requested}`, status)
     }
+  })
+  engine.on('nnue-runtime', status => {
+    console.info('[NNUE runtime][main]', status)
+  })
+  engine.on('eval-nnue-runtime', status => {
+    console.info('[NNUE runtime][eval]', status)
   })
   engine.on('option-applied', option => console.log('[engine-option-applied]', option))
   engine.on('eval-option-applied', option => console.log('[eval-engine-option-applied]', option))

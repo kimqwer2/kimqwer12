@@ -45,6 +45,7 @@ export class Engine extends EventEmitter {
     this.deepAnalysisActive = false
     this.reviewRequestSeq = 0
     this.deepRequestSeq = 0
+    this.optionState = {}
     this.evalWorker.addEventListener('message', ({ data }) => {
       if (data.type === 'cache') {
         if (this.deepAnalysisActive) {
@@ -75,6 +76,7 @@ export class Engine extends EventEmitter {
       let evalActive = false
       const maybeResolve = () => {
         if (mainInfo && evalActive) {
+          this._applyOptionSnapshotToWorkers()
           resolve(mainInfo)
         }
       }
@@ -124,15 +126,57 @@ export class Engine extends EventEmitter {
    * @param {string} command UCI command
    */
   send (command) {
+    this._trackOptionFromCommand(command)
+    if (typeof command === 'string' && command.trim().toLowerCase().startsWith('setoption ')) {
+      // Keep option application deterministic for the eval/review worker:
+      // stop any ongoing background search before applying mutable UCI options
+      // like Threads/Hash/EvalFile to avoid "apply later" drift.
+      this.evalWorker.postMessage({
+        payload: 'stop',
+        type: 'cmd'
+      })
+    }
     this.mainWorker.postMessage({
       payload: command,
       type: 'cmd'
     })
-    if (command.toLowerCase().includes('uci_variant') || command.toLowerCase().includes('evalfile') || command.toLowerCase() === 'stop') {
+    if (this._shouldMirrorCommandToEval(command)) {
       this.evalWorker.postMessage({
         payload: command,
         type: 'cmd'
       })
+    }
+  }
+
+  _shouldMirrorCommandToEval (command) {
+    if (typeof command !== 'string') return false
+    const lower = command.toLowerCase().trim()
+    return lower.startsWith('setoption ') ||
+      lower === 'stop' ||
+      lower.startsWith('ucinewgame') ||
+      lower.includes('uci_variant') ||
+      lower.includes('evalfile')
+  }
+
+  _trackOptionFromCommand (command) {
+    if (typeof command !== 'string') return
+    const match = command.trim().match(/^setoption\s+name\s+(.+?)(?:\s+value\s+(.+))?$/i)
+    if (!match) return
+    const name = match[1].trim()
+    const value = match[2] !== undefined ? match[2].trim() : null
+    this.optionState[name] = value
+  }
+
+  _applyOptionSnapshotToWorkers () {
+    const entries = Object.entries(this.optionState || {})
+    if (!entries.length) return
+    this.emit('debug', '[engine-option-sync] applying snapshot to workers', { count: entries.length, options: this.optionState })
+    for (const [name, value] of entries) {
+      const payload = value === null
+        ? `setoption name ${name}`
+        : `setoption name ${name} value ${value}`
+      this.mainWorker.postMessage({ payload, type: 'cmd' })
+      this.evalWorker.postMessage({ payload, type: 'cmd' })
     }
   }
 
