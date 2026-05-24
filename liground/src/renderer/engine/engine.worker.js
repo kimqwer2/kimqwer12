@@ -80,15 +80,30 @@ async function run (binary, cwd, listeners) {
   engineCwd = cwd
   msg.debug('Running:', { binary, cwd })
   child = spawn(binary, [], { cwd }).on('error', err => msg.error(err.message))
+  const workerLabel = Array.isArray(listeners) && listeners.includes('io') ? 'main' : 'eval'
 
   // success
   if (typeof child.pid === 'number') {
+    child.stdout.on('data', chunk => {
+      const text = chunk && chunk.toString ? chunk.toString() : ''
+      if (!text) return
+      const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+      for (const line of lines) {
+        msg.debug(`[engine raw][${workerLabel}] ${line}`)
+      }
+    })
+
     // create engine
     engine = new EngineDriver(child.stdin, child.stdout)
 
     // setup error logging & crash handling
     child.stderr.on('data', err => {
       const text = err.toString().trim()
+      if (text) {
+        for (const line of text.split(/\r?\n/).map(item => item.trim()).filter(Boolean)) {
+          msg.debug(`[engine raw][${workerLabel}][stderr] ${line}`)
+        }
+      }
       msg.error('Engine reported Error:', text)
       if (pendingEvalFile && /nnue|evalfile|network|net/i.test(text)) {
         msg.queue('nnue', {
