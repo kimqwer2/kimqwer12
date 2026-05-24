@@ -1,0 +1,29 @@
+/*
+*   CSS for Chessground with  8x8 board dimension
+*/
+
+
+.dim8x8 .cg-wrap {
+    width: 600px;
+    height: 600px;
+}
+
+
+
+.dim8x8 cg-helper {
+    width: calc(100% / 8);
+    height: calc(100% / 8);
+}
+
+.dim8x8 cg-container {
+    width: 800%;
+    height: 800%;
+}
+.dim8x8 .cg-wrap piece {
+    width: calc(100% / 8);
+    height: calc(100% / 8);
+}
+.dim8x8 cg-board square {
+    width: calc(100% / 8);
+    height: calc(100% / 8);
+}
