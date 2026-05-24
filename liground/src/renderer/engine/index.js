@@ -43,6 +43,8 @@ export class Engine extends EventEmitter {
     /** @type {Worker} */
     this.evalWorker = new EngineWorker()
     this.deepAnalysisActive = false
+    this.reviewRequestSeq = 0
+    this.deepRequestSeq = 0
     this.evalWorker.addEventListener('message', ({ data }) => {
       if (data.type === 'cache') {
         if (this.deepAnalysisActive) {
@@ -165,17 +167,20 @@ export class Engine extends EventEmitter {
    * @returns {Promise<Object>} structured engine evidence
    */
   reviewAnalysis (request) {
+    const seq = ++this.reviewRequestSeq
+    this.evalWorker.postMessage({ type: 'cancel-review' })
     return new Promise(resolve => {
-      this.evalWorker.onmessage = ({ data }) => {
-        if (data.type === 'cache') {
-          for (const { type, payload } of data.events) {
-            if (type === 'reviewed') {
-              resolve(payload)
-              delete this.evalWorker.onmessage
-            }
+      const handler = ({ data }) => {
+        if (data.type !== 'cache') return
+        for (const { type, payload } of data.events) {
+          if (type === 'reviewed') {
+            if (seq === this.reviewRequestSeq) resolve(payload)
+            this.evalWorker.removeEventListener('message', handler)
+            return
           }
         }
       }
+      this.evalWorker.addEventListener('message', handler)
       this.evalWorker.postMessage({
         payload: request,
         type: 'review'
@@ -189,19 +194,21 @@ export class Engine extends EventEmitter {
    * @returns {Promise<Object>} structured deep analysis report
    */
   deepAnalysis (request) {
+    const seq = ++this.deepRequestSeq
     this.deepAnalysisActive = true
     return new Promise(resolve => {
-      this.evalWorker.onmessage = ({ data }) => {
-        if (data.type === 'cache') {
-          for (const { type, payload } of data.events) {
-            if (type === 'deep-analysis') {
-              this.deepAnalysisActive = false
-              resolve(payload)
-              delete this.evalWorker.onmessage
-            }
+      const handler = ({ data }) => {
+        if (data.type !== 'cache') return
+        for (const { type, payload } of data.events) {
+          if (type === 'deep-analysis') {
+            this.deepAnalysisActive = false
+            if (seq === this.deepRequestSeq) resolve(payload)
+            this.evalWorker.removeEventListener('message', handler)
+            return
           }
         }
       }
+      this.evalWorker.addEventListener('message', handler)
       this.evalWorker.postMessage({
         payload: request,
         type: 'deep-analysis'

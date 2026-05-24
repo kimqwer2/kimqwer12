@@ -15,6 +15,7 @@ let engine = null
 let engineCwd = ''
 let pendingEvalFile = null
 let deepAnalysisCancelled = false
+let reviewRequestSeq = 0
 
 /**
  * Run a new engine, killing the old process.
@@ -553,6 +554,7 @@ async function deepAnalyze (payload) {
 }
 
 async function reviewAnalyze (payload) {
+  const requestSeq = ++reviewRequestSeq
   if (!engine) {
     msg.error('Engine not running')
     return
@@ -568,19 +570,26 @@ async function reviewAnalyze (payload) {
   const positionAfter = joinedLine ? `position fen ${fen} moves ${joinedLine}` : positionRoot
 
   try {
+    const isCancelled = () => requestSeq !== reviewRequestSeq
+    if (isCancelled()) return
     if (variant) {
       await engine.exec(`setoption name UCI_Variant value ${variant}`)
     }
+    if (isCancelled()) return
     await engine.exec(`setoption name MultiPV value ${multiPv}`)
     await engine.exec('setoption name UCI_ShowWDL value true')
+    if (isCancelled()) return
     const root = await collectSearch(positionRoot, `go depth ${depth}`)
+    if (isCancelled()) return
     let user = null
     if (firstMove) {
       await engine.exec('setoption name MultiPV value 1')
       user = await collectSearch(positionRoot, `go depth ${depth} searchmoves ${firstMove}`)
       await engine.exec(`setoption name MultiPV value ${multiPv}`)
+      if (isCancelled()) return
     }
     const after = joinedLine ? await collectSearch(positionAfter, `go depth ${depth}`) : null
+    if (isCancelled()) return
     const moves = []
     const perMoveDepth = Math.max(4, Math.min(depth, payload.perMoveDepth || depth))
     const maxReviewMoves = Math.min(line.length, payload.maxReviewMoves || 20)
@@ -590,9 +599,12 @@ async function reviewAnalyze (payload) {
       const afterMove = positionForReviewPrefix(fen, line, idx + 1)
       await engine.exec(`setoption name MultiPV value ${Math.min(2, multiPv)}`)
       const moveRoot = await collectSearch(before, `go depth ${perMoveDepth}`, 16000)
+      if (isCancelled()) return
       await engine.exec('setoption name MultiPV value 1')
       const moveUser = await collectSearch(before, `go depth ${perMoveDepth} searchmoves ${move}`, 16000)
+      if (isCancelled()) return
       const moveAfter = await collectSearch(afterMove, `go depth ${Math.max(4, perMoveDepth - 1)}`, 16000)
+      if (isCancelled()) return
       moves.push({
         ply: idx + 1,
         move,
@@ -604,6 +616,7 @@ async function reviewAnalyze (payload) {
       })
     }
     await engine.exec(`setoption name MultiPV value ${multiPv}`)
+    if (isCancelled()) return
     msg.queue('reviewed', {
       depth,
       multiPv,
@@ -639,6 +652,10 @@ self.addEventListener('message', ({ data: { type, payload } }) => {
       break
     case 'deep-analysis':
       deepAnalyze(payload)
+      break
+    case 'cancel-review':
+      reviewRequestSeq += 1
+      try { engine.exec('stop') } catch (err) {}
       break
   }
 })
