@@ -127,6 +127,15 @@ export class Engine extends EventEmitter {
    */
   send (command) {
     this._trackOptionFromCommand(command)
+    if (typeof command === 'string' && command.trim().toLowerCase().startsWith('setoption ')) {
+      // Keep option application deterministic for the eval/review worker:
+      // stop any ongoing background search before applying mutable UCI options
+      // like Threads/Hash/EvalFile to avoid "apply later" drift.
+      this.evalWorker.postMessage({
+        payload: 'stop',
+        type: 'cmd'
+      })
+    }
     this.mainWorker.postMessage({
       payload: command,
       type: 'cmd'
