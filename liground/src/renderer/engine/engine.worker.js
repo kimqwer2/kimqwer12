@@ -563,7 +563,11 @@ async function reviewAnalyze (payload) {
   const multiPv = payload.multiPv || 3
   const variant = payload.variant
   const fen = payload.fen
-  const line = Array.isArray(payload.line) ? payload.line.filter(Boolean) : []
+  const fullLine = Array.isArray(payload.line) ? payload.line.filter(Boolean) : []
+  const maxReviewMoves = Math.max(1, Number(payload.maxReviewMoves) || 20)
+  const lineOffset = Math.max(0, fullLine.length - maxReviewMoves)
+  const plyBase = Number.isFinite(Number(payload.plyBase)) ? Number(payload.plyBase) : 0
+  const line = lineOffset > 0 ? fullLine.slice(lineOffset) : fullLine
   const firstMove = payload.move || line[0]
   const joinedLine = normalizeReviewLine(line)
   const positionRoot = `position fen ${fen}`
@@ -592,8 +596,8 @@ async function reviewAnalyze (payload) {
     if (isCancelled()) return
     const moves = []
     const perMoveDepth = Math.max(4, Math.min(depth, payload.perMoveDepth || depth))
-    const maxReviewMoves = Math.min(line.length, payload.maxReviewMoves || 20)
-    for (let idx = 0; idx < maxReviewMoves; idx++) {
+    const boundedMoveCount = Math.min(line.length, maxReviewMoves)
+    for (let idx = 0; idx < boundedMoveCount; idx++) {
       const move = line[idx]
       const before = positionForReviewPrefix(fen, line, idx)
       const afterMove = positionForReviewPrefix(fen, line, idx + 1)
@@ -606,7 +610,7 @@ async function reviewAnalyze (payload) {
       const moveAfter = await collectSearch(afterMove, `go depth ${Math.max(4, perMoveDepth - 1)}`, 16000)
       if (isCancelled()) return
       moves.push({
-        ply: idx + 1,
+        ply: plyBase + lineOffset + idx + 1,
         move,
         positionBefore: before,
         positionAfter: afterMove,
@@ -625,6 +629,8 @@ async function reviewAnalyze (payload) {
       after,
       moves,
       line,
+      lineOffset,
+      totalLineLength: fullLine.length,
       variant,
       rootFen: fen,
       finalPositionCommand: positionAfter

@@ -299,6 +299,8 @@ function enrichReviewMovePreviewFens (result, variant, is960) {
   }
 }
 
+const MAX_REVIEW_RESULTS_CACHE = 40
+
 
 // Realtime commentary owns only the latest played move on the live board.
 // Rich review markers remain available in review panels and hover previews.
@@ -682,7 +684,8 @@ export const store = new Vuex.Store({
       reviewPunishmentLineLength: 6,
       reviewDetailLevel: 'balanced',
       realtimeGameCommentary: false,
-      realtimeCommentaryArrows: false
+      realtimeCommentaryArrows: false,
+      debugReviewPipeline: false
     },
     deepAnalysis: {
       running: false,
@@ -1194,6 +1197,16 @@ export const store = new Vuex.Store({
       state.review.overlays = Array.isArray(result.overlays) ? result.overlays : []
       state.review.active = true
       Vue.set(state.review.resultsById, result.id, result)
+      const keys = Object.keys(state.review.resultsById || {})
+      if (keys.length > MAX_REVIEW_RESULTS_CACHE) {
+        const sorted = keys
+          .map(key => ({ key, generatedAt: state.review.resultsById[key] && state.review.resultsById[key].generatedAt ? state.review.resultsById[key].generatedAt : 0 }))
+          .sort((a, b) => a.generatedAt - b.generatedAt)
+        const overflow = sorted.length - MAX_REVIEW_RESULTS_CACHE
+        for (let i = 0; i < overflow; i++) {
+          Vue.delete(state.review.resultsById, sorted[i].key)
+        }
+      }
     },
     reviewPreviewSet (state, payload) {
       state.review.preview = {
@@ -2752,6 +2765,7 @@ export const store = new Vuex.Store({
     },
     async requestReview (context, payload) {
       const reviewCfg = context.state.analysisVisualization
+      const startedAt = Date.now()
       const request = createReviewRequest({
         ...payload,
         id: payload.id || `review-${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -2779,6 +2793,7 @@ export const store = new Vuex.Store({
           multiPv: 3,
           perMoveDepth: request.context && request.context.tacticalDepth ? request.context.tacticalDepth : context.state.analysisVisualization.reviewTacticalDepth,
           maxReviewMoves: context.state.analysisVisualization.reviewStrategicHorizon,
+          plyBase: request.context && Number.isFinite(request.context.plyBase) ? request.context.plyBase : 0,
           punishmentLineLength: context.state.analysisVisualization.reviewPunishmentLineLength,
           detailLevel: context.state.analysisVisualization.reviewDetailLevel,
           variant: request.variant
@@ -2798,6 +2813,19 @@ export const store = new Vuex.Store({
       if (!result || result.error) {
         context.commit('reviewSetError', result && result.error ? result.error : 'Review failed')
         return null
+      }
+      if (reviewCfg.debugReviewPipeline) {
+        const moveCount = Array.isArray(result.moves) ? result.moves.length : 0
+        const overlayCount = Array.isArray(result.overlays) ? result.overlays.length : 0
+        console.debug('[review-pipeline]', {
+          id: request.id,
+          source: request.context && request.context.source,
+          totalLineLength: request.line ? request.line.length : 0,
+          analyzedMoveCount: moveCount,
+          overlayCount,
+          elapsedMs: Date.now() - startedAt,
+          loading: context.state.review.loading
+        })
       }
       if (request.context && request.context.deferCommit) {
         return result
@@ -2882,7 +2910,8 @@ export const store = new Vuex.Store({
             deferCommit: true,
             incremental: true,
             prefixLength,
-            baseFen
+            baseFen,
+            plyBase: prefixLength
           }
         })
         if (suffixResult) {
