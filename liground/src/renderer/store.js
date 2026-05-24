@@ -280,16 +280,30 @@ function enrichReviewMovePreviewFens (result, variant, is960, previousResult = n
   const missing = result.moves.filter(move => move && move.move && !previousByPly.get(move.ply))
   if (missing.length === 0 && result.moves.every(move => move && move.previewFen)) return result
   let board
+  let startIdx = 0
   try {
-    board = is960 ? new ffish.Board(variant, result.fen, true) : new ffish.Board(variant, result.fen)
+    // Fast path for incremental replay extension: continue from last known preview FEN
+    const prevLast = previousMoves.length ? previousMoves[previousMoves.length - 1] : null
+    const resultExtendsPrevious = Boolean(
+      prevLast &&
+      previousMoves.length < result.moves.length &&
+      previousMoves.every((move, idx) => result.moves[idx] && result.moves[idx].move === move.move) &&
+      prevLast.previewFen
+    )
+    if (resultExtendsPrevious) {
+      board = is960 ? new ffish.Board(variant, prevLast.previewFen, true) : new ffish.Board(variant, prevLast.previewFen)
+      startIdx = previousMoves.length
+    } else {
+      board = is960 ? new ffish.Board(variant, result.fen, true) : new ffish.Board(variant, result.fen)
+    }
   } catch (err) {
     return result
   }
   const previewByPly = {}
-  for (const move of result.moves) {
+  for (let idx = startIdx; idx < result.moves.length; idx++) {
+    const move = result.moves[idx]
     if (!move || !move.move) continue
     if (previousByPly.has(move.ply) && previousByPly.get(move.ply).previewFen) {
-      try { board.push(move.move) } catch (err) { break }
       previewByPly[move.ply] = previousByPly.get(move.ply).previewFen
       continue
     }
@@ -2864,16 +2878,35 @@ export const store = new Vuex.Store({
       }
       context.commit('reviewPrepareFullRebuild')
       let result = null
+      const replayStartedAt = Date.now()
+      const debug = Boolean(context.state.analysisVisualization && context.state.analysisVisualization.debugReviewPipeline)
       for (let idx = 0; idx < line.length; idx++) {
+        const moveStartedAt = Date.now()
         result = await context.dispatch('reviewPlayedLine', {
           ...payload,
           line: line.slice(0, idx + 1),
           sans: Array.isArray(payload.sans) ? payload.sans.slice(0, idx + 1) : [],
           incremental: true,
           fullRebuild: false,
-          replayFromStart: true
+          replayFromStart: true,
+          deferUICommit: idx < line.length - 1 && (idx % 4 !== 3)
         })
         if (!result) return null
+        if (debug && (idx >= 44 && idx <= 56)) {
+          const overlayCount = Array.isArray(context.state.review.overlays) ? context.state.review.overlays.length : 0
+          const markerCount = result && Array.isArray(result.markerMoves) ? result.markerMoves.length : 0
+          const heap = typeof performance !== 'undefined' && performance.memory ? Math.round(performance.memory.usedJSHeapSize / (1024 * 1024)) : null
+          const svgNodes = typeof document !== 'undefined' ? document.querySelectorAll('svg *').length : null
+          console.debug('[replay-diagnostics]', {
+            ply: idx + 1,
+            elapsedMoveMs: Date.now() - moveStartedAt,
+            elapsedTotalMs: Date.now() - replayStartedAt,
+            markerCount,
+            overlayCount,
+            svgNodes,
+            heapMB: heap
+          })
+        }
       }
       return result
     },
@@ -2900,7 +2933,8 @@ export const store = new Vuex.Store({
         sequenceSans: fullSans,
         incrementalMode: incrementalRequested,
         fullRebuild,
-        replayFromStart: payload.replayFromStart === true
+        replayFromStart: payload.replayFromStart === true,
+        deferCommit: payload.deferUICommit === true
       }
       if (fullRebuild) context.commit('reviewPrepareFullRebuild')
       const previous = context.state.review.currentResult
@@ -2946,7 +2980,7 @@ export const store = new Vuex.Store({
             prefixLength,
             requestContext
           })
-          context.commit('reviewSetResult', merged)
+          if (!payload.deferUICommit) context.commit('reviewSetResult', merged)
           return merged
         }
       }
@@ -2983,13 +3017,13 @@ export const store = new Vuex.Store({
             prefixLength,
             requestContext
           })
-          context.commit('reviewSetResult', merged)
+          if (!payload.deferUICommit) context.commit('reviewSetResult', merged)
           return merged
         }
         context.commit('reviewSetResult', previous)
         return previous
       }
-      return context.dispatch('requestReview', {
+      const direct = await context.dispatch('requestReview', {
         mode: REVIEW_MODES.LINE,
         fen: baseFen,
         move: line[0],
@@ -2998,6 +3032,8 @@ export const store = new Vuex.Store({
         markerMode,
         context: requestContext
       })
+      if (payload.deferUICommit && direct) return direct
+      return direct
     },
     reviewCurrentMove (context) {
       const move = context.getters.currentMove[0]
