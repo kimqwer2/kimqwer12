@@ -1307,14 +1307,19 @@ export const store = new Vuex.Store({
     },
     reviewRealtimeSetResult (state, payload) {
       const prev = state.review.realtime || {}
+      const result = payload && payload.result ? payload.result : null
+      const windowMoves = result && Array.isArray(result.moves) ? result.moves : []
+      const latestMove = windowMoves.length ? windowMoves[windowMoves.length - 1] : (payload && payload.move ? payload.move : null)
       state.review.realtime = {
         ...prev,
-        lastMovePly: payload && payload.move ? payload.move.ply : prev.lastMovePly,
-        lastResult: payload && payload.result ? payload.result : prev.lastResult
+        lastMovePly: latestMove && latestMove.ply ? latestMove.ply : prev.lastMovePly,
+        lastResult: result || prev.lastResult
       }
-      // Keep board overlays bounded to latest move overlays only in realtime mode.
-      if (payload && payload.move && Array.isArray(payload.move.overlays)) {
-        state.review.overlays = payload.move.overlays.slice(0, 4).map(overlay => ({ ...overlay, source: 'realtime-single-move' }))
+      // Keep board overlays bounded to recent window overlays only in realtime mode.
+      const overlaySourceMoves = windowMoves.length ? windowMoves.slice(-3) : (latestMove ? [latestMove] : [])
+      const overlayList = overlaySourceMoves.flatMap(move => Array.isArray(move && move.overlays) ? move.overlays : [])
+      if (overlayList.length) {
+        state.review.overlays = overlayList.slice(-8).map(overlay => ({ ...overlay, source: 'realtime-rolling-window' }))
       }
     },
     reviewPreviewSet (state, payload) {
@@ -3208,13 +3213,11 @@ export const store = new Vuex.Store({
     },
     async reviewRealtimeLatestMove (context, payload = {}) {
       const debug = Boolean(context.state.analysisVisualization && context.state.analysisVisualization.debugReviewPipeline)
-      const line = Array.isArray(payload.line) ? payload.line.filter(Boolean) : []
-      const sans = Array.isArray(payload.sans) ? payload.sans : []
       const moveObj = payload.moveObj || null
-      if (!line.length || !moveObj || !moveObj.ply) return null
+      if (!moveObj || !moveObj.ply) return null
       const sessionId = payload.sessionId || ((context.state.review.realtime && context.state.review.realtime.sessionId) || 0)
       const ply = moveObj.ply
-      const key = `${sessionId}:${ply}:${line[line.length - 1]}`
+      const key = `${sessionId}:${ply}:${moveObj.uci || moveObj.move || ''}`
       const rt = context.state.review.realtime || {}
       if (rt.inFlight && rt.inFlightKey === key) {
         context.commit('reviewRealtimeFinish', { queueDropped: (rt.queueDropped || 0) + 1 })
@@ -3223,36 +3226,52 @@ export const store = new Vuex.Store({
       context.commit('reviewRealtimeStart', { sessionId, key })
       const t0 = Date.now()
       try {
-        const prevFen = moveObj.prev ? moveObj.prev.fen : (payload.baseFen || context.getters.startFen)
+        const windowSize = Math.max(6, Math.min(12, Number(context.state.analysisVisualization.reviewStrategicHorizon) || 8))
+        const nodes = []
+        let cursor = moveObj
+        while (cursor && nodes.length < windowSize) {
+          nodes.unshift(cursor)
+          cursor = cursor.prev
+        }
+        const windowLine = nodes.map(node => node.uci || node.move).filter(Boolean)
+        if (!windowLine.length) return null
+        const windowStartPly = nodes[0].ply
+        const startFen = nodes[0].prev ? nodes[0].prev.fen : (payload.baseFen || context.getters.startFen)
+        const latestSan = moveObj.name || moveObj.uci || moveObj.move
+        const previousFallback = (rt.fallbackCount || 0)
         const result = await context.dispatch('requestReview', {
-          mode: REVIEW_MODES.MOVE,
-          fen: prevFen,
-          move: moveObj.uci || moveObj.move,
-          moveSan: moveObj.name || sans[ply - 1] || (moveObj.uci || moveObj.move),
-          line: [moveObj.uci || moveObj.move],
+          mode: REVIEW_MODES.LINE,
+          fen: startFen,
+          move: windowLine[0],
+          moveSan: latestSan,
+          line: windowLine,
           markerMode: context.state.review.markerMode,
           context: {
-            source: 'realtime-single-move',
+            source: 'realtime-rolling-window',
             deferCommit: true,
-            ply
+            plyBase: windowStartPly - 1,
+            windowStartPly,
+            windowEndPly: ply
           }
         })
-        if (!result || !Array.isArray(result.moves) || !result.moves[0]) {
-          context.commit('reviewRealtimeFinish', { fallbackCount: (rt.fallbackCount || 0) + 1 })
+        if (!result || !Array.isArray(result.moves) || !result.moves.length) {
+          context.commit('reviewRealtimeFinish', { fallbackCount: previousFallback + 1 })
           return null
         }
-        const move = { ...result.moves[0], ply }
-        context.commit('reviewRealtimeSetResult', { move, result: { ...result, moves: [move], markerMoves: [move] } })
+        context.commit('reviewRealtimeSetResult', { result })
         if (debug) {
           console.debug('[realtime-pipeline]', {
             sessionId,
             ply,
+            windowStartPly,
+            windowEndPly: ply,
+            windowSize: windowLine.length,
             elapsedMs: Date.now() - t0,
-            overlays: Array.isArray(move.overlays) ? move.overlays.length : 0,
+            overlays: Array.isArray(context.state.review.overlays) ? context.state.review.overlays.length : 0,
             fallback: false
           })
         }
-        return move
+        return result
       } finally {
         context.commit('reviewRealtimeFinish')
       }
