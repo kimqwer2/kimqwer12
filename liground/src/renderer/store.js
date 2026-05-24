@@ -325,6 +325,8 @@ function enrichReviewMovePreviewFens (result, variant, is960, previousResult = n
 const MAX_REVIEW_RESULTS_CACHE = 40
 let replaySessionSeq = 0
 let singleMoveRecheckSeq = 0
+let realtimeStaleDiscardCount = 0
+let realtimeFallbackClassificationCount = 0
 
 function replayTrace (debugEnabled, event, payload = {}) {
   if (!debugEnabled) return
@@ -341,8 +343,15 @@ function primaryRealtimeBoardOverlays (result, overlays, arrowsEnabled, currentF
   const reviewedLine = Array.isArray(result.reviewedLine) ? result.reviewedLine : []
   const latestPly = reviewedLine.length
   if (!latestPly) return []
+  const unique = new Set()
   return (Array.isArray(overlays) ? overlays : [])
     .filter(overlay => overlay && overlay.id === `move-marker-${latestPly}` && overlay.kind === 'arrow')
+    .filter((overlay) => {
+      const key = `${overlay.id}|${overlay.orig || ''}|${overlay.dest || ''}|${overlay.square || ''}|${overlay.label || ''}`
+      if (unique.has(key)) return false
+      unique.add(key)
+      return true
+    })
     .slice(0, 1)
     .map(overlay => ({ ...overlay, source: 'realtime-current-move' }))
 }
@@ -2436,12 +2445,17 @@ export const store = new Vuex.Store({
     },
     async runBinary (context, payload) {
       const { binary, cwd } = payload
+      console.log('[engine-lifecycle] runBinary:start', { binary, cwd, activeEngine: context.state.activeEngine })
       if (context.getters.active) {
         context.commit('active', false)
       }
       context.commit('clearIO')
       await context.dispatch('resetEngineData')
       context.commit('engineInfo', await engine.run(binary, cwd))
+      console.log('[engine-lifecycle] runBinary:active', {
+        activeEngine: context.state.activeEngine,
+        optionCount: Array.isArray(context.state.engineInfo.options) ? context.state.engineInfo.options.length : 0
+      })
       await context.dispatch('initEngineOptions')
     },
     initEngineOptions (context) {
@@ -2458,11 +2472,20 @@ export const store = new Vuex.Store({
       if (stored) {
         Object.assign(options, JSON.parse(stored))
       }
+      console.log('[engine-options] initEngineOptions', {
+        activeEngine: context.state.activeEngine,
+        variant: context.getters.variant,
+        options
+      })
 
       // this will update the settings in store & local storage
       context.dispatch('setEngineOptions', options)
     },
     setEngineOptions (context, payload) {
+      console.log('[engine-options] setEngineOptions:requested', {
+        activeEngine: context.state.activeEngine,
+        payload
+      })
       if (context.getters.active && !context.getters.PvE) {
         context.dispatch('stopEngine')
       } else if (context.getters.active && context.getters.PvE && !context.getters.turn) {
@@ -2483,6 +2506,10 @@ export const store = new Vuex.Store({
           engine.send(`setoption name ${name}`)
         }
       }
+      console.log('[engine-options] setEngineOptions:applied-snapshot', {
+        activeEngine: context.state.activeEngine,
+        settings: context.state.engineSettings
+      })
       localStorage.setItem('engine' + context.state.activeEngine, JSON.stringify(context.state.engineSettings))
     },
     idName (context, payload) {
@@ -2862,6 +2889,7 @@ export const store = new Vuex.Store({
           depthPreset: reviewCfg.reviewDepthPreset
         }
       })
+      const realtimeSource = request.context && request.context.source === 'realtime-played-line'
       replayTrace(debug, 'request:create', {
         replaySessionId: payload && payload.replaySessionId ? payload.replaySessionId : null,
         replayMoveIndex: payload && Number.isFinite(payload.replayMoveIndex) ? payload.replayMoveIndex : null,
@@ -2901,9 +2929,12 @@ export const store = new Vuex.Store({
         result = analyzeReviewRequest(request)
       }
       if (context.state.review.lastRequestId !== request.id) {
+        if (realtimeSource) realtimeStaleDiscardCount += 1
         replayTrace(debug, 'request:discard-stale', {
           requestId: request.id,
-          lastRequestId: context.state.review.lastRequestId
+          lastRequestId: context.state.review.lastRequestId,
+          realtimeSessionId: payload && payload.realtimeSessionId ? payload.realtimeSessionId : null,
+          staleDiscardCount: realtimeStaleDiscardCount
         })
         return null
       }
@@ -2914,12 +2945,26 @@ export const store = new Vuex.Store({
       if (reviewCfg.debugReviewPipeline) {
         const moveCount = Array.isArray(result.moves) ? result.moves.length : 0
         const overlayCount = Array.isArray(result.overlays) ? result.overlays.length : 0
+        const queueSize = context.state.review.loading ? 1 : 0
+        const requestContext = request.context || {}
+        const fallbackCount = Array.isArray(result.moves)
+          ? result.moves.filter(move => move && move.classification === 'good_move').length
+          : 0
+        if (realtimeSource) realtimeFallbackClassificationCount += fallbackCount
         console.debug('[review-pipeline]', {
           id: request.id,
           source: request.context && request.context.source,
+          realtimeSessionId: payload && payload.realtimeSessionId ? payload.realtimeSessionId : null,
+          moveIndex: Array.isArray(request.line) ? request.line.length : 0,
+          rollingWindowRange: Array.isArray(request.line) ? `${Math.max(1, request.line.length - 5)}-${request.line.length}` : null,
           totalLineLength: request.line ? request.line.length : 0,
           analyzedMoveCount: moveCount,
           overlayCount,
+          activeRequestCount: context.state.review.loading ? 1 : 0,
+          staleDiscardCount: realtimeStaleDiscardCount,
+          queueSize,
+          fallbackClassificationCount: realtimeFallbackClassificationCount,
+          markerMode: requestContext.markerMode || null,
           elapsedMs: Date.now() - startedAt,
           loading: context.state.review.loading
         })

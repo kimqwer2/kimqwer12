@@ -147,7 +147,8 @@ export default {
     return {
       localAnalysis: null,
       realtimeTimer: null,
-      lastRealtimeReviewKey: ''
+      lastRealtimeReviewKey: '',
+      realtimeSessionId: 0
     }
   },
   computed: {
@@ -297,10 +298,10 @@ export default {
       if (!this.realTimeCommentary || this.reviewLoading) return ''
       if (this.hasTemporaryLine && !this.resultMatchesLine(this.reviewSequence.line, this.reviewSequence.baseFen)) {
         const tempLine = this.reviewSequence.line || []
-        return `temporary:${this.reviewSequence.baseFen || ''}:${tempLine.length}:${tempLine.slice(-4).join(' ')}`
+        return `temporary:${this.reviewSequence.baseFen || ''}:${tempLine.length}:${tempLine.slice(-6).join(' ')}`
       }
       if (!this.hasTemporaryLine && this.activePlayedUci.length >= 2 && !this.reviewResultMatchesActivePlayedLine) {
-        return `played:${this.startFen || ''}:${this.activePlayedUci.length}:${this.activePlayedUci.slice(-4).join(' ')}`
+        return `played:${this.startFen || ''}:${this.activePlayedUci.length}:${this.activePlayedUci.slice(-6).join(' ')}`
       }
       return ''
     }
@@ -348,8 +349,9 @@ export default {
       this.clearRealtimeTimer()
       const key = this.realtimeReviewKey
       if (!key || key === this.lastRealtimeReviewKey) return
+      const sessionId = ++this.realtimeSessionId
       this.realtimeTimer = setTimeout(() => {
-        if (key !== this.realtimeReviewKey || this.reviewLoading) return
+        if (sessionId !== this.realtimeSessionId || key !== this.realtimeReviewKey || this.reviewLoading) return
         this.lastRealtimeReviewKey = key
         if (key.startsWith('temporary:')) {
           this.$store.dispatch('reviewCurrentSequence')
@@ -360,7 +362,8 @@ export default {
             sans: this.activePlayedSans,
             manualGame: true,
             source: 'realtime-played-line',
-            incremental: true
+            incremental: true,
+            realtimeSessionId: sessionId
           })
         }
       }, 1500)
