@@ -16,6 +16,38 @@ let engineCwd = ''
 let pendingEvalFile = null
 let deepAnalysisCancelled = false
 let reviewRequestSeq = 0
+let trackedOptions = {
+  UCI_Variant: null,
+  EvalFile: null,
+  UseNNUE: null
+}
+
+function optionValue (name, fallback = null) {
+  return Object.prototype.hasOwnProperty.call(trackedOptions, name) ? trackedOptions[name] : fallback
+}
+
+function updateTrackedOption (name, value) {
+  if (name === 'UCI_Variant') trackedOptions.UCI_Variant = value
+  if (name === 'EvalFile') trackedOptions.EvalFile = value
+  if (name === 'Use NNUE') trackedOptions.UseNNUE = value
+}
+
+function emitNnueRuntimeSnapshot (source, extra = {}) {
+  const variant = optionValue('UCI_Variant', null)
+  const requestedEvalFile = optionValue('EvalFile', null)
+  const useNnue = optionValue('Use NNUE', null)
+  const resolvedEvalFile = resolveEvalFilePath(requestedEvalFile)
+  msg.queue('nnue-runtime', {
+    source,
+    variant,
+    useNNUE: useNnue,
+    requestedEvalFile,
+    resolvedEvalFile,
+    evalFileExists: resolvedEvalFile ? fs.existsSync(resolvedEvalFile) : null,
+    cwd: engineCwd,
+    ...extra
+  })
+}
 
 /**
  * Run a new engine, killing the old process.
@@ -79,6 +111,28 @@ async function run (binary, cwd, listeners) {
         engine.events.on(event, info => msg.queue(event, info))
       }
     }
+    engine.events.on('line', line => {
+      if (typeof line !== 'string') return
+      if (line.includes('info string NNUE evaluation using')) {
+        const match = line.match(/info string NNUE evaluation using (.+) enabled/i)
+        emitNnueRuntimeSnapshot('engine-info-line', {
+          nnueLoaded: true,
+          nnueStateLine: line,
+          activeNetwork: match && match[1] ? match[1] : null
+        })
+      } else if (line.includes('info string classical evaluation enabled')) {
+        emitNnueRuntimeSnapshot('engine-info-line', {
+          nnueLoaded: false,
+          nnueStateLine: line,
+          fallbackToClassical: true
+        })
+      } else if (line.includes('info string ERROR:') && /NNUE|network|EvalFile/i.test(line)) {
+        emitNnueRuntimeSnapshot('engine-info-line', {
+          nnueLoaded: false,
+          nnueError: line
+        })
+      }
+    })
 
     // initialize
     await engine.initialize()
@@ -120,6 +174,7 @@ async function exec (cmd) {
   }
 
   const option = parseSetOption(cmd)
+  if (option) updateTrackedOption(option.name, option.value)
   if (option && option.name === 'EvalFile') {
     const resolved = resolveEvalFilePath(option.value)
     if (resolved && !fs.existsSync(resolved)) {
@@ -141,6 +196,7 @@ async function exec (cmd) {
         resolved,
         cwd: engineCwd
       })
+      emitNnueRuntimeSnapshot('evalfile-found', { nnueLoaded: null })
     }
   }
 
@@ -159,6 +215,9 @@ async function exec (cmd) {
           resolved,
           cwd: engineCwd
         })
+        emitNnueRuntimeSnapshot('evalfile-applied', { nnueLoaded: null })
+      } else if (option.name === 'Use NNUE' || option.name === 'UCI_Variant') {
+        emitNnueRuntimeSnapshot('option-applied', { option: option.name, value: option.value })
       }
     }
   } catch (err) {

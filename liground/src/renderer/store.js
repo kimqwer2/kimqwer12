@@ -3912,6 +3912,12 @@ ffish.onRuntimeInitialized = () => {
       console.error(prefix, `Review engine rejected EvalFile: ${status.requested}`, status)
     }
   })
+  engine.on('nnue-runtime', status => {
+    console.info('[NNUE runtime][main]', status)
+  })
+  engine.on('eval-nnue-runtime', status => {
+    console.info('[NNUE runtime][eval]', status)
+  })
   engine.on('option-applied', option => console.log('[engine-option-applied]', option))
   engine.on('eval-option-applied', option => console.log('[eval-engine-option-applied]', option))
 
