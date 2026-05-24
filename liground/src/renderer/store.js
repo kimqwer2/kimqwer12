@@ -323,6 +323,12 @@ function enrichReviewMovePreviewFens (result, variant, is960, previousResult = n
 }
 
 const MAX_REVIEW_RESULTS_CACHE = 40
+let replaySessionSeq = 0
+
+function replayTrace (debugEnabled, event, payload = {}) {
+  if (!debugEnabled) return
+  console.debug(`[replay-sm] ${event}`, payload)
+}
 
 
 // Realtime commentary owns only the latest played move on the live board.
@@ -2802,6 +2808,7 @@ export const store = new Vuex.Store({
     async requestReview (context, payload) {
       const reviewCfg = context.state.analysisVisualization
       const startedAt = Date.now()
+      const debug = Boolean(reviewCfg && reviewCfg.debugReviewPipeline)
       const request = createReviewRequest({
         ...payload,
         id: payload.id || `review-${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -2819,8 +2826,16 @@ export const store = new Vuex.Store({
           depthPreset: reviewCfg.reviewDepthPreset
         }
       })
+      replayTrace(debug, 'request:create', {
+        replaySessionId: payload && payload.replaySessionId ? payload.replaySessionId : null,
+        replayMoveIndex: payload && Number.isFinite(payload.replayMoveIndex) ? payload.replayMoveIndex : null,
+        requestId: request.id,
+        lineLength: Array.isArray(request.line) ? request.line.length : 0,
+        source: request.context && request.context.source
+      })
       context.commit('reviewSetRequest', request.id)
       try {
+        replayTrace(debug, 'request:engine-dispatch', { requestId: request.id })
         request.engineAnalysis = await engine.reviewAnalysis({
           fen: request.fen,
           move: request.move,
@@ -2834,8 +2849,14 @@ export const store = new Vuex.Store({
           detailLevel: context.state.analysisVisualization.reviewDetailLevel,
           variant: request.variant
         })
+        replayTrace(debug, 'request:engine-finish', {
+          requestId: request.id,
+          engineMoveCount: request.engineAnalysis && Array.isArray(request.engineAnalysis.moves) ? request.engineAnalysis.moves.length : 0,
+          engineError: request.engineAnalysis && request.engineAnalysis.error ? request.engineAnalysis.error : null
+        })
       } catch (err) {
         request.engineAnalysis = { error: err.message }
+        replayTrace(debug, 'request:engine-error', { requestId: request.id, error: err.message })
       }
       let result
       if (ipcRenderer && ipcRenderer.invoke) {
@@ -2844,6 +2865,10 @@ export const store = new Vuex.Store({
         result = analyzeReviewRequest(request)
       }
       if (context.state.review.lastRequestId !== request.id) {
+        replayTrace(debug, 'request:discard-stale', {
+          requestId: request.id,
+          lastRequestId: context.state.review.lastRequestId
+        })
         return null
       }
       if (!result || result.error) {
@@ -2864,9 +2889,14 @@ export const store = new Vuex.Store({
         })
       }
       if (request.context && request.context.deferCommit) {
+        replayTrace(debug, 'request:return-defer-commit', { requestId: request.id })
         return result
       }
       context.commit('reviewSetResult', result)
+      replayTrace(debug, 'request:commit', {
+        requestId: request.id,
+        moveCount: Array.isArray(result.moves) ? result.moves.length : 0
+      })
       return result
     },
 
@@ -2878,10 +2908,16 @@ export const store = new Vuex.Store({
       }
       context.commit('reviewPrepareFullRebuild')
       let result = null
-      const replayStartedAt = Date.now()
       const debug = Boolean(context.state.analysisVisualization && context.state.analysisVisualization.debugReviewPipeline)
+      const replaySessionId = ++replaySessionSeq
+      replayTrace(debug, 'session:start', {
+        replaySessionId,
+        totalMoves: line.length,
+        reviewActive: context.state.review.active,
+        reviewLoading: context.state.review.loading
+      })
       for (let idx = 0; idx < line.length; idx++) {
-        const moveStartedAt = Date.now()
+        replayTrace(debug, 'step:enqueue', { replaySessionId, idx, ply: idx + 1, queueSize: 1 })
         result = await context.dispatch('reviewPlayedLine', {
           ...payload,
           line: line.slice(0, idx + 1),
@@ -2889,25 +2925,33 @@ export const store = new Vuex.Store({
           incremental: true,
           fullRebuild: false,
           replayFromStart: true,
-          deferUICommit: idx < line.length - 1 && (idx % 4 !== 3)
+          replaySessionId,
+          replayMoveIndex: idx
         })
-        if (!result) return null
-        if (debug && (idx >= 44 && idx <= 56)) {
-          const overlayCount = Array.isArray(context.state.review.overlays) ? context.state.review.overlays.length : 0
-          const markerCount = result && Array.isArray(result.markerMoves) ? result.markerMoves.length : 0
-          const heap = typeof performance !== 'undefined' && performance.memory ? Math.round(performance.memory.usedJSHeapSize / (1024 * 1024)) : null
-          const svgNodes = typeof document !== 'undefined' ? document.querySelectorAll('svg *').length : null
-          console.debug('[replay-diagnostics]', {
-            ply: idx + 1,
-            elapsedMoveMs: Date.now() - moveStartedAt,
-            elapsedTotalMs: Date.now() - replayStartedAt,
-            markerCount,
-            overlayCount,
-            svgNodes,
-            heapMB: heap
+        if (!result) {
+          replayTrace(debug, 'session:abort-null-result', {
+            replaySessionId,
+            idx,
+            lastRequestId: context.state.review.lastRequestId,
+            reviewLoading: context.state.review.loading
           })
+          return null
         }
+        replayTrace(debug, 'step:applied', {
+          replaySessionId,
+          idx,
+          ply: idx + 1,
+          reviewedLineLength: Array.isArray(result.reviewedLine) ? result.reviewedLine.length : 0,
+          markerCount: Array.isArray(result.markerMoves) ? result.markerMoves.length : 0,
+          overlayCount: Array.isArray(context.state.review.overlays) ? context.state.review.overlays.length : 0,
+          reviewLoading: context.state.review.loading
+        })
       }
+      replayTrace(debug, 'session:complete', {
+        replaySessionId,
+        totalMoves: line.length,
+        finalOverlayCount: Array.isArray(context.state.review.overlays) ? context.state.review.overlays.length : 0
+      })
       return result
     },
 
@@ -2934,7 +2978,7 @@ export const store = new Vuex.Store({
         incrementalMode: incrementalRequested,
         fullRebuild,
         replayFromStart: payload.replayFromStart === true,
-        deferCommit: payload.deferUICommit === true
+        deferCommit: false
       }
       if (fullRebuild) context.commit('reviewPrepareFullRebuild')
       const previous = context.state.review.currentResult
@@ -2980,7 +3024,7 @@ export const store = new Vuex.Store({
             prefixLength,
             requestContext
           })
-          if (!payload.deferUICommit) context.commit('reviewSetResult', merged)
+          context.commit('reviewSetResult', merged)
           return merged
         }
       }
@@ -3017,13 +3061,13 @@ export const store = new Vuex.Store({
             prefixLength,
             requestContext
           })
-          if (!payload.deferUICommit) context.commit('reviewSetResult', merged)
+          context.commit('reviewSetResult', merged)
           return merged
         }
         context.commit('reviewSetResult', previous)
         return previous
       }
-      const direct = await context.dispatch('requestReview', {
+      return context.dispatch('requestReview', {
         mode: REVIEW_MODES.LINE,
         fen: baseFen,
         move: line[0],
@@ -3032,8 +3076,6 @@ export const store = new Vuex.Store({
         markerMode,
         context: requestContext
       })
-      if (payload.deferUICommit && direct) return direct
-      return direct
     },
     reviewCurrentMove (context) {
       const move = context.getters.currentMove[0]
