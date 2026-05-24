@@ -324,6 +324,7 @@ function enrichReviewMovePreviewFens (result, variant, is960, previousResult = n
 
 const MAX_REVIEW_RESULTS_CACHE = 40
 let replaySessionSeq = 0
+let singleMoveRecheckSeq = 0
 
 function replayTrace (debugEnabled, event, payload = {}) {
   if (!debugEnabled) return
@@ -1249,6 +1250,41 @@ export const store = new Vuex.Store({
           enrichAndCommitMs: Math.round((t1 - t0) * 100) / 100
         })
       }
+    },
+    reviewSingleMoveRecheckStart (state, ply) {
+      if (!state.review.recheckByPly) Vue.set(state.review, 'recheckByPly', {})
+      Vue.set(state.review.recheckByPly, String(ply), true)
+    },
+    reviewSingleMoveRecheckEnd (state, ply) {
+      if (!state.review.recheckByPly) return
+      Vue.delete(state.review.recheckByPly, String(ply))
+    },
+    reviewPatchSingleMove (state, payload) {
+      const current = state.review.currentResult
+      if (!current || !payload || !payload.move) return
+      const patchMove = payload.move
+      const moves = Array.isArray(current.moves) ? current.moves.slice() : []
+      const idx = moves.findIndex(move => move && move.ply === patchMove.ply)
+      if (idx < 0) return
+      moves[idx] = { ...moves[idx], ...patchMove }
+      const markerMode = current.markerMode || state.review.markerMode
+      const markerMoves = moves.filter(move => shouldDisplayReviewMoveForMarkerMode(move.ply, markerMode))
+      const summaryMove = mergedReviewClassification(markerMoves.length ? markerMoves : moves)
+      const overlays = markerMoves.slice(-6).flatMap(move => Array.isArray(move.overlays) ? move.overlays : [])
+      const risks = markerMoves.flatMap(move => Array.isArray(move.risks) ? move.risks : []).slice(-4)
+      const patched = {
+        ...current,
+        moves,
+        markerMoves,
+        overlays,
+        risks,
+        classification: summaryMove ? summaryMove.classification : current.classification,
+        classificationLabel: summaryMove ? summaryMove.classificationLabel : current.classificationLabel,
+        generatedAt: Date.now()
+      }
+      state.review.currentResult = patched
+      state.review.overlays = overlays
+      if (patched.id) Vue.set(state.review.resultsById, patched.id, patched)
     },
     reviewPreviewSet (state, payload) {
       state.review.preview = {
@@ -3097,6 +3133,47 @@ export const store = new Vuex.Store({
           ply: move.ply
         }
       })
+    },
+    async recheckReviewedMove (context, payload = {}) {
+      const targetPly = Number(payload.ply)
+      const current = context.state.review.currentResult
+      if (!current || !Number.isFinite(targetPly)) return null
+      const existingMoves = Array.isArray(current.moves) ? current.moves : []
+      const targetMove = existingMoves.find(move => move && move.ply === targetPly)
+      if (!targetMove || !targetMove.move) return null
+      const loadingMap = context.state.review.recheckByPly || {}
+      if (loadingMap[String(targetPly)]) return null
+
+      const line = Array.isArray(current.reviewedLine) ? current.reviewedLine.slice(0, targetPly) : []
+      if (!line.length) return null
+      const seq = ++singleMoveRecheckSeq
+      context.commit('reviewSingleMoveRecheckStart', targetPly)
+      try {
+        const reviewDepth = Math.max(4, (context.state.analysisVisualization.reviewDepth || 10) + 2)
+        const tacticalDepth = Math.max(4, (context.state.analysisVisualization.reviewTacticalDepth || 8) + 2)
+        const result = await context.dispatch('requestReview', {
+          mode: REVIEW_MODES.LINE,
+          fen: current.fen,
+          move: line[0],
+          moveSan: current.moveSan || line[0],
+          line,
+          markerMode: current.markerMode || context.state.review.markerMode,
+          context: {
+            ...(current.requestContext || {}),
+            source: 'single-move-recheck',
+            reviewDepth,
+            tacticalDepth,
+            deferCommit: true
+          }
+        })
+        if (!result || seq !== singleMoveRecheckSeq) return null
+        const rechecked = Array.isArray(result.moves) ? result.moves.find(move => move && move.ply === targetPly) : null
+        if (!rechecked) return null
+        context.commit('reviewPatchSingleMove', { move: rechecked })
+        return rechecked
+      } finally {
+        context.commit('reviewSingleMoveRecheckEnd', targetPly)
+      }
     },
     reviewCustomMove (context, move) {
       if (!move) {

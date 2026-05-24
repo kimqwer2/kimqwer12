@@ -170,6 +170,7 @@
             type="button"
             :class="['move-chip', severityClassForMove(move), { active: selectedMove && selectedMove.ply === move.ply }]"
             @click="selectMove(move)"
+            @dblclick.prevent="recheckMove(move)"
             @mouseenter="previewMove(move)"
             @focus="previewMove(move)"
             @blur="clearPreview"
@@ -177,6 +178,7 @@
             <span class="move-ply">{{ move.ply }}</span>
             <span class="move-main">{{ move.move }}</span>
             <span class="move-label">{{ move.classificationLabel }}</span>
+            <span v-if="isRechecking(move.ply)" class="move-rechecking">재검토중…</span>
           </button>
         </div>
         <div
@@ -401,6 +403,9 @@ export default {
     primaryIntentLabel () {
       const intent = this.result && this.result.ideas && this.result.ideas[0]
       return intent ? (intent.label || this.intentTypeText(intent.type)) : '아이디어 검토'
+    },
+    recheckByPly () {
+      return this.review && this.review.recheckByPly ? this.review.recheckByPly : {}
     }
   },
   methods: {
@@ -425,6 +430,13 @@ export default {
     clearPreview () {
       this.hoveredMove = null
       this.$store.dispatch('clearReviewPreview')
+    },
+    isRechecking (ply) {
+      return Boolean(this.recheckByPly && this.recheckByPly[String(ply)])
+    },
+    recheckMove (move) {
+      if (!move || !move.ply || this.isRechecking(move.ply)) return
+      this.$store.dispatch('recheckReviewedMove', { ply: move.ply })
     },
     severityClassForMove (move) {
       return move && move.severity ? move.severity : 'neutral'
@@ -660,6 +672,11 @@ h3, h4, p {
 }
 .move-label {
   opacity: 0.95;
+}
+.move-rechecking {
+  font-size: 10px;
+  opacity: 0.9;
+  color: #ffd86b;
 }
 .move-detail {
   margin-top: 8px;
