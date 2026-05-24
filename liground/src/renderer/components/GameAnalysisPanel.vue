@@ -266,8 +266,9 @@ export default {
         }
       }
       if (this.activePlayedLine.length) {
+        const tail = this.activePlayedUci.slice(-4).join(' ')
         return {
-          key: `played:${this.activePlayedUci.join(' ')}`,
+          key: `played:${this.startFen || ''}:${this.activePlayedUci.length}:${tail}`,
           label: '현재 기보 흐름',
           analysis: analyzeLiveGame(this.activePlayedLine)
         }
@@ -295,10 +296,11 @@ export default {
     realtimeReviewKey () {
       if (!this.realTimeCommentary || this.reviewLoading) return ''
       if (this.hasTemporaryLine && !this.resultMatchesLine(this.reviewSequence.line, this.reviewSequence.baseFen)) {
-        return `temporary:${this.reviewSequence.baseFen || ''}:${this.reviewSequence.line.join(' ')}`
+        const tempLine = this.reviewSequence.line || []
+        return `temporary:${this.reviewSequence.baseFen || ''}:${tempLine.length}:${tempLine.slice(-4).join(' ')}`
       }
       if (!this.hasTemporaryLine && this.activePlayedUci.length >= 2 && !this.reviewResultMatchesActivePlayedLine) {
-        return `played:${this.startFen || ''}:${this.activePlayedUci.join(' ')}`
+        return `played:${this.startFen || ''}:${this.activePlayedUci.length}:${this.activePlayedUci.slice(-4).join(' ')}`
       }
       return ''
     }

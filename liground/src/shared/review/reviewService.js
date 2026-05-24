@@ -40,7 +40,10 @@ function inPalace (sq) {
 }
 
 function makeFeature (type, text, confidence, data = {}) {
-  return { id: `${type}-${Math.round(confidence * 100)}-${Object.keys(data).length}`, type, text, confidence, ...data }
+  const idxPart = Number.isFinite(data.idx) ? data.idx : 'x'
+  const movePart = typeof data.move === 'string' && data.move ? data.move : 'nomove'
+  const squarePart = typeof data.square === 'string' && data.square ? data.square : 'nosq'
+  return { id: `${type}-${idxPart}-${movePart}-${squarePart}-${Math.round(confidence * 100)}`, type, text, confidence, ...data }
 }
 
 function extractMoveFeatures (move, idx = 0) {
@@ -328,15 +331,15 @@ function summaryForMoveReview ({ ply, sideLabel, move, classification, intent, e
   return `${ply}수 ${sideLabel} ${move}: ${classification.label}입니다. ${intent.text}`
 }
 
-function risksForMove ({ features, classification, punishmentLine, move, evalLoss }) {
+function risksForMove ({ features, classification, punishmentLine, move, evalLoss, ply }) {
   const risks = []
   const serious = ['inaccuracy', 'mistake', 'blunder', 'needs_care', 'interesting_risk'].includes(classification.key)
   for (const feature of (features || []).filter(feature => ['overextension_check', 'exposed_king_lane'].includes(feature.type)).slice(0, 1)) {
-    risks.push({ id: `${feature.id}-move`, type: feature.type, severity: feature.type === 'exposed_king_lane' && serious ? 'high' : 'medium', confidence: feature.confidence, text: feature.text })
+    risks.push({ id: `${feature.id}-ply-${ply}-move-risk`, type: feature.type, severity: feature.type === 'exposed_king_lane' && serious ? 'high' : 'medium', confidence: feature.confidence, text: feature.text })
   }
   if (serious && punishmentLine && punishmentLine.move && punishmentLine.move !== move) {
     risks.push({
-      id: `punishment-${move}`,
+      id: `punishment-${ply}-${move}-${punishmentLine.move}`,
       type: 'tactical_counterplay',
       severity: classification.key === 'blunder' || classification.key === 'mistake' ? 'high' : 'medium',
       confidence: typeof evalLoss === 'number' && evalLoss >= 180 ? 0.76 : 0.58,
@@ -396,8 +399,14 @@ function overlaysForReviewedMove ({ move, ply, classification, features, punishm
   return overlays
 }
 
-function perMoveAnalysisFromEngine (engineAnalysis, idx) {
-  return engineAnalysis && Array.isArray(engineAnalysis.moves) ? engineAnalysis.moves[idx] : null
+function perMoveAnalysisFromEngine (engineAnalysis, idx, ply) {
+  if (!engineAnalysis || !Array.isArray(engineAnalysis.moves)) return null
+  // Prefer absolute ply mapping when worker provides sliced/tail analysis.
+  if (Number.isFinite(ply)) {
+    const byPly = engineAnalysis.moves.find(entry => entry && Number(entry.ply) === Number(ply))
+    if (byPly) return byPly
+  }
+  return engineAnalysis.moves[idx] || null
 }
 
 function buildMoveReviews ({ reviewedLine, markerMode, engineAnalysis, fallbackMultipv }) {
@@ -407,7 +416,7 @@ function buildMoveReviews ({ reviewedLine, markerMode, engineAnalysis, fallbackM
     const ply = idx + 1
     const side = ply % 2 === 1 ? 'user' : 'opponent'
     const sideLabel = side === 'user' ? '내 수' : '상대 수'
-    const moveEngine = perMoveAnalysisFromEngine(engineAnalysis, idx)
+    const moveEngine = perMoveAnalysisFromEngine(engineAnalysis, idx, ply)
     const rootCandidates = moveEngine && moveEngine.root && Array.isArray(moveEngine.root.candidates)
       ? moveEngine.root.candidates.map(normalizeEngineCandidate).filter(Boolean)
       : (idx === 0 ? fallbackMultipv : [])
@@ -420,7 +429,7 @@ function buildMoveReviews ({ reviewedLine, markerMode, engineAnalysis, fallbackM
     const intent = summarizeIntentFromFeatures(features)
     const practical = practicalSignalsFromFeatures(features)
     const classification = classifyHumanMove({ move, bestLine, candidateLine, features, evalLoss })
-    const risks = risksForMove({ features, classification, punishmentLine: afterCandidate, move, evalLoss })
+    const risks = risksForMove({ features, classification, punishmentLine: afterCandidate, move, evalLoss, ply })
     const moveReview = {
       ply,
       side,

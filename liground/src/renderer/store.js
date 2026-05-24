@@ -273,17 +273,40 @@ function suffixOnlyReviewResultFromFull ({ result, prefixLength }) {
 }
 
 
-function enrichReviewMovePreviewFens (result, variant, is960) {
+function enrichReviewMovePreviewFens (result, variant, is960, previousResult = null) {
   if (!result || !Array.isArray(result.moves) || !result.fen) return result
+  const previousMoves = previousResult && Array.isArray(previousResult.moves) ? previousResult.moves : []
+  const previousByPly = new Map(previousMoves.filter(Boolean).map(move => [move.ply, move]))
+  const missing = result.moves.filter(move => move && move.move && !previousByPly.get(move.ply))
+  if (missing.length === 0 && result.moves.every(move => move && move.previewFen)) return result
   let board
+  let startIdx = 0
   try {
-    board = is960 ? new ffish.Board(variant, result.fen, true) : new ffish.Board(variant, result.fen)
+    // Fast path for incremental replay extension: continue from last known preview FEN
+    const prevLast = previousMoves.length ? previousMoves[previousMoves.length - 1] : null
+    const resultExtendsPrevious = Boolean(
+      prevLast &&
+      previousMoves.length < result.moves.length &&
+      previousMoves.every((move, idx) => result.moves[idx] && result.moves[idx].move === move.move) &&
+      prevLast.previewFen
+    )
+    if (resultExtendsPrevious) {
+      board = is960 ? new ffish.Board(variant, prevLast.previewFen, true) : new ffish.Board(variant, prevLast.previewFen)
+      startIdx = previousMoves.length
+    } else {
+      board = is960 ? new ffish.Board(variant, result.fen, true) : new ffish.Board(variant, result.fen)
+    }
   } catch (err) {
     return result
   }
   const previewByPly = {}
-  for (const move of result.moves) {
+  for (let idx = startIdx; idx < result.moves.length; idx++) {
+    const move = result.moves[idx]
     if (!move || !move.move) continue
+    if (previousByPly.has(move.ply) && previousByPly.get(move.ply).previewFen) {
+      previewByPly[move.ply] = previousByPly.get(move.ply).previewFen
+      continue
+    }
     try {
       board.push(move.move)
       previewByPly[move.ply] = board.fen()
@@ -297,6 +320,15 @@ function enrichReviewMovePreviewFens (result, variant, is960) {
     moves: result.moves.map(enrich),
     markerMoves: Array.isArray(result.markerMoves) ? result.markerMoves.map(enrich) : result.markerMoves
   }
+}
+
+const MAX_REVIEW_RESULTS_CACHE = 40
+let replaySessionSeq = 0
+let singleMoveRecheckSeq = 0
+
+function replayTrace (debugEnabled, event, payload = {}) {
+  if (!debugEnabled) return
+  console.debug(`[replay-sm] ${event}`, payload)
 }
 
 
@@ -682,7 +714,8 @@ export const store = new Vuex.Store({
       reviewPunishmentLineLength: 6,
       reviewDetailLevel: 'balanced',
       realtimeGameCommentary: false,
-      realtimeCommentaryArrows: false
+      realtimeCommentaryArrows: false,
+      debugReviewPipeline: false
     },
     deepAnalysis: {
       running: false,
@@ -1186,7 +1219,9 @@ export const store = new Vuex.Store({
       }
     },
     reviewSetResult (state, payload) {
-      const result = enrichReviewMovePreviewFens(payload, state.variant, state.board && state.board.is960 && state.board.is960())
+      const t0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()
+      const previous = state.review.currentResult
+      const result = enrichReviewMovePreviewFens(payload, state.variant, state.board && state.board.is960 && state.board.is960(), previous)
       state.review.loading = false
       state.review.error = null
       state.review.preview = { active: false, fen: '', move: null, overlays: [] }
@@ -1194,6 +1229,62 @@ export const store = new Vuex.Store({
       state.review.overlays = Array.isArray(result.overlays) ? result.overlays : []
       state.review.active = true
       Vue.set(state.review.resultsById, result.id, result)
+      const keys = Object.keys(state.review.resultsById || {})
+      if (keys.length > MAX_REVIEW_RESULTS_CACHE) {
+        const sorted = keys
+          .map(key => ({ key, generatedAt: state.review.resultsById[key] && state.review.resultsById[key].generatedAt ? state.review.resultsById[key].generatedAt : 0 }))
+          .sort((a, b) => a.generatedAt - b.generatedAt)
+        const overflow = sorted.length - MAX_REVIEW_RESULTS_CACHE
+        for (let i = 0; i < overflow; i++) {
+          Vue.delete(state.review.resultsById, sorted[i].key)
+        }
+      }
+      if (state.analysisVisualization && state.analysisVisualization.debugReviewPipeline) {
+        const t1 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()
+        console.debug('[review-commit]', {
+          resultId: result && result.id,
+          moveCount: Array.isArray(result && result.moves) ? result.moves.length : 0,
+          markerCount: Array.isArray(result && result.markerMoves) ? result.markerMoves.length : 0,
+          overlayCount: Array.isArray(state.review.overlays) ? state.review.overlays.length : 0,
+          cacheSize: Object.keys(state.review.resultsById || {}).length,
+          enrichAndCommitMs: Math.round((t1 - t0) * 100) / 100
+        })
+      }
+    },
+    reviewSingleMoveRecheckStart (state, ply) {
+      if (!state.review.recheckByPly) Vue.set(state.review, 'recheckByPly', {})
+      Vue.set(state.review.recheckByPly, String(ply), true)
+    },
+    reviewSingleMoveRecheckEnd (state, ply) {
+      if (!state.review.recheckByPly) return
+      Vue.delete(state.review.recheckByPly, String(ply))
+    },
+    reviewPatchSingleMove (state, payload) {
+      const current = state.review.currentResult
+      if (!current || !payload || !payload.move) return
+      const patchMove = payload.move
+      const moves = Array.isArray(current.moves) ? current.moves.slice() : []
+      const idx = moves.findIndex(move => move && move.ply === patchMove.ply)
+      if (idx < 0) return
+      moves[idx] = { ...moves[idx], ...patchMove }
+      const markerMode = current.markerMode || state.review.markerMode
+      const markerMoves = moves.filter(move => shouldDisplayReviewMoveForMarkerMode(move.ply, markerMode))
+      const summaryMove = mergedReviewClassification(markerMoves.length ? markerMoves : moves)
+      const overlays = markerMoves.slice(-6).flatMap(move => Array.isArray(move.overlays) ? move.overlays : [])
+      const risks = markerMoves.flatMap(move => Array.isArray(move.risks) ? move.risks : []).slice(-4)
+      const patched = {
+        ...current,
+        moves,
+        markerMoves,
+        overlays,
+        risks,
+        classification: summaryMove ? summaryMove.classification : current.classification,
+        classificationLabel: summaryMove ? summaryMove.classificationLabel : current.classificationLabel,
+        generatedAt: Date.now()
+      }
+      state.review.currentResult = patched
+      state.review.overlays = overlays
+      if (patched.id) Vue.set(state.review.resultsById, patched.id, patched)
     },
     reviewPreviewSet (state, payload) {
       state.review.preview = {
@@ -2752,6 +2843,8 @@ export const store = new Vuex.Store({
     },
     async requestReview (context, payload) {
       const reviewCfg = context.state.analysisVisualization
+      const startedAt = Date.now()
+      const debug = Boolean(reviewCfg && reviewCfg.debugReviewPipeline)
       const request = createReviewRequest({
         ...payload,
         id: payload.id || `review-${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -2769,8 +2862,16 @@ export const store = new Vuex.Store({
           depthPreset: reviewCfg.reviewDepthPreset
         }
       })
+      replayTrace(debug, 'request:create', {
+        replaySessionId: payload && payload.replaySessionId ? payload.replaySessionId : null,
+        replayMoveIndex: payload && Number.isFinite(payload.replayMoveIndex) ? payload.replayMoveIndex : null,
+        requestId: request.id,
+        lineLength: Array.isArray(request.line) ? request.line.length : 0,
+        source: request.context && request.context.source
+      })
       context.commit('reviewSetRequest', request.id)
       try {
+        replayTrace(debug, 'request:engine-dispatch', { requestId: request.id })
         request.engineAnalysis = await engine.reviewAnalysis({
           fen: request.fen,
           move: request.move,
@@ -2779,12 +2880,19 @@ export const store = new Vuex.Store({
           multiPv: 3,
           perMoveDepth: request.context && request.context.tacticalDepth ? request.context.tacticalDepth : context.state.analysisVisualization.reviewTacticalDepth,
           maxReviewMoves: context.state.analysisVisualization.reviewStrategicHorizon,
+          plyBase: request.context && Number.isFinite(request.context.plyBase) ? request.context.plyBase : 0,
           punishmentLineLength: context.state.analysisVisualization.reviewPunishmentLineLength,
           detailLevel: context.state.analysisVisualization.reviewDetailLevel,
           variant: request.variant
         })
+        replayTrace(debug, 'request:engine-finish', {
+          requestId: request.id,
+          engineMoveCount: request.engineAnalysis && Array.isArray(request.engineAnalysis.moves) ? request.engineAnalysis.moves.length : 0,
+          engineError: request.engineAnalysis && request.engineAnalysis.error ? request.engineAnalysis.error : null
+        })
       } catch (err) {
         request.engineAnalysis = { error: err.message }
+        replayTrace(debug, 'request:engine-error', { requestId: request.id, error: err.message })
       }
       let result
       if (ipcRenderer && ipcRenderer.invoke) {
@@ -2793,16 +2901,38 @@ export const store = new Vuex.Store({
         result = analyzeReviewRequest(request)
       }
       if (context.state.review.lastRequestId !== request.id) {
+        replayTrace(debug, 'request:discard-stale', {
+          requestId: request.id,
+          lastRequestId: context.state.review.lastRequestId
+        })
         return null
       }
       if (!result || result.error) {
         context.commit('reviewSetError', result && result.error ? result.error : 'Review failed')
         return null
       }
+      if (reviewCfg.debugReviewPipeline) {
+        const moveCount = Array.isArray(result.moves) ? result.moves.length : 0
+        const overlayCount = Array.isArray(result.overlays) ? result.overlays.length : 0
+        console.debug('[review-pipeline]', {
+          id: request.id,
+          source: request.context && request.context.source,
+          totalLineLength: request.line ? request.line.length : 0,
+          analyzedMoveCount: moveCount,
+          overlayCount,
+          elapsedMs: Date.now() - startedAt,
+          loading: context.state.review.loading
+        })
+      }
       if (request.context && request.context.deferCommit) {
+        replayTrace(debug, 'request:return-defer-commit', { requestId: request.id })
         return result
       }
       context.commit('reviewSetResult', result)
+      replayTrace(debug, 'request:commit', {
+        requestId: request.id,
+        moveCount: Array.isArray(result.moves) ? result.moves.length : 0
+      })
       return result
     },
 
@@ -2814,17 +2944,50 @@ export const store = new Vuex.Store({
       }
       context.commit('reviewPrepareFullRebuild')
       let result = null
+      const debug = Boolean(context.state.analysisVisualization && context.state.analysisVisualization.debugReviewPipeline)
+      const replaySessionId = ++replaySessionSeq
+      replayTrace(debug, 'session:start', {
+        replaySessionId,
+        totalMoves: line.length,
+        reviewActive: context.state.review.active,
+        reviewLoading: context.state.review.loading
+      })
       for (let idx = 0; idx < line.length; idx++) {
+        replayTrace(debug, 'step:enqueue', { replaySessionId, idx, ply: idx + 1, queueSize: 1 })
         result = await context.dispatch('reviewPlayedLine', {
           ...payload,
           line: line.slice(0, idx + 1),
           sans: Array.isArray(payload.sans) ? payload.sans.slice(0, idx + 1) : [],
           incremental: true,
           fullRebuild: false,
-          replayFromStart: true
+          replayFromStart: true,
+          replaySessionId,
+          replayMoveIndex: idx
         })
-        if (!result) return null
+        if (!result) {
+          replayTrace(debug, 'session:abort-null-result', {
+            replaySessionId,
+            idx,
+            lastRequestId: context.state.review.lastRequestId,
+            reviewLoading: context.state.review.loading
+          })
+          return null
+        }
+        replayTrace(debug, 'step:applied', {
+          replaySessionId,
+          idx,
+          ply: idx + 1,
+          reviewedLineLength: Array.isArray(result.reviewedLine) ? result.reviewedLine.length : 0,
+          markerCount: Array.isArray(result.markerMoves) ? result.markerMoves.length : 0,
+          overlayCount: Array.isArray(context.state.review.overlays) ? context.state.review.overlays.length : 0,
+          reviewLoading: context.state.review.loading
+        })
       }
+      replayTrace(debug, 'session:complete', {
+        replaySessionId,
+        totalMoves: line.length,
+        finalOverlayCount: Array.isArray(context.state.review.overlays) ? context.state.review.overlays.length : 0
+      })
       return result
     },
 
@@ -2850,7 +3013,8 @@ export const store = new Vuex.Store({
         sequenceSans: fullSans,
         incrementalMode: incrementalRequested,
         fullRebuild,
-        replayFromStart: payload.replayFromStart === true
+        replayFromStart: payload.replayFromStart === true,
+        deferCommit: false
       }
       if (fullRebuild) context.commit('reviewPrepareFullRebuild')
       const previous = context.state.review.currentResult
@@ -2882,7 +3046,8 @@ export const store = new Vuex.Store({
             deferCommit: true,
             incremental: true,
             prefixLength,
-            baseFen
+            baseFen,
+            plyBase: prefixLength
           }
         })
         if (suffixResult) {
@@ -2968,6 +3133,47 @@ export const store = new Vuex.Store({
           ply: move.ply
         }
       })
+    },
+    async recheckReviewedMove (context, payload = {}) {
+      const targetPly = Number(payload.ply)
+      const current = context.state.review.currentResult
+      if (!current || !Number.isFinite(targetPly)) return null
+      const existingMoves = Array.isArray(current.moves) ? current.moves : []
+      const targetMove = existingMoves.find(move => move && move.ply === targetPly)
+      if (!targetMove || !targetMove.move) return null
+      const loadingMap = context.state.review.recheckByPly || {}
+      if (loadingMap[String(targetPly)]) return null
+
+      const line = Array.isArray(current.reviewedLine) ? current.reviewedLine.slice(0, targetPly) : []
+      if (!line.length) return null
+      const seq = ++singleMoveRecheckSeq
+      context.commit('reviewSingleMoveRecheckStart', targetPly)
+      try {
+        const reviewDepth = Math.max(4, (context.state.analysisVisualization.reviewDepth || 10) + 2)
+        const tacticalDepth = Math.max(4, (context.state.analysisVisualization.reviewTacticalDepth || 8) + 2)
+        const result = await context.dispatch('requestReview', {
+          mode: REVIEW_MODES.LINE,
+          fen: current.fen,
+          move: line[0],
+          moveSan: current.moveSan || line[0],
+          line,
+          markerMode: current.markerMode || context.state.review.markerMode,
+          context: {
+            ...(current.requestContext || {}),
+            source: 'single-move-recheck',
+            reviewDepth,
+            tacticalDepth,
+            deferCommit: true
+          }
+        })
+        if (!result || seq !== singleMoveRecheckSeq) return null
+        const rechecked = Array.isArray(result.moves) ? result.moves.find(move => move && move.ply === targetPly) : null
+        if (!rechecked) return null
+        context.commit('reviewPatchSingleMove', { move: rechecked })
+        return rechecked
+      } finally {
+        context.commit('reviewSingleMoveRecheckEnd', targetPly)
+      }
     },
     reviewCustomMove (context, move) {
       if (!move) {
