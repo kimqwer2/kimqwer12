@@ -144,10 +144,11 @@ function sameLine (left, right) {
 export default {
   name: 'GameAnalysisPanel',
   data () {
-    return {
-      localAnalysis: null,
-      realtimeTimer: null,
-      lastRealtimeReviewKey: ''
+      return {
+        localAnalysis: null,
+        realtimeTimer: null,
+      lastRealtimeReviewKey: '',
+      realtimeSessionId: 0
     }
   },
   computed: {
@@ -317,7 +318,10 @@ export default {
     },
     realTimeCommentary (enabled) {
       if (!enabled) this.clearRealtimeTimer()
-      else this.scheduleRealtimeReview()
+      else {
+        this.realtimeSessionId += 1
+        this.scheduleRealtimeReview()
+      }
     }
   },
   beforeDestroy () {
@@ -354,13 +358,13 @@ export default {
         if (key.startsWith('temporary:')) {
           this.$store.dispatch('reviewCurrentSequence')
         } else if (key.startsWith('played:')) {
-          this.$store.dispatch('reviewPlayedLine', {
-            fen: this.startFen,
+          const moveObj = this.activePlayedLine[this.activePlayedLine.length - 1]
+          this.$store.dispatch('reviewRealtimeLatestMove', {
+            sessionId: this.realtimeSessionId,
+            baseFen: this.startFen,
             line: this.activePlayedUci,
             sans: this.activePlayedSans,
-            manualGame: true,
-            source: 'realtime-played-line',
-            incremental: true
+            moveObj
           })
         }
       }, 1500)

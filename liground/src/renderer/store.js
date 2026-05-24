@@ -1201,6 +1201,25 @@ export const store = new Vuex.Store({
       state.review.preview = { active: false, fen: '', move: null, overlays: [] }
       state.review.active = true
     },
+    reviewRealtimeStart (state, payload) {
+      state.review.realtime = {
+        ...(state.review.realtime || {}),
+        sessionId: payload && payload.sessionId ? payload.sessionId : (state.review.realtime && state.review.realtime.sessionId) || 0,
+        inFlight: true,
+        inFlightKey: payload && payload.key ? payload.key : '',
+        activeRequestCount: ((state.review.realtime && state.review.realtime.activeRequestCount) || 0) + 1
+      }
+    },
+    reviewRealtimeFinish (state, payload) {
+      const prev = state.review.realtime || {}
+      state.review.realtime = {
+        ...prev,
+        inFlight: false,
+        inFlightKey: '',
+        activeRequestCount: Math.max(0, (prev.activeRequestCount || 1) - 1),
+        ...(payload || {})
+      }
+    },
     reviewPrepareFullRebuild (state) {
       const previousInteraction = state.review.sequence && state.review.sequence.previousInteraction
       state.review.currentResult = null
@@ -1285,6 +1304,18 @@ export const store = new Vuex.Store({
       state.review.currentResult = patched
       state.review.overlays = overlays
       if (patched.id) Vue.set(state.review.resultsById, patched.id, patched)
+    },
+    reviewRealtimeSetResult (state, payload) {
+      const prev = state.review.realtime || {}
+      state.review.realtime = {
+        ...prev,
+        lastMovePly: payload && payload.move ? payload.move.ply : prev.lastMovePly,
+        lastResult: payload && payload.result ? payload.result : prev.lastResult
+      }
+      // Keep board overlays bounded to latest move overlays only in realtime mode.
+      if (payload && payload.move && Array.isArray(payload.move.overlays)) {
+        state.review.overlays = payload.move.overlays.slice(0, 4).map(overlay => ({ ...overlay, source: 'realtime-single-move' }))
+      }
     },
     reviewPreviewSet (state, payload) {
       state.review.preview = {
@@ -3175,6 +3206,57 @@ export const store = new Vuex.Store({
         context.commit('reviewSingleMoveRecheckEnd', targetPly)
       }
     },
+    async reviewRealtimeLatestMove (context, payload = {}) {
+      const debug = Boolean(context.state.analysisVisualization && context.state.analysisVisualization.debugReviewPipeline)
+      const line = Array.isArray(payload.line) ? payload.line.filter(Boolean) : []
+      const sans = Array.isArray(payload.sans) ? payload.sans : []
+      const moveObj = payload.moveObj || null
+      if (!line.length || !moveObj || !moveObj.ply) return null
+      const sessionId = payload.sessionId || ((context.state.review.realtime && context.state.review.realtime.sessionId) || 0)
+      const ply = moveObj.ply
+      const key = `${sessionId}:${ply}:${line[line.length - 1]}`
+      const rt = context.state.review.realtime || {}
+      if (rt.inFlight && rt.inFlightKey === key) {
+        context.commit('reviewRealtimeFinish', { queueDropped: (rt.queueDropped || 0) + 1 })
+        return null
+      }
+      context.commit('reviewRealtimeStart', { sessionId, key })
+      const t0 = Date.now()
+      try {
+        const prevFen = moveObj.prev ? moveObj.prev.fen : (payload.baseFen || context.getters.startFen)
+        const result = await context.dispatch('requestReview', {
+          mode: REVIEW_MODES.MOVE,
+          fen: prevFen,
+          move: moveObj.uci || moveObj.move,
+          moveSan: moveObj.name || sans[ply - 1] || (moveObj.uci || moveObj.move),
+          line: [moveObj.uci || moveObj.move],
+          markerMode: context.state.review.markerMode,
+          context: {
+            source: 'realtime-single-move',
+            deferCommit: true,
+            ply
+          }
+        })
+        if (!result || !Array.isArray(result.moves) || !result.moves[0]) {
+          context.commit('reviewRealtimeFinish', { fallbackCount: (rt.fallbackCount || 0) + 1 })
+          return null
+        }
+        const move = { ...result.moves[0], ply }
+        context.commit('reviewRealtimeSetResult', { move, result: { ...result, moves: [move], markerMoves: [move] } })
+        if (debug) {
+          console.debug('[realtime-pipeline]', {
+            sessionId,
+            ply,
+            elapsedMs: Date.now() - t0,
+            overlays: Array.isArray(move.overlays) ? move.overlays.length : 0,
+            fallback: false
+          })
+        }
+        return move
+      } finally {
+        context.commit('reviewRealtimeFinish')
+      }
+    },
     reviewCustomMove (context, move) {
       if (!move) {
         context.commit('reviewSetError', '검토할 수를 먼저 입력해 주세요.')
@@ -3776,6 +3858,9 @@ export const store = new Vuex.Store({
       return state.review.markerMode
     },
     reviewResult (state) {
+      if (state.analysisVisualization && state.analysisVisualization.realtimeGameCommentary && state.review.realtime && state.review.realtime.lastResult) {
+        return state.review.realtime.lastResult
+      }
       return state.review.currentResult
     },
     reviewSequence (state) {
@@ -3795,6 +3880,10 @@ export const store = new Vuex.Store({
         return Array.isArray(state.review.preview.overlays) ? state.review.preview.overlays : []
       }
       const resultContext = state.review.currentResult && state.review.currentResult.requestContext ? state.review.currentResult.requestContext : {}
+      if (state.analysisVisualization && state.analysisVisualization.realtimeGameCommentary) {
+        const realtimeOverlays = Array.isArray(state.review.overlays) ? state.review.overlays : []
+        if (realtimeOverlays.length) return realtimeOverlays
+      }
       const realtimeStrategic = resultContext.source === 'realtime-played-line'
       const resultOverlays = Array.isArray(state.review.overlays) ? state.review.overlays : []
       const visibleResultOverlays = realtimeStrategic

@@ -63,6 +63,17 @@ export function emptyReviewState () {
       overlays: []
     },
     lastRequestId: null,
+    realtime: {
+      sessionId: 0,
+      inFlight: false,
+      inFlightKey: '',
+      queueDropped: 0,
+      staleDiscarded: 0,
+      fallbackCount: 0,
+      activeRequestCount: 0,
+      lastMovePly: null,
+      lastResult: null
+    },
     sequence: emptyReviewSequenceState()
   }
 }
