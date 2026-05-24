@@ -396,8 +396,14 @@ function overlaysForReviewedMove ({ move, ply, classification, features, punishm
   return overlays
 }
 
-function perMoveAnalysisFromEngine (engineAnalysis, idx) {
-  return engineAnalysis && Array.isArray(engineAnalysis.moves) ? engineAnalysis.moves[idx] : null
+function perMoveAnalysisFromEngine (engineAnalysis, idx, ply) {
+  if (!engineAnalysis || !Array.isArray(engineAnalysis.moves)) return null
+  // Prefer absolute ply mapping when worker provides sliced/tail analysis.
+  if (Number.isFinite(ply)) {
+    const byPly = engineAnalysis.moves.find(entry => entry && Number(entry.ply) === Number(ply))
+    if (byPly) return byPly
+  }
+  return engineAnalysis.moves[idx] || null
 }
 
 function buildMoveReviews ({ reviewedLine, markerMode, engineAnalysis, fallbackMultipv }) {
@@ -407,7 +413,7 @@ function buildMoveReviews ({ reviewedLine, markerMode, engineAnalysis, fallbackM
     const ply = idx + 1
     const side = ply % 2 === 1 ? 'user' : 'opponent'
     const sideLabel = side === 'user' ? '내 수' : '상대 수'
-    const moveEngine = perMoveAnalysisFromEngine(engineAnalysis, idx)
+    const moveEngine = perMoveAnalysisFromEngine(engineAnalysis, idx, ply)
     const rootCandidates = moveEngine && moveEngine.root && Array.isArray(moveEngine.root.candidates)
       ? moveEngine.root.candidates.map(normalizeEngineCandidate).filter(Boolean)
       : (idx === 0 ? fallbackMultipv : [])

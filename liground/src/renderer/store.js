@@ -273,8 +273,12 @@ function suffixOnlyReviewResultFromFull ({ result, prefixLength }) {
 }
 
 
-function enrichReviewMovePreviewFens (result, variant, is960) {
+function enrichReviewMovePreviewFens (result, variant, is960, previousResult = null) {
   if (!result || !Array.isArray(result.moves) || !result.fen) return result
+  const previousMoves = previousResult && Array.isArray(previousResult.moves) ? previousResult.moves : []
+  const previousByPly = new Map(previousMoves.filter(Boolean).map(move => [move.ply, move]))
+  const missing = result.moves.filter(move => move && move.move && !previousByPly.get(move.ply))
+  if (missing.length === 0 && result.moves.every(move => move && move.previewFen)) return result
   let board
   try {
     board = is960 ? new ffish.Board(variant, result.fen, true) : new ffish.Board(variant, result.fen)
@@ -284,6 +288,11 @@ function enrichReviewMovePreviewFens (result, variant, is960) {
   const previewByPly = {}
   for (const move of result.moves) {
     if (!move || !move.move) continue
+    if (previousByPly.has(move.ply) && previousByPly.get(move.ply).previewFen) {
+      try { board.push(move.move) } catch (err) { break }
+      previewByPly[move.ply] = previousByPly.get(move.ply).previewFen
+      continue
+    }
     try {
       board.push(move.move)
       previewByPly[move.ply] = board.fen()
@@ -1189,7 +1198,9 @@ export const store = new Vuex.Store({
       }
     },
     reviewSetResult (state, payload) {
-      const result = enrichReviewMovePreviewFens(payload, state.variant, state.board && state.board.is960 && state.board.is960())
+      const t0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()
+      const previous = state.review.currentResult
+      const result = enrichReviewMovePreviewFens(payload, state.variant, state.board && state.board.is960 && state.board.is960(), previous)
       state.review.loading = false
       state.review.error = null
       state.review.preview = { active: false, fen: '', move: null, overlays: [] }
@@ -1206,6 +1217,17 @@ export const store = new Vuex.Store({
         for (let i = 0; i < overflow; i++) {
           Vue.delete(state.review.resultsById, sorted[i].key)
         }
+      }
+      if (state.analysisVisualization && state.analysisVisualization.debugReviewPipeline) {
+        const t1 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()
+        console.debug('[review-commit]', {
+          resultId: result && result.id,
+          moveCount: Array.isArray(result && result.moves) ? result.moves.length : 0,
+          markerCount: Array.isArray(result && result.markerMoves) ? result.markerMoves.length : 0,
+          overlayCount: Array.isArray(state.review.overlays) ? state.review.overlays.length : 0,
+          cacheSize: Object.keys(state.review.resultsById || {}).length,
+          enrichAndCommitMs: Math.round((t1 - t0) * 100) / 100
+        })
       }
     },
     reviewPreviewSet (state, payload) {
