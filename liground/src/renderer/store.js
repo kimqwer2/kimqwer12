@@ -1311,6 +1311,15 @@ export const store = new Vuex.Store({
       state.review.error = payload
       state.review.active = true
     },
+    reviewReleaseRequestLock (state, payload = {}) {
+      const requestId = payload && payload.requestId ? payload.requestId : null
+      if (!requestId || state.review.lastRequestId === requestId) {
+        state.review.loading = false
+      }
+      if (payload && payload.clearRequestId && (!requestId || state.review.lastRequestId === requestId)) {
+        state.review.lastRequestId = null
+      }
+    },
     reviewClear (state) {
       const previousInteraction = state.review.sequence && state.review.sequence.previousInteraction
       const markerMode = state.review.markerMode
@@ -2898,88 +2907,100 @@ export const store = new Vuex.Store({
         source: request.context && request.context.source
       })
       context.commit('reviewSetRequest', request.id)
+
       try {
-        replayTrace(debug, 'request:engine-dispatch', { requestId: request.id })
-        request.engineAnalysis = await engine.reviewAnalysis({
-          fen: request.fen,
-          move: request.move,
-          line: request.line,
-          depth: request.context && request.context.reviewDepth ? request.context.reviewDepth : context.state.analysisVisualization.reviewDepth,
-          multiPv: 3,
-          perMoveDepth: request.context && request.context.tacticalDepth ? request.context.tacticalDepth : context.state.analysisVisualization.reviewTacticalDepth,
-          maxReviewMoves: context.state.analysisVisualization.reviewStrategicHorizon,
-          plyBase: request.context && Number.isFinite(request.context.plyBase) ? request.context.plyBase : 0,
-          punishmentLineLength: context.state.analysisVisualization.reviewPunishmentLineLength,
-          detailLevel: context.state.analysisVisualization.reviewDetailLevel,
-          variant: request.variant
-        })
-        replayTrace(debug, 'request:engine-finish', {
+        try {
+          replayTrace(debug, 'request:engine-dispatch', { requestId: request.id })
+          request.engineAnalysis = await engine.reviewAnalysis({
+            fen: request.fen,
+            move: request.move,
+            line: request.line,
+            depth: request.context && request.context.reviewDepth ? request.context.reviewDepth : context.state.analysisVisualization.reviewDepth,
+            multiPv: 3,
+            perMoveDepth: request.context && request.context.tacticalDepth ? request.context.tacticalDepth : context.state.analysisVisualization.reviewTacticalDepth,
+            maxReviewMoves: context.state.analysisVisualization.reviewStrategicHorizon,
+            plyBase: request.context && Number.isFinite(request.context.plyBase) ? request.context.plyBase : 0,
+            punishmentLineLength: context.state.analysisVisualization.reviewPunishmentLineLength,
+            detailLevel: context.state.analysisVisualization.reviewDetailLevel,
+            variant: request.variant
+          })
+          replayTrace(debug, 'request:engine-finish', {
+            requestId: request.id,
+            engineMoveCount: request.engineAnalysis && Array.isArray(request.engineAnalysis.moves) ? request.engineAnalysis.moves.length : 0,
+            engineError: request.engineAnalysis && request.engineAnalysis.error ? request.engineAnalysis.error : null
+          })
+        } catch (err) {
+          request.engineAnalysis = { error: err.message }
+          replayTrace(debug, 'request:engine-error', { requestId: request.id, error: err.message })
+        }
+
+        let result
+        if (ipcRenderer && ipcRenderer.invoke) {
+          result = await ipcRenderer.invoke('review-analyze', request)
+        } else {
+          result = analyzeReviewRequest(request)
+        }
+        if (context.state.review.lastRequestId !== request.id) {
+          if (realtimeSource) realtimeStaleDiscardCount += 1
+          replayTrace(debug, 'request:discard-stale', {
+            requestId: request.id,
+            lastRequestId: context.state.review.lastRequestId,
+            realtimeSessionId: payload && payload.realtimeSessionId ? payload.realtimeSessionId : null,
+            staleDiscardCount: realtimeStaleDiscardCount
+          })
+          return null
+        }
+        if (!result || result.error) {
+          context.commit('reviewSetError', result && result.error ? result.error : 'Review failed')
+          return null
+        }
+        if (reviewCfg.debugReviewPipeline) {
+          const moveCount = Array.isArray(result.moves) ? result.moves.length : 0
+          const overlayCount = Array.isArray(result.overlays) ? result.overlays.length : 0
+          const queueSize = context.state.review.loading ? 1 : 0
+          const requestContext = request.context || {}
+          const fallbackCount = Array.isArray(result.moves)
+            ? result.moves.filter(move => move && move.classification === 'good_move').length
+            : 0
+          if (realtimeSource) realtimeFallbackClassificationCount += fallbackCount
+          console.debug('[review-pipeline]', {
+            id: request.id,
+            source: request.context && request.context.source,
+            realtimeSessionId: payload && payload.realtimeSessionId ? payload.realtimeSessionId : null,
+            moveIndex: Array.isArray(request.line) ? request.line.length : 0,
+            rollingWindowRange: Array.isArray(request.line) ? `${Math.max(1, request.line.length - 5)}-${request.line.length}` : null,
+            totalLineLength: request.line ? request.line.length : 0,
+            analyzedMoveCount: moveCount,
+            overlayCount,
+            activeRequestCount: context.state.review.loading ? 1 : 0,
+            staleDiscardCount: realtimeStaleDiscardCount,
+            queueSize,
+            fallbackClassificationCount: realtimeFallbackClassificationCount,
+            markerMode: requestContext.markerMode || null,
+            elapsedMs: Date.now() - startedAt,
+            loading: context.state.review.loading
+          })
+        }
+        if (request.context && request.context.deferCommit) {
+          replayTrace(debug, 'request:return-defer-commit', { requestId: request.id })
+          return result
+        }
+        context.commit('reviewSetResult', result)
+        replayTrace(debug, 'request:commit', {
           requestId: request.id,
-          engineMoveCount: request.engineAnalysis && Array.isArray(request.engineAnalysis.moves) ? request.engineAnalysis.moves.length : 0,
-          engineError: request.engineAnalysis && request.engineAnalysis.error ? request.engineAnalysis.error : null
+          moveCount: Array.isArray(result.moves) ? result.moves.length : 0
         })
-      } catch (err) {
-        request.engineAnalysis = { error: err.message }
-        replayTrace(debug, 'request:engine-error', { requestId: request.id, error: err.message })
-      }
-      let result
-      if (ipcRenderer && ipcRenderer.invoke) {
-        result = await ipcRenderer.invoke('review-analyze', request)
-      } else {
-        result = analyzeReviewRequest(request)
-      }
-      if (context.state.review.lastRequestId !== request.id) {
-        if (realtimeSource) realtimeStaleDiscardCount += 1
-        replayTrace(debug, 'request:discard-stale', {
-          requestId: request.id,
-          lastRequestId: context.state.review.lastRequestId,
-          realtimeSessionId: payload && payload.realtimeSessionId ? payload.realtimeSessionId : null,
-          staleDiscardCount: realtimeStaleDiscardCount
-        })
-        return null
-      }
-      if (!result || result.error) {
-        context.commit('reviewSetError', result && result.error ? result.error : 'Review failed')
-        return null
-      }
-      if (reviewCfg.debugReviewPipeline) {
-        const moveCount = Array.isArray(result.moves) ? result.moves.length : 0
-        const overlayCount = Array.isArray(result.overlays) ? result.overlays.length : 0
-        const queueSize = context.state.review.loading ? 1 : 0
-        const requestContext = request.context || {}
-        const fallbackCount = Array.isArray(result.moves)
-          ? result.moves.filter(move => move && move.classification === 'good_move').length
-          : 0
-        if (realtimeSource) realtimeFallbackClassificationCount += fallbackCount
-        console.debug('[review-pipeline]', {
-          id: request.id,
-          source: request.context && request.context.source,
-          realtimeSessionId: payload && payload.realtimeSessionId ? payload.realtimeSessionId : null,
-          moveIndex: Array.isArray(request.line) ? request.line.length : 0,
-          rollingWindowRange: Array.isArray(request.line) ? `${Math.max(1, request.line.length - 5)}-${request.line.length}` : null,
-          totalLineLength: request.line ? request.line.length : 0,
-          analyzedMoveCount: moveCount,
-          overlayCount,
-          activeRequestCount: context.state.review.loading ? 1 : 0,
-          staleDiscardCount: realtimeStaleDiscardCount,
-          queueSize,
-          fallbackClassificationCount: realtimeFallbackClassificationCount,
-          markerMode: requestContext.markerMode || null,
-          elapsedMs: Date.now() - startedAt,
-          loading: context.state.review.loading
-        })
-      }
-      if (request.context && request.context.deferCommit) {
-        replayTrace(debug, 'request:return-defer-commit', { requestId: request.id })
         return result
+      } catch (err) {
+        if (context.state.review.lastRequestId === request.id) {
+          context.commit('reviewSetError', err && err.message ? err.message : 'Review failed')
+        }
+        return null
+      } finally {
+        context.commit('reviewReleaseRequestLock', { requestId: request.id })
       }
-      context.commit('reviewSetResult', result)
-      replayTrace(debug, 'request:commit', {
-        requestId: request.id,
-        moveCount: Array.isArray(result.moves) ? result.moves.length : 0
-      })
-      return result
     },
+
 
     async replayPlayedLineReview (context, payload = {}) {
       const line = Array.isArray(payload.line) ? payload.line.filter(Boolean) : []

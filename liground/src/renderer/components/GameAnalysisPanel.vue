@@ -286,7 +286,7 @@ export default {
       return Boolean(this.activeAnalysisContext)
     },
     canReviewCurrentGame () {
-      return Boolean(!this.reviewLoading && this.activePlayedUci.length)
+      return Boolean(this.activePlayedUci.length)
     },
     analysis () {
       return this.localAnalysis || (this.activeAnalysisContext ? this.activeAnalysisContext.analysis : null)
