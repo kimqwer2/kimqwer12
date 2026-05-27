@@ -1,7 +1,7 @@
 import { fenToEpd } from './openingLookup'
 
 function defaultNode () {
-  return { visits: 0, next: {}, trustedNext: {}, exploratoryNext: {} }
+  return { visits: 0, next: {}, trustedNext: {}, exploratoryNext: {}, weightNext: {} }
 }
 
 export function createOpeningGraph () {
@@ -24,6 +24,7 @@ export function normalizeOpeningGraph (graph) {
     if (!node.next) node.next = {}
     if (!node.trustedNext) node.trustedNext = {}
     if (!node.exploratoryNext) node.exploratoryNext = {}
+    if (!node.weightNext) node.weightNext = {}
     if (!Number.isFinite(Number(node.visits))) node.visits = 0
   }
   return {
@@ -57,10 +58,32 @@ export function addSequenceToOpeningGraph (graph, sequence) {
         }
         const key = `${epd}|${uci}`
         graph.transitions[key] = (graph.transitions[key] || 0) + 1
-        const meta = graph.transitionMeta[key] || { trusted: 0, exploratory: 0 }
+        const meta = graph.transitionMeta[key] || { trusted: 0, exploratory: 0, avgDepth: 0, lastDepth: 0, avgCp: 0, lastCp: 0, manualBoost: 0, qualityWeight: 1 }
         if (source === 'exploration') meta.exploratory += 1
         else meta.trusted += 1
+        const total = meta.trusted + meta.exploratory
+        const moveMeta = sequence.moveMeta && sequence.moveMeta[i] ? sequence.moveMeta[i] : null
+        const depth = moveMeta && Number.isFinite(Number(moveMeta.depth)) ? Number(moveMeta.depth) : 0
+        const cp = moveMeta && Number.isFinite(Number(moveMeta.cp)) ? Number(moveMeta.cp) : null
+        if (depth > 0) {
+          meta.avgDepth = total > 0 ? (((meta.avgDepth || 0) * Math.max(0, total - 1)) + depth) / total : depth
+          meta.lastDepth = depth
+        }
+        if (typeof cp === 'number') {
+          meta.avgCp = total > 0 ? (((meta.avgCp || 0) * Math.max(0, total - 1)) + cp) / total : cp
+          meta.lastCp = cp
+        }
+        if (source === 'manual') {
+          meta.manualBoost = Math.min(1.5, (meta.manualBoost || 0) + 0.08)
+        }
+        const depthWeight = meta.avgDepth > 0 ? Math.min(1.25, 1 + (meta.avgDepth / 100)) : 1
+        const cpPenalty = typeof meta.avgCp === 'number' && meta.avgCp < -150 ? 0.7 : 1
+        const cpBonus = typeof meta.avgCp === 'number' && meta.avgCp > 50 ? 1.06 : 1
+        const manualWeight = 1 + Math.min(0.3, meta.manualBoost || 0)
+        meta.qualityWeight = depthWeight * cpPenalty * cpBonus * manualWeight
         graph.transitionMeta[key] = meta
+        const baseCount = node.next[uci] || 0
+        node.weightNext[uci] = Math.max(0.0001, baseCount * (meta.qualityWeight || 1))
         graph.moves += 1
       }
     }
@@ -76,8 +99,9 @@ export function openingCandidatesForFen (graph, fen, limit = 6) {
   const items = Object.entries(node.next).map(([uci, count]) => {
     const trustedCount = node.trustedNext[uci] || 0
     const exploratoryCount = node.exploratoryNext[uci] || 0
-    const score = trustedCount + exploratoryCount * 0.35
-    return { uci, count, trustedCount, exploratoryCount, score }
+    const weighted = node.weightNext && Number.isFinite(Number(node.weightNext[uci])) ? Number(node.weightNext[uci]) : null
+    const score = weighted !== null ? weighted : (trustedCount + exploratoryCount * 0.35)
+    return { uci, count, trustedCount, exploratoryCount, score, weight: score }
   })
   const scoreTotal = items.reduce((sum, cur) => sum + cur.score, 0) || 1
   return items

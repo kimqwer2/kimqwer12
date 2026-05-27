@@ -103,6 +103,8 @@
       <label>초반 랜덤 진행 수 <input v-model.number="openingBookLocal.autoGenerateEarlyPlies" min="2" max="40" type="number" @change="saveOpeningBook"></label>
       <label>생성 MultiPV 후보 수 <input v-model.number="openingBookLocal.autoGenerateTopK" min="1" max="8" type="number" @change="saveOpeningBook"></label>
       <label>분기 허용 CP 임계값 <input v-model.number="openingBookLocal.autoGenerateCpThreshold" min="0" max="300" type="number" @change="saveOpeningBook"></label>
+      <label>최소 유지 깊이 <input v-model.number="cleanupMinDepth" min="1" max="40" type="number"></label>
+      <button type="button" @click="cleanupShallowOpeningData">낮은 깊이 데이터 정리</button>
       <label>초반 변화 다양성 <input v-model.number="openingBookLocal.autoGenerateTemperature" min="0.6" max="1.8" step="0.1" type="number" @change="saveOpeningBook"></label>
       <label><input v-model="openingBookLocal.earlyRandomEnabled" type="checkbox" @change="saveOpeningBook"> 초반 랜덤 진행 사용</label>
       <label>시작 포지션 일괄 입력</label>
@@ -181,7 +183,7 @@ import { copyTextReliable } from '../../shared/clipboard'
 
 export default {
   name: 'AnalysisVisualizationSettings',
-  data: () => ({ local: {}, depthMode: '12', targetDepth: 'infinite', openingBookLocal: {}, poolBulkText: '' }),
+  data: () => ({ local: {}, depthMode: '12', targetDepth: 'infinite', openingBookLocal: {}, poolBulkText: '', cleanupMinDepth: 12 }),
   computed: {
     cfg () { return this.$store.getters.analysisVisualization },
     deepAnalysis () { return this.$store.getters.deepAnalysis },
@@ -311,6 +313,13 @@ export default {
     },
     stopAutoOpeningGeneration () {
       this.$store.dispatch('stopAutoOpeningGeneration')
+    },
+    async cleanupShallowOpeningData () {
+      const minDepth = Math.max(1, Number(this.cleanupMinDepth) || 12)
+      if (!confirm(`깊이 ${minDepth} 미만의 오프닝 데이터를 삭제하시겠습니까?`)) return
+      const result = await this.$store.dispatch('cleanupOpeningBookByMinDepth', { minDepth })
+      const removed = result && typeof result.removedTransitions === 'number' ? result.removedTransitions : 0
+      alert(`낮은 깊이 데이터 정리 완료: ${removed}개 전이 삭제`)
     },
     importStartPositions () {
       const raw = String(this.poolBulkText || '').trim()
