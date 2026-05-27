@@ -2919,6 +2919,12 @@ export const store = new Vuex.Store({
       let reachedDepth = 0
       let bestmove = ''
       let bestmoveAtMs = null
+      let lastInfoAtMs = null
+      let lastDepthIncreaseAtMs = null
+      let lastDepthValue = 0
+      let lastNodes = 0
+      let lastNps = 0
+      let depthProgressCount = 0
       let resolveReason = 'none'
       let stopReason = 'none'
       try {
@@ -2939,8 +2945,17 @@ export const store = new Vuex.Store({
         const linesByPv = new Map()
         infoHandler = (info) => {
           if (!info || typeof info !== 'object') return
+          const now = Date.now()
+          lastInfoAtMs = now
           const curDepth = Number(info.depth || 0)
-          if (curDepth > reachedDepth) reachedDepth = curDepth
+          if (curDepth > reachedDepth) {
+            reachedDepth = curDepth
+            lastDepthIncreaseAtMs = now
+            depthProgressCount += 1
+          }
+          if (curDepth > 0) lastDepthValue = curDepth
+          if (typeof info.nodes === 'number') lastNodes = info.nodes
+          if (typeof info.nps === 'number') lastNps = info.nps
           context.commit('openingGeneration', { currentDepth: curDepth })
           if (!info.pv) return
           const ucimove = String(info.pv).split(/\s/)[0]
@@ -2963,15 +2978,25 @@ export const store = new Vuex.Store({
         console.log('[opening-gen] engine cmd', `go depth ${depth}`)
         engine.send(`go depth ${depth}`)
         const startedAt = Date.now()
-        const deadlineMs = 12000
-        const bestmoveGraceMs = 1500
-        while (Date.now() - startedAt < 12000) {
+        lastInfoAtMs = startedAt
+        lastDepthIncreaseAtMs = startedAt
+        const hardTimeoutMs = Math.max(12000, depth * 1500)
+        const softBestmoveWindowMs = Math.max(2500, depth * 220)
+        const depthStallWindowMs = Math.max(2800, depth * 180)
+        const infoSilenceWindowMs = Math.max(2200, depth * 150)
+        while (Date.now() - startedAt < hardTimeoutMs) {
           if (context.state.openingGeneration.stopRequested) break
           const elapsedMs = Date.now() - startedAt
           const depthReached = reachedDepth >= depth
           const hasLines = linesByPv.size > 0
           const hasBestmove = Boolean(bestmove)
-          const bestmoveWaited = hasBestmove && bestmoveAtMs !== null && (Date.now() - bestmoveAtMs >= bestmoveGraceMs)
+          const sinceDepthIncreaseMs = lastDepthIncreaseAtMs === null ? elapsedMs : (Date.now() - lastDepthIncreaseAtMs)
+          const sinceInfoMs = lastInfoAtMs === null ? elapsedMs : (Date.now() - lastInfoAtMs)
+          const bestmoveAgeMs = bestmoveAtMs === null ? null : (Date.now() - bestmoveAtMs)
+          const depthStillIncreasing = sinceDepthIncreaseMs < depthStallWindowMs
+          const infoStillFlowing = sinceInfoMs < infoSilenceWindowMs
+          const nodesGrowing = typeof lastNodes === 'number' && lastNodes > 0
+          const searchingActive = depthStillIncreasing || infoStillFlowing || nodesGrowing
           if (depthReached && hasLines) {
             resolveReason = 'requested-depth-reached'
             console.log('[opening-gen] analyze resolve', { resolveReason, fen, requestedDepth: depth, deepestReportedDepth: reachedDepth, bestmove, elapsedMs, lines: linesByPv.size })
@@ -2981,18 +3006,58 @@ export const store = new Vuex.Store({
               trustedCount: 3
             }))
           }
-          if (hasBestmove && hasLines && bestmoveWaited) {
-            resolveReason = 'bestmove-before-depth-timeboxed'
-            console.warn('[opening-gen] analyze early resolve', { resolveReason, fen, requestedDepth: depth, deepestReportedDepth: reachedDepth, bestmove, elapsedMs, lines: linesByPv.size })
+          if (
+            hasBestmove &&
+            hasLines &&
+            bestmoveAgeMs !== null &&
+            bestmoveAgeMs >= softBestmoveWindowMs &&
+            !searchingActive
+          ) {
+            resolveReason = 'bestmove-before-depth-timeboxed-stalled'
+            console.warn('[opening-gen] analyze early resolve', {
+              resolveReason,
+              fen,
+              requestedDepth: depth,
+              deepestReportedDepth: reachedDepth,
+              bestmove,
+              elapsedMs,
+              lines: linesByPv.size,
+              lastDepthProgressAtMs: lastDepthIncreaseAtMs,
+              depthDelta: reachedDepth - lastDepthValue,
+              sinceDepthIncreaseMs,
+              sinceInfoMs,
+              nodes: lastNodes,
+              nps: lastNps,
+              depthStillIncreasing,
+              infoStillFlowing,
+              searchingActive
+            })
             return [...linesByPv.entries()].sort((a, b) => a[0] - b[0]).slice(0, topK).map(([, line], idx) => ({
               uci: line.ucimove,
               score: typeof line.cp === 'number' ? line.cp : (1000 - idx * 30),
               trustedCount: 3
             }))
           }
-          if (elapsedMs >= deadlineMs && hasLines) {
-            resolveReason = 'analysis-timeout-with-lines'
-            console.warn('[opening-gen] analyze timeout resolve', { resolveReason, fen, requestedDepth: depth, deepestReportedDepth: reachedDepth, bestmove, elapsedMs, lines: linesByPv.size })
+          if (elapsedMs >= hardTimeoutMs && hasLines) {
+            resolveReason = 'analysis-hard-timeout-with-lines'
+            console.warn('[opening-gen] analyze timeout resolve', {
+              resolveReason,
+              fen,
+              requestedDepth: depth,
+              deepestReportedDepth: reachedDepth,
+              bestmove,
+              elapsedMs,
+              lines: linesByPv.size,
+              lastDepthProgressAtMs: lastDepthIncreaseAtMs,
+              sinceDepthIncreaseMs,
+              sinceInfoMs,
+              nodes: lastNodes,
+              nps: lastNps,
+              depthStillIncreasing,
+              infoStillFlowing,
+              searchingActive,
+              hardTimeoutMs
+            })
             return [...linesByPv.entries()].sort((a, b) => a[0] - b[0]).slice(0, topK).map(([, line], idx) => ({
               uci: line.ucimove,
               score: typeof line.cp === 'number' ? line.cp : (1000 - idx * 30),
