@@ -2917,6 +2917,7 @@ export const store = new Vuex.Store({
       let infoHandler = null
       let bestMoveHandler = null
       let reachedDepth = 0
+      let bestmove = ''
       let bestmoveAtMs = null
       let resolveReason = 'none'
       let stopReason = 'none'
@@ -2936,7 +2937,6 @@ export const store = new Vuex.Store({
         const command = `position fen ${board.fen()}`
         console.log('[opening-gen] engine cmd', command)
         const linesByPv = new Map()
-        let bestmove = ''
         infoHandler = (info) => {
           if (!info || typeof info !== 'object') return
           const curDepth = Number(info.depth || 0)
