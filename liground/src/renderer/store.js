@@ -720,6 +720,8 @@ export const store = new Vuex.Store({
       running: false,
       stopRequested: false,
       analysisActive: false,
+      sessionId: 0,
+      optionSyncKey: '',
       completedGames: 0,
       completedMoves: 0,
       currentDepth: 0,
@@ -2168,6 +2170,7 @@ export const store = new Vuex.Store({
     },
     stopEngine (context, payload = {}) {
       const source = payload && payload.source ? payload.source : 'unknown'
+      console.log('[engine-stop] requested', { source, stack: (new Error('[trace] stopEngine caller')).stack })
       if (
         context.state.openingGeneration &&
         context.state.openingGeneration.running &&
@@ -2551,17 +2554,22 @@ export const store = new Vuex.Store({
       context.dispatch('setEngineOptions', options)
     },
     setEngineOptions (context, payload) {
+      const source = payload && payload.__source ? payload.__source : 'unknown'
+      const optionsPayload = { ...(payload || {}) }
+      delete optionsPayload.__source
       console.log('[engine-options] setEngineOptions:requested', {
         activeEngine: context.state.activeEngine,
-        payload
+        source,
+        payload: optionsPayload,
+        stack: (new Error('[trace] setEngineOptions caller')).stack
       })
       if (context.getters.active && !context.getters.PvE) {
-        context.dispatch('stopEngine')
+        context.dispatch('stopEngine', { source: `setEngineOptions:${source}` })
       } else if (context.getters.active && context.getters.PvE && !context.getters.turn) {
-        context.dispatch('stopEngine')
+        context.dispatch('stopEngine', { source: `setEngineOptions:${source}` })
       }
       context.dispatch('resetEngineData')
-      for (const [name, value] of Object.entries(payload)) {
+      for (const [name, value] of Object.entries(optionsPayload)) {
         checkOption(context.state.engineInfo.options, name, value)
         if (value !== undefined && value !== null) {
           if (!filteredSettings.includes(name)) {
@@ -2789,12 +2797,15 @@ export const store = new Vuex.Store({
       context.dispatch('position')
     },
     async runAutoOpeningGeneration (context) {
+      const nextSessionId = (context.state.openingGeneration.sessionId || 0) + 1
       console.log('[opening-gen] start requested', {
         variant: context.state.variant,
         fen: context.state.startFen,
         stopRequested: context.state.openingGeneration && context.state.openingGeneration.stopRequested
       })
       context.commit('openingGeneration', {
+        sessionId: nextSessionId,
+        optionSyncKey: '',
         running: true,
         stopRequested: false,
         analysisActive: false,
@@ -2910,7 +2921,13 @@ export const store = new Vuex.Store({
         console.log('[opening-gen] analyze start', { fen, variant, depth, topK })
         await context.dispatch('stopEngine', { source: 'opening-generation' })
         context.dispatch('resetEngineData')
-        await context.dispatch('setEngineOptions', { MultiPV: topK, UCI_Variant: variant })
+        const optionSyncKey = `${variant}|${topK}`
+        if (context.state.openingGeneration.optionSyncKey !== optionSyncKey) {
+          await context.dispatch('setEngineOptions', { MultiPV: topK, UCI_Variant: variant, __source: 'opening-generation' })
+          context.commit('openingGeneration', { optionSyncKey })
+        } else {
+          console.log('[opening-gen] option sync skipped (unchanged)', { optionSyncKey })
+        }
         context.commit('openingGeneration', { analysisActive: true })
         const board = new ffish.Board(variant, fen)
         const command = `position fen ${board.fen()}`
