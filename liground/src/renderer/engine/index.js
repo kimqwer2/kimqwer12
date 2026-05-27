@@ -126,6 +126,12 @@ export class Engine extends EventEmitter {
    * @param {string} command UCI command
    */
   send (command) {
+    try {
+      const line = typeof command === 'string' ? command.trim() : String(command)
+      if (line) {
+        console.log('[engine-cmd-trace]', line)
+      }
+    } catch (err) {}
     this._trackOptionFromCommand(command)
     if (typeof command === 'string' && command.trim().toLowerCase().startsWith('setoption ')) {
       // Keep option application deterministic for the eval/review worker:

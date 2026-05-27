@@ -97,6 +97,7 @@
               :key="`${cand.uci}-${idx}`"
               class="candidate-btn"
               @click="playCandidate(cand.uci)"
+              @contextmenu.prevent="removeOpeningCandidate(cand)"
             >
               {{ cand.uci }} · {{ Math.round(cand.share * 100) }}%
             </button>
@@ -307,6 +308,8 @@ export default {
           this.$store.dispatch('playSingleEngineMove')
         }
         if (event.ctrlKey && keyName.toLowerCase() === 'c') {
+          const selection = window.getSelection ? window.getSelection() : null
+          if (selection && selection.toString().trim().length > 0) return
           event.preventDefault()
           this.copySequence()
         }
@@ -524,6 +527,17 @@ export default {
       this.$store.dispatch('fen', this.$store.getters.board.fen())
       this.$store.dispatch('updateBoard')
       this.$store.dispatch('position')
+    },
+    removeOpeningCandidate (cand) {
+      if (!cand || !cand.uci) return
+      if (!confirm('이 수를 오프닝북에서 삭제하시겠습니까?\n[네] [아니요]')) return
+      const ok = this.$store.dispatch('deleteOpeningBookMove', {
+        parentFen: this.fen,
+        move: cand.uci
+      })
+      Promise.resolve(ok).then((done) => {
+        if (!done) alert('삭제할 수를 찾지 못했습니다.')
+      })
     },
     async tryAutoOpeningResponse () {
       if (!this.openingBook.enabled || !this.openingBook.autoResponse) return
