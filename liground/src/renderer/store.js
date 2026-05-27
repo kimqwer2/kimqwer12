@@ -6,7 +6,7 @@ import allEngines from './store/engines'
 import { createReviewRequest, emptyReviewState, emptyReviewSequenceState, REVIEW_MARKER_MODES, REVIEW_MODES } from '../shared/review/schema'
 import { analyzeReviewRequest } from '../shared/review/reviewService'
 import { buildMainlineFromMove } from '../shared/gameSequence'
-import { addSequenceToOpeningGraph, createOpeningGraph, openingCandidatesForFen } from '../shared/openingGraph'
+import { addSequenceToOpeningGraph, chooseWeightedCandidate, createOpeningGraph, openingCandidatesForFen } from '../shared/openingGraph'
 
 import moveAudio from './assets/audio/Move.mp3'
 import captureAudio from './assets/audio/Capture.mp3'
@@ -699,8 +699,20 @@ export const store = new Vuex.Store({
     openingBook: {
       enabled: true,
       showSuggestions: true,
-      autoResponse: false
+      autoResponse: false,
+      autoResponseTopK: 3,
+      autoResponseTemperature: 0.9,
+      autoGenerateEnabled: false,
+      autoGenerateIterations: 8,
+      autoGenerateMaxPlies: 16,
+      autoGenerateTopK: 3,
+      autoGenerateEarlyPlies: 10,
+      autoGenerateTemperature: 1.0
     },
+    openingStartPool: [
+      { name: '기본 시작', variant: 'janggi', fen: '' },
+      { name: '표준 체스 시작', variant: 'chess', fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1' }
+    ],
     analysisVisualization: {
       showMultiPvArrows: true,
       multiPvCount: 3,
@@ -2717,12 +2729,68 @@ export const store = new Vuex.Store({
       if (!cfg.enabled) return
       const candidates = context.getters.openingCandidates || []
       if (!candidates.length) return
-      const move = candidates[0].uci
+      const picked = chooseWeightedCandidate(candidates, {
+        topK: cfg.autoResponseTopK || 3,
+        temperature: cfg.autoResponseTemperature || 1
+      })
+      if (!picked || !picked.uci) return
+      const move = picked.uci
       const current = context.state.moves.find(m => m.fen === context.state.fen)
       context.commit('appendMoves', { move, prev: current })
       context.dispatch('fen', context.state.board.fen())
       context.dispatch('updateBoard')
       context.dispatch('position')
+    },
+    runAutoOpeningGeneration (context) {
+      const cfg = context.state.openingBook || {}
+      if (!cfg.autoGenerateEnabled) return { generatedGames: 0, generatedMoves: 0 }
+      const iterations = Math.max(1, Math.min(200, Number(cfg.autoGenerateIterations) || 8))
+      const maxPlies = Math.max(2, Math.min(80, Number(cfg.autoGenerateMaxPlies) || 16))
+      const earlyPlies = Math.max(2, Math.min(maxPlies, Number(cfg.autoGenerateEarlyPlies) || 10))
+      const pool = Array.isArray(context.state.openingStartPool) && context.state.openingStartPool.length ? context.state.openingStartPool : [{ variant: context.state.variant, fen: context.state.startFen || '' }]
+      const graph = context.state.openingGraph || createOpeningGraph()
+      let generatedMoves = 0
+      for (let g = 0; g < iterations; g++) {
+        const start = pool[Math.floor(Math.random() * pool.length)]
+        let board
+        try {
+          board = start.fen ? new ffish.Board(start.variant || context.state.variant, start.fen) : new ffish.Board(start.variant || context.state.variant)
+        } catch (err) {
+          continue
+        }
+        const positions = [board.fen()]
+        const moves = []
+        for (let ply = 0; ply < maxPlies; ply++) {
+          const candidates = openingCandidatesForFen(graph, board.fen(), Math.max(2, cfg.autoGenerateTopK || 3))
+          const inExploration = ply < earlyPlies
+          let picked = null
+          if (candidates.length) {
+            picked = chooseWeightedCandidate(candidates, {
+              topK: inExploration ? (cfg.autoGenerateTopK || 3) : 1,
+              temperature: inExploration ? (cfg.autoGenerateTemperature || 1) : 0.6
+            })
+          }
+          if (!picked || !picked.uci) {
+            const legal = String(board.legalMoves() || '').split(/\s+/).filter(Boolean)
+            if (!legal.length) break
+            picked = { uci: legal[Math.floor(Math.random() * legal.length)] }
+          }
+          try {
+            board.push(picked.uci)
+            moves.push(picked.uci)
+            positions.push(board.fen())
+            generatedMoves += 1
+          } catch (err) {
+            break
+          }
+        }
+        if (moves.length) {
+          addSequenceToOpeningGraph(graph, { moves, positions, source: 'exploration' })
+        }
+      }
+      context.commit('openingGraph', graph)
+      context.dispatch('persistOpeningBook')
+      return { generatedGames: iterations, generatedMoves }
     },
     persistOpeningBook (context) {
       try {

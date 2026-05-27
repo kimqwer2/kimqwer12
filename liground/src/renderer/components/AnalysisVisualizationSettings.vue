@@ -84,8 +84,24 @@
       <label><input v-model="openingBookLocal.enabled" type="checkbox" @change="saveOpeningBook"> 오프닝북 사용</label>
       <label><input v-model="openingBookLocal.showSuggestions" type="checkbox" @change="saveOpeningBook"> 추천 수 표시</label>
       <label><input v-model="openingBookLocal.autoResponse" type="checkbox" @change="saveOpeningBook"> 자동 응수 사용</label>
+      <label>자동 응수 다양성
+        <select v-model.number="openingBookLocal.autoResponseTopK" @change="saveOpeningBook">
+          <option :value="1">안정(상위 1수)</option>
+          <option :value="2">균형(상위 2수)</option>
+          <option :value="3">다양(상위 3수)</option>
+          <option :value="5">확장(상위 5수)</option>
+        </select>
+      </label>
+      <label>자동 응수 온도 <input v-model.number="openingBookLocal.autoResponseTemperature" min="0.4" max="1.6" step="0.1" type="number" @change="saveOpeningBook"></label>
+      <label><input v-model="openingBookLocal.autoGenerateEnabled" type="checkbox" @change="saveOpeningBook"> 자동 오프닝 생성 사용</label>
+      <label>생성 판 수 <input v-model.number="openingBookLocal.autoGenerateIterations" min="1" max="200" type="number" @change="saveOpeningBook"></label>
+      <label>판당 최대 수(플라이) <input v-model.number="openingBookLocal.autoGenerateMaxPlies" min="2" max="80" type="number" @change="saveOpeningBook"></label>
+      <label>초반 탐색 구간 <input v-model.number="openingBookLocal.autoGenerateEarlyPlies" min="2" max="40" type="number" @change="saveOpeningBook"></label>
+      <label>초반 탐색 후보 수 <input v-model.number="openingBookLocal.autoGenerateTopK" min="2" max="8" type="number" @change="saveOpeningBook"></label>
+      <label>초반 탐색 온도 <input v-model.number="openingBookLocal.autoGenerateTemperature" min="0.6" max="1.8" step="0.1" type="number" @change="saveOpeningBook"></label>
       <small>오프닝북 데이터는 앱의 로컬 저장소에 자동 보관됩니다. (openingBookGraph / openingBookConfig)</small>
       <div class="book-actions">
+        <button type="button" @click="runAutoOpeningGeneration">자동 오프닝 생성 실행</button>
         <button type="button" @click="exportOpeningBook">오프닝북 백업 복사</button>
         <button type="button" @click="clearOpeningBook">오프닝북 초기화</button>
       </div>
@@ -258,6 +274,13 @@ export default {
       if (!confirm('오프닝북 데이터를 초기화할까요?')) return
       this.$store.dispatch('clearOpeningBookStorage')
       alert('오프닝북 데이터를 초기화했습니다.')
+    },
+    async runAutoOpeningGeneration () {
+      this.saveOpeningBook()
+      const result = await this.$store.dispatch('runAutoOpeningGeneration')
+      const games = result && result.generatedGames ? result.generatedGames : 0
+      const moves = result && result.generatedMoves ? result.generatedMoves : 0
+      alert(`자동 생성 완료: ${games}판, ${moves}수 누적`)
     }
   }
 }
