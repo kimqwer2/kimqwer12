@@ -307,6 +307,8 @@ export default {
           this.$store.dispatch('playSingleEngineMove')
         }
         if (event.ctrlKey && keyName.toLowerCase() === 'c') {
+          const selection = window.getSelection ? window.getSelection() : null
+          if (selection && selection.toString().trim().length > 0) return
           event.preventDefault()
           this.copySequence()
         }

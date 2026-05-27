@@ -2833,13 +2833,13 @@ export const store = new Vuex.Store({
             positions.push(board.fen())
             generatedMoves += 1
             context.commit('openingGeneration', { currentMove: picked.uci })
-            context.dispatch('commitGeneratedTransition', { fromFen: beforeFen, toFen: board.fen(), move: picked.uci })
+            const committed = await context.dispatch('commitGeneratedTransition', { fromFen: beforeFen, toFen: board.fen(), move: picked.uci })
+            if (committed) {
+              context.commit('openingGeneration', { savedBranches: context.state.openingGeneration.savedBranches + 1 })
+            }
           } catch (err) {
             break
           }
-        }
-        if (moves.length) {
-          context.commit('openingGeneration', { savedBranches: context.state.openingGeneration.savedBranches + 1 })
         }
         g += 1
         context.commit('openingGeneration', { completedGames: g, completedMoves: generatedMoves })
@@ -2855,20 +2855,24 @@ export const store = new Vuex.Store({
       const graph = normalizeOpeningGraph(context.state.openingGraph || createOpeningGraph())
       const positions = [payload.fromFen, payload.toFen].filter(Boolean)
       const moves = [payload.move].filter(Boolean)
-      if (!positions.length || !moves.length) return
+      if (!positions.length || !moves.length) return false
       addSequenceToOpeningGraph(graph, { moves, positions, source: 'exploration' })
       context.commit('openingGraph', graph)
       context.dispatch('persistOpeningBook')
+      return true
     },
     async analyzeOpeningGenerationPosition (context, payload) {
       const depth = Math.max(4, Number(payload && payload.depth) || 12)
       const topK = Math.max(2, Number(payload && payload.topK) || 3)
       try {
         await context.dispatch('stopEngine')
+        context.dispatch('resetEngineData')
         await context.dispatch('setEngineOptions', { MultiPV: topK, UCI_Variant: payload.variant || context.state.variant })
         const board = new ffish.Board(payload.variant || context.state.variant, payload.fen)
         const command = `position fen ${board.fen()}`
         engine.send(command)
+        context.commit('active', true)
+        context.commit('setEngineClock')
         engine.send(`go depth ${depth}`)
         const startedAt = Date.now()
         while (Date.now() - startedAt < 12000) {
