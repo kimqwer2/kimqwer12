@@ -731,6 +731,11 @@ export const store = new Vuex.Store({
       currentStart: '',
       savedBranches: 0
     },
+    openingBookPersist: {
+      queued: false,
+      pendingCommits: 0,
+      lastFlushedAt: 0
+    },
     openingStartPool: [],
     analysisVisualization: {
       showMultiPvArrows: true,
@@ -1564,6 +1569,49 @@ export const store = new Vuex.Store({
     }
   },
   actions: { // async
+    scheduleOpeningBookPersist (context, payload = {}) {
+      const immediate = payload.immediate === true
+      const state = context.state.openingBookPersist || { queued: false, pendingCommits: 0, lastFlushedAt: 0 }
+      state.pendingCommits = (state.pendingCommits || 0) + 1
+      context.state.openingBookPersist = state
+      if (immediate) {
+        return context.dispatch('persistOpeningBookFlush')
+      }
+      if (state.queued) return
+      state.queued = true
+      const now = Date.now()
+      const elapsedSinceFlush = state.lastFlushedAt ? (now - state.lastFlushedAt) : null
+      const graph = normalizeOpeningGraph(context.state.openingGraph || createOpeningGraph())
+      console.log('[opening-book] persist queued', {
+        queuedCommitCount: state.pendingCommits,
+        graphSizeEstimate: Object.keys(graph.transitions || {}).length,
+        elapsedSinceLastFlushMs: elapsedSinceFlush
+      })
+      const delayMs = (context.state.openingGeneration && context.state.openingGeneration.running) ? 1500 : 400
+      setTimeout(() => context.dispatch('persistOpeningBookFlush'), delayMs)
+    },
+    persistOpeningBookFlush (context) {
+      const state = context.state.openingBookPersist || { queued: false, pendingCommits: 0, lastFlushedAt: 0 }
+      if (!state.queued && !state.pendingCommits) return
+      state.queued = false
+      const now = Date.now()
+      const elapsedSinceFlush = state.lastFlushedAt ? (now - state.lastFlushedAt) : null
+      const queuedCommitCount = state.pendingCommits || 0
+      state.pendingCommits = 0
+      state.lastFlushedAt = now
+      context.state.openingBookPersist = state
+      try {
+        const graph = normalizeOpeningGraph(context.state.openingGraph || createOpeningGraph())
+        localStorage.setItem('openingBookGraph', JSON.stringify(graph))
+        localStorage.setItem('openingBookConfig', JSON.stringify(context.state.openingBook || {}))
+        localStorage.setItem('openingStartPool', JSON.stringify(context.state.openingStartPool || []))
+        console.log('[opening-book] persist flushed', {
+          queuedCommitCount,
+          graphSizeEstimate: Object.keys(graph.transitions || {}).length,
+          elapsedSinceLastFlushMs: elapsedSinceFlush
+        })
+      } catch (err) {}
+    },
     movesChangeDummy (context, payload) {
       context.commit('movesChangeDummy', payload)
     },
@@ -2742,11 +2790,11 @@ export const store = new Vuex.Store({
         if (legal) addSequenceToOpeningGraph(graph, { moves, positions })
       }
       context.commit('openingGraph', graph)
-      context.dispatch('persistOpeningBook')
+      context.dispatch('scheduleOpeningBookPersist', { immediate: true })
     },
     openingBook (context, payload) {
       context.commit('openingBook', payload)
-      context.dispatch('persistOpeningBook')
+      context.dispatch('scheduleOpeningBookPersist', { immediate: true })
     },
     openingStartPool (context, payload) {
       const list = Array.isArray(payload) ? payload : []
@@ -2758,7 +2806,7 @@ export const store = new Vuex.Store({
         }))
         .filter(item => item.variant === context.state.variant)
       context.state.openingStartPool = normalized
-      context.dispatch('persistOpeningBook')
+      context.dispatch('scheduleOpeningBookPersist', { immediate: true })
     },
     addCurrentGameToOpeningBook (context) {
       const graph = normalizeOpeningGraph(context.state.openingGraph || createOpeningGraph())
@@ -2780,7 +2828,7 @@ export const store = new Vuex.Store({
       }
       addSequenceToOpeningGraph(graph, { moves, positions, source: 'manual' })
       context.commit('openingGraph', graph)
-      context.dispatch('persistOpeningBook')
+      context.dispatch('scheduleOpeningBookPersist', { immediate: true })
     },
     playOpeningBookMove (context) {
       const cfg = context.state.openingBook || {}
@@ -2926,6 +2974,7 @@ export const store = new Vuex.Store({
       }
       console.log('[opening-gen] finished', { generatedGames: g, generatedMoves, stopRequested: context.state.openingGeneration.stopRequested })
       context.commit('openingGeneration', { running: false, stopRequested: false, currentMove: '', currentDepth: 0, currentStart: '' })
+      await context.dispatch('persistOpeningBookFlush')
       return { generatedGames: g, generatedMoves }
     },
     stopAutoOpeningGeneration (context) {
@@ -2943,10 +2992,11 @@ export const store = new Vuex.Store({
         moveMeta: [{ depth: payload && payload.depth, cp: payload && payload.cp }]
       })
       context.commit('openingGraph', graph)
-      context.dispatch('persistOpeningBook')
+      context.dispatch('scheduleOpeningBookPersist', { immediate: true })
       return true
     },
     async analyzeOpeningGenerationPosition (context, payload) {
+      const localSessionId = context.state.openingGeneration && context.state.openingGeneration.sessionId
       const depth = Math.max(4, Number(payload && payload.depth) || 12)
       const topK = Math.max(1, Number(payload && payload.topK) || 3)
       const variant = payload.variant || context.state.variant
@@ -2981,6 +3031,7 @@ export const store = new Vuex.Store({
         console.log('[opening-gen] engine cmd', command)
         const linesByPv = new Map()
         infoHandler = (info) => {
+          if (!context.state.openingGeneration || context.state.openingGeneration.sessionId !== localSessionId) return
           if (!info || typeof info !== 'object') return
           const now = Date.now()
           lastInfoAtMs = now
@@ -3004,6 +3055,7 @@ export const store = new Vuex.Store({
           })
         }
         bestMoveHandler = (move) => {
+          if (!context.state.openingGeneration || context.state.openingGeneration.sessionId !== localSessionId) return
           bestmove = String(move || '')
           bestmoveAtMs = Date.now()
         }
@@ -3022,6 +3074,11 @@ export const store = new Vuex.Store({
         const depthStallWindowMs = Math.max(2800, depth * 180)
         const infoSilenceWindowMs = Math.max(2200, depth * 150)
         while (Date.now() - startedAt < hardTimeoutMs) {
+          if (!context.state.openingGeneration || context.state.openingGeneration.sessionId !== localSessionId) {
+            resolveReason = 'stale-session-ignored'
+            console.warn('[opening-gen] stale session ignored', { localSessionId, currentSessionId: context.state.openingGeneration && context.state.openingGeneration.sessionId, fen })
+            break
+          }
           if (context.state.openingGeneration.stopRequested) break
           const elapsedMs = Date.now() - startedAt
           const depthReached = reachedDepth >= depth
@@ -3110,7 +3167,11 @@ export const store = new Vuex.Store({
       } finally {
         if (infoHandler) engine.off('info', infoHandler)
         if (bestMoveHandler) engine.off('bestmove', bestMoveHandler)
-        context.commit('openingGeneration', { analysisActive: false })
+        if (context.state.openingGeneration && context.state.openingGeneration.sessionId === localSessionId) {
+          context.commit('openingGeneration', { analysisActive: false })
+        } else {
+          console.warn('[opening-gen] stale session ignored', { localSessionId, currentSessionId: context.state.openingGeneration && context.state.openingGeneration.sessionId, phase: 'cleanup' })
+        }
         stopReason = resolveReason === 'requested-depth-reached' ? 'normal-final-stop' : 'forced-cleanup-stop'
         console.log('[opening-gen] analyze cleanup', {
           fen,
@@ -3127,11 +3188,7 @@ export const store = new Vuex.Store({
       return []
     },
     persistOpeningBook (context) {
-      try {
-        localStorage.setItem('openingBookGraph', JSON.stringify(normalizeOpeningGraph(context.state.openingGraph || createOpeningGraph())))
-        localStorage.setItem('openingBookConfig', JSON.stringify(context.state.openingBook || {}))
-        localStorage.setItem('openingStartPool', JSON.stringify(context.state.openingStartPool || []))
-      } catch (err) {}
+      context.dispatch('scheduleOpeningBookPersist', { immediate: true })
     },
     loadOpeningBookFromStorage (context) {
       try {
@@ -3153,7 +3210,7 @@ export const store = new Vuex.Store({
     clearOpeningBookStorage (context) {
       context.commit('openingGraph', createOpeningGraph())
       context.state.openingStartPool = []
-      context.dispatch('persistOpeningBook')
+      context.dispatch('scheduleOpeningBookPersist', { immediate: true })
     },
     deleteOpeningBookMove (context, payload) {
       const parentFen = String((payload && payload.parentFen) || '').trim()
@@ -3167,6 +3224,15 @@ export const store = new Vuex.Store({
       const nextCount = prevCount - 1
       if (nextCount > 0) node.next[move] = nextCount
       else delete node.next[move]
+      if (node.weightNext && node.weightNext[move]) {
+        if (nextCount > 0) {
+          const meta = graph.transitionMeta && graph.transitionMeta[`${epd}|${move}`]
+          const qualityWeight = meta && Number.isFinite(Number(meta.qualityWeight)) ? Number(meta.qualityWeight) : 1
+          node.weightNext[move] = Math.max(0.0001, nextCount * qualityWeight)
+        } else {
+          delete node.weightNext[move]
+        }
+      }
       if (node.trustedNext && node.trustedNext[move]) {
         const v = Number(node.trustedNext[move] || 0) - 1
         if (v > 0) node.trustedNext[move] = v
@@ -3191,7 +3257,7 @@ export const store = new Vuex.Store({
       }
       graph.moves = Math.max(0, Number(graph.moves || 0) - 1)
       context.commit('openingGraph', normalizeOpeningGraph(graph))
-      context.dispatch('persistOpeningBook')
+      context.dispatch('scheduleOpeningBookPersist', { immediate: true })
       console.log('[opening-book] move deleted', { parentFen, move, affectedNodeCount: prevCount })
       return true
     },
@@ -3233,9 +3299,9 @@ export const store = new Vuex.Store({
         delete graph.positions[epd]
         removedNodes += 1
       }
-      graph.moves = Math.max(0, Number(graph.moves || 0) - removedTransitions)
+      graph.moves = Object.values(graph.transitions || {}).reduce((sum, v) => sum + Math.max(0, Number(v) || 0), 0)
       context.commit('openingGraph', normalizeOpeningGraph(graph))
-      context.dispatch('persistOpeningBook')
+      context.dispatch('scheduleOpeningBookPersist', { immediate: true })
       console.log('[opening-book] depth cleanup', { thresholdDepth: minDepth, removedTransitionCount: removedTransitions, removedNodeCount: removedNodes, preservedManualEntriesCount: preservedManual })
       return { removedTransitions, removedNodes, preservedManual, minDepth }
     },
@@ -4062,7 +4128,7 @@ export const store = new Vuex.Store({
     },
     openingCandidates (state) {
       if (!state.openingBook || !state.openingBook.enabled) return []
-      return openingCandidatesForFen(normalizeOpeningGraph(state.openingGraph), state.fen, 6)
+      return openingCandidatesForFen(state.openingGraph, state.fen, 6)
     },
     openingBook (state) {
       return state.openingBook
