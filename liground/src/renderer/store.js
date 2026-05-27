@@ -2917,6 +2917,9 @@ export const store = new Vuex.Store({
       let infoHandler = null
       let bestMoveHandler = null
       let reachedDepth = 0
+      let bestmoveAtMs = null
+      let resolveReason = 'none'
+      let stopReason = 'none'
       try {
         console.log('[opening-gen] analyze start', { fen, variant, depth, topK })
         await context.dispatch('stopEngine', { source: 'opening-generation' })
@@ -2950,6 +2953,7 @@ export const store = new Vuex.Store({
         }
         bestMoveHandler = (move) => {
           bestmove = String(move || '')
+          bestmoveAtMs = Date.now()
         }
         engine.on('info', infoHandler)
         engine.on('bestmove', bestMoveHandler)
@@ -2959,11 +2963,36 @@ export const store = new Vuex.Store({
         console.log('[opening-gen] engine cmd', `go depth ${depth}`)
         engine.send(`go depth ${depth}`)
         const startedAt = Date.now()
+        const deadlineMs = 12000
+        const bestmoveGraceMs = 1500
         while (Date.now() - startedAt < 12000) {
           if (context.state.openingGeneration.stopRequested) break
-          if ((bestmove && linesByPv.size) || (reachedDepth >= depth && linesByPv.size)) {
-            await context.dispatch('stopEngine', { source: 'opening-generation' })
-            console.log('[opening-gen] analyze resolve', { fen, configuredDepth: depth, goDepth: depth, deepestReportedDepth: reachedDepth, bestmove, lines: linesByPv.size })
+          const elapsedMs = Date.now() - startedAt
+          const depthReached = reachedDepth >= depth
+          const hasLines = linesByPv.size > 0
+          const hasBestmove = Boolean(bestmove)
+          const bestmoveWaited = hasBestmove && bestmoveAtMs !== null && (Date.now() - bestmoveAtMs >= bestmoveGraceMs)
+          if (depthReached && hasLines) {
+            resolveReason = 'requested-depth-reached'
+            console.log('[opening-gen] analyze resolve', { resolveReason, fen, requestedDepth: depth, deepestReportedDepth: reachedDepth, bestmove, elapsedMs, lines: linesByPv.size })
+            return [...linesByPv.entries()].sort((a, b) => a[0] - b[0]).slice(0, topK).map(([, line], idx) => ({
+              uci: line.ucimove,
+              score: typeof line.cp === 'number' ? line.cp : (1000 - idx * 30),
+              trustedCount: 3
+            }))
+          }
+          if (hasBestmove && hasLines && bestmoveWaited) {
+            resolveReason = 'bestmove-before-depth-timeboxed'
+            console.warn('[opening-gen] analyze early resolve', { resolveReason, fen, requestedDepth: depth, deepestReportedDepth: reachedDepth, bestmove, elapsedMs, lines: linesByPv.size })
+            return [...linesByPv.entries()].sort((a, b) => a[0] - b[0]).slice(0, topK).map(([, line], idx) => ({
+              uci: line.ucimove,
+              score: typeof line.cp === 'number' ? line.cp : (1000 - idx * 30),
+              trustedCount: 3
+            }))
+          }
+          if (elapsedMs >= deadlineMs && hasLines) {
+            resolveReason = 'analysis-timeout-with-lines'
+            console.warn('[opening-gen] analyze timeout resolve', { resolveReason, fen, requestedDepth: depth, deepestReportedDepth: reachedDepth, bestmove, elapsedMs, lines: linesByPv.size })
             return [...linesByPv.entries()].sort((a, b) => a[0] - b[0]).slice(0, topK).map(([, line], idx) => ({
               uci: line.ucimove,
               score: typeof line.cp === 'number' ? line.cp : (1000 - idx * 30),
@@ -2972,6 +3001,7 @@ export const store = new Vuex.Store({
           }
           await new Promise(resolve => setTimeout(resolve, 40))
         }
+        resolveReason = context.state.openingGeneration.stopRequested ? 'stop-requested' : 'loop-timeout-no-lines'
       } catch (err) {
         console.warn('[opening-gen] analyze error', { fen, error: err && err.message })
         return []
@@ -2979,7 +3009,17 @@ export const store = new Vuex.Store({
         if (infoHandler) engine.off('info', infoHandler)
         if (bestMoveHandler) engine.off('bestmove', bestMoveHandler)
         context.commit('openingGeneration', { analysisActive: false })
-        console.log('[opening-gen] analyze cleanup', { fen, deepestReportedDepth: typeof reachedDepth === 'number' ? reachedDepth : null })
+        stopReason = resolveReason === 'requested-depth-reached' ? 'normal-final-stop' : 'forced-cleanup-stop'
+        console.log('[opening-gen] analyze cleanup', {
+          fen,
+          resolveReason,
+          stopReason,
+          requestedDepth: depth,
+          deepestReportedDepth: typeof reachedDepth === 'number' ? reachedDepth : null,
+          resolvedBeforeRequestedDepth: reachedDepth < depth,
+          bestmove,
+          bestmoveAtMs
+        })
         await context.dispatch('stopEngine', { source: 'opening-generation' })
       }
       return []
