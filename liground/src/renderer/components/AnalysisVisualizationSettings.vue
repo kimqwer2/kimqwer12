@@ -92,13 +92,26 @@
           <option :value="5">확장(상위 5수)</option>
         </select>
       </label>
-      <label>자동 응수 온도 <input v-model.number="openingBookLocal.autoResponseTemperature" min="0.4" max="1.6" step="0.1" type="number" @change="saveOpeningBook"></label>
+      <label>자동 응수 다양성 <input v-model.number="openingBookLocal.autoResponseTemperature" min="0.4" max="1.6" step="0.1" type="number" @change="saveOpeningBook"></label>
       <label><input v-model="openingBookLocal.autoGenerateEnabled" type="checkbox" @change="saveOpeningBook"> 자동 오프닝 생성 사용</label>
-      <label>생성 판 수 <input v-model.number="openingBookLocal.autoGenerateIterations" min="1" max="200" type="number" @change="saveOpeningBook"></label>
-      <label>판당 최대 수(플라이) <input v-model.number="openingBookLocal.autoGenerateMaxPlies" min="2" max="80" type="number" @change="saveOpeningBook"></label>
-      <label>초반 탐색 구간 <input v-model.number="openingBookLocal.autoGenerateEarlyPlies" min="2" max="40" type="number" @change="saveOpeningBook"></label>
-      <label>초반 탐색 후보 수 <input v-model.number="openingBookLocal.autoGenerateTopK" min="2" max="8" type="number" @change="saveOpeningBook"></label>
-      <label>초반 탐색 온도 <input v-model.number="openingBookLocal.autoGenerateTemperature" min="0.6" max="1.8" step="0.1" type="number" @change="saveOpeningBook"></label>
+      <label>자동 생성 대국 수 <input v-model.number="openingBookLocal.autoGenerateIterations" min="1" max="200" type="number" @change="saveOpeningBook"></label>
+      <label>자동 진행 최대 수 <input v-model.number="openingBookLocal.autoGenerateMaxPlies" min="2" max="80" type="number" @change="saveOpeningBook"></label>
+      <label>초반 랜덤 진행 수 <input v-model.number="openingBookLocal.autoGenerateEarlyPlies" min="2" max="40" type="number" @change="saveOpeningBook"></label>
+      <label>초반 랜덤 후보 범위 <input v-model.number="openingBookLocal.autoGenerateTopK" min="2" max="8" type="number" @change="saveOpeningBook"></label>
+      <label>초반 변화 다양성 <input v-model.number="openingBookLocal.autoGenerateTemperature" min="0.6" max="1.8" step="0.1" type="number" @change="saveOpeningBook"></label>
+      <label>시작 포지션 이름 <input v-model="poolDraft.name" type="text" placeholder="예: 마상상마"></label>
+      <label>시작 포지션 수순(FEN) <input v-model="poolDraft.fen" type="text" placeholder="현재 변형 FEN"></label>
+      <div class="book-actions">
+        <button type="button" @click="addStartPosition">시작 포지션 추가</button>
+        <button type="button" @click="importStartPositions">여러 포지션 불러오기</button>
+      </div>
+      <small>입력 형식: 한 줄에 하나씩 `이름|FEN` 또는 `FEN`</small>
+      <div v-if="startPool.length" class="start-pool-list">
+        <div v-for="(item, idx) in startPool" :key="`${item.name}-${idx}`" class="start-pool-item">
+          <span>{{ item.name }}</span>
+          <button type="button" @click="removeStartPosition(idx)">삭제</button>
+        </div>
+      </div>
       <small>오프닝북 데이터는 앱의 로컬 저장소에 자동 보관됩니다. (openingBookGraph / openingBookConfig)</small>
       <div class="book-actions">
         <button type="button" @click="runAutoOpeningGeneration">자동 오프닝 생성 실행</button>
@@ -157,11 +170,13 @@ import { copyTextReliable } from '../../shared/clipboard'
 
 export default {
   name: 'AnalysisVisualizationSettings',
-  data: () => ({ local: {}, depthMode: '12', targetDepth: 'infinite', openingBookLocal: {} }),
+  data: () => ({ local: {}, depthMode: '12', targetDepth: 'infinite', openingBookLocal: {}, poolDraft: { name: '', fen: '' } }),
   computed: {
     cfg () { return this.$store.getters.analysisVisualization },
     deepAnalysis () { return this.$store.getters.deepAnalysis },
-    openingBook () { return this.$store.getters.openingBook }
+    openingBook () { return this.$store.getters.openingBook },
+    startPool () { return this.$store.getters.openingStartPool || [] },
+    variant () { return this.$store.getters.variant }
   },
   watch: {
     cfg: {
@@ -281,6 +296,34 @@ export default {
       const games = result && result.generatedGames ? result.generatedGames : 0
       const moves = result && result.generatedMoves ? result.generatedMoves : 0
       alert(`자동 생성 완료: ${games}판, ${moves}수 누적`)
+    },
+    addStartPosition () {
+      const fen = String(this.poolDraft.fen || '').trim()
+      if (!fen) {
+        alert('시작 포지션 수순(FEN)을 입력해 주세요.')
+        return
+      }
+      const name = String(this.poolDraft.name || '').trim() || `포지션 ${this.startPool.length + 1}`
+      const next = [...this.startPool, { name, variant: this.variant, fen }]
+      this.$store.dispatch('openingStartPool', next)
+      this.poolDraft = { name: '', fen: '' }
+    },
+    importStartPositions () {
+      const raw = prompt('여러 시작 포지션을 붙여넣어 주세요.\n형식: 이름|FEN 또는 FEN (한 줄 하나)')
+      if (!raw) return
+      const rows = raw.split(/\r?\n/).map(v => v.trim()).filter(Boolean)
+      const parsed = rows.map((row, idx) => {
+        const bar = row.indexOf('|')
+        if (bar > 0) return { name: row.slice(0, bar).trim() || `포지션 ${idx + 1}`, variant: this.variant, fen: row.slice(bar + 1).trim() }
+        return { name: `포지션 ${idx + 1}`, variant: this.variant, fen: row }
+      }).filter(item => item.fen)
+      if (!parsed.length) return
+      this.$store.dispatch('openingStartPool', [...this.startPool, ...parsed])
+    },
+    removeStartPosition (idx) {
+      const next = this.startPool.slice()
+      next.splice(idx, 1)
+      this.$store.dispatch('openingStartPool', next)
     }
   }
 }
@@ -311,4 +354,6 @@ small { color: var(--second-text-color, #9aa0a6); overflow-wrap: anywhere; }
 .volatile-stable { border-left: 4px solid #2f855a; }
 .volatile-medium { border-left: 4px solid #f2994a; }
 .volatile-high { border-left: 4px solid #d7263d; }
+.start-pool-list { display: flex; flex-direction: column; gap: 4px; max-height: 140px; overflow: auto; }
+.start-pool-item { display: flex; justify-content: space-between; gap: 8px; align-items: center; background: rgba(127,127,127,0.1); padding: 4px 6px; border-radius: 4px; }
 </style>

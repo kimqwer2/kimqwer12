@@ -6,7 +6,7 @@ import allEngines from './store/engines'
 import { createReviewRequest, emptyReviewState, emptyReviewSequenceState, REVIEW_MARKER_MODES, REVIEW_MODES } from '../shared/review/schema'
 import { analyzeReviewRequest } from '../shared/review/reviewService'
 import { buildMainlineFromMove } from '../shared/gameSequence'
-import { addSequenceToOpeningGraph, chooseWeightedCandidate, createOpeningGraph, openingCandidatesForFen } from '../shared/openingGraph'
+import { addSequenceToOpeningGraph, chooseWeightedCandidate, createOpeningGraph, normalizeOpeningGraph, openingCandidatesForFen } from '../shared/openingGraph'
 
 import moveAudio from './assets/audio/Move.mp3'
 import captureAudio from './assets/audio/Capture.mp3'
@@ -709,10 +709,7 @@ export const store = new Vuex.Store({
       autoGenerateEarlyPlies: 10,
       autoGenerateTemperature: 1.0
     },
-    openingStartPool: [
-      { name: '기본 시작', variant: 'janggi', fen: '' },
-      { name: '표준 체스 시작', variant: 'chess', fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1' }
-    ],
+    openingStartPool: [],
     analysisVisualization: {
       showMultiPvArrows: true,
       multiPvCount: 3,
@@ -2702,8 +2699,20 @@ export const store = new Vuex.Store({
       context.commit('openingBook', payload)
       context.dispatch('persistOpeningBook')
     },
+    openingStartPool (context, payload) {
+      const list = Array.isArray(payload) ? payload : []
+      const normalized = list
+        .map(item => ({
+          name: String((item && item.name) || '시작 포지션'),
+          variant: String((item && item.variant) || context.state.variant),
+          fen: String((item && item.fen) || '').trim()
+        }))
+        .filter(item => item.variant === context.state.variant)
+      context.state.openingStartPool = normalized
+      context.dispatch('persistOpeningBook')
+    },
     addCurrentGameToOpeningBook (context) {
-      const graph = { ...(context.state.openingGraph || createOpeningGraph()) }
+      const graph = normalizeOpeningGraph(context.state.openingGraph || createOpeningGraph())
       const moves = context.getters.currentMainlineUci
       let board
       try {
@@ -2747,8 +2756,11 @@ export const store = new Vuex.Store({
       const iterations = Math.max(1, Math.min(200, Number(cfg.autoGenerateIterations) || 8))
       const maxPlies = Math.max(2, Math.min(80, Number(cfg.autoGenerateMaxPlies) || 16))
       const earlyPlies = Math.max(2, Math.min(maxPlies, Number(cfg.autoGenerateEarlyPlies) || 10))
-      const pool = Array.isArray(context.state.openingStartPool) && context.state.openingStartPool.length ? context.state.openingStartPool : [{ variant: context.state.variant, fen: context.state.startFen || '' }]
-      const graph = context.state.openingGraph || createOpeningGraph()
+      const poolRaw = Array.isArray(context.state.openingStartPool) && context.state.openingStartPool.length
+        ? context.state.openingStartPool
+        : [{ variant: context.state.variant, fen: context.state.startFen || '' }]
+      const pool = poolRaw.filter(item => item && item.variant === context.state.variant)
+      const graph = normalizeOpeningGraph(context.state.openingGraph || createOpeningGraph())
       let generatedMoves = 0
       for (let g = 0; g < iterations; g++) {
         const start = pool[Math.floor(Math.random() * pool.length)]
@@ -2794,23 +2806,44 @@ export const store = new Vuex.Store({
     },
     persistOpeningBook (context) {
       try {
-        localStorage.setItem('openingBookGraph', JSON.stringify(context.state.openingGraph || createOpeningGraph()))
+        localStorage.setItem('openingBookGraph', JSON.stringify(normalizeOpeningGraph(context.state.openingGraph || createOpeningGraph())))
         localStorage.setItem('openingBookConfig', JSON.stringify(context.state.openingBook || {}))
+        localStorage.setItem('openingStartPool', JSON.stringify(context.state.openingStartPool || []))
       } catch (err) {}
     },
     loadOpeningBookFromStorage (context) {
       try {
         const graphRaw = localStorage.getItem('openingBookGraph')
-        if (graphRaw) context.commit('openingGraph', JSON.parse(graphRaw))
+        if (graphRaw) context.commit('openingGraph', normalizeOpeningGraph(JSON.parse(graphRaw)))
       } catch (err) {}
       try {
         const configRaw = localStorage.getItem('openingBookConfig')
         if (configRaw) context.commit('openingBook', JSON.parse(configRaw))
       } catch (err) {}
+      try {
+        const poolRaw = localStorage.getItem('openingStartPool')
+        if (poolRaw) {
+          const pool = JSON.parse(poolRaw)
+          context.state.openingStartPool = Array.isArray(pool) ? pool.filter(item => item && item.variant === context.state.variant) : []
+        }
+      } catch (err) {}
     },
     clearOpeningBookStorage (context) {
       context.commit('openingGraph', createOpeningGraph())
-      context.commit('openingBook', { enabled: true, showSuggestions: true, autoResponse: false })
+      context.commit('openingBook', {
+        enabled: true,
+        showSuggestions: true,
+        autoResponse: false,
+        autoResponseTopK: 3,
+        autoResponseTemperature: 0.9,
+        autoGenerateEnabled: false,
+        autoGenerateIterations: 8,
+        autoGenerateMaxPlies: 16,
+        autoGenerateTopK: 3,
+        autoGenerateEarlyPlies: 10,
+        autoGenerateTemperature: 1.0
+      })
+      context.state.openingStartPool = []
       context.dispatch('persistOpeningBook')
     },
     rounds (context, payload) {
@@ -3636,10 +3669,13 @@ export const store = new Vuex.Store({
     },
     openingCandidates (state) {
       if (!state.openingBook || !state.openingBook.enabled) return []
-      return openingCandidatesForFen(state.openingGraph, state.fen, 6)
+      return openingCandidatesForFen(normalizeOpeningGraph(state.openingGraph), state.fen, 6)
     },
     openingBook (state) {
       return state.openingBook
+    },
+    openingStartPool (state) {
+      return (state.openingStartPool || []).filter(item => item && item.variant === state.variant)
     },
     getMoveByUCIAndPrev (state, uci, prev) {
       return (uci, prev) => state.moves.filter(moves => moves.uci === uci && moves.prev === prev)

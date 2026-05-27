@@ -14,6 +14,27 @@ export function createOpeningGraph () {
   }
 }
 
+export function normalizeOpeningGraph (graph) {
+  const safe = graph && typeof graph === 'object' ? graph : {}
+  const positions = safe.positions && typeof safe.positions === 'object' ? safe.positions : {}
+  const transitions = safe.transitions && typeof safe.transitions === 'object' ? safe.transitions : {}
+  const transitionMeta = safe.transitionMeta && typeof safe.transitionMeta === 'object' ? safe.transitionMeta : {}
+  for (const key of Object.keys(positions)) {
+    const node = positions[key] || {}
+    if (!node.next) node.next = {}
+    if (!node.trustedNext) node.trustedNext = {}
+    if (!node.exploratoryNext) node.exploratoryNext = {}
+    if (!Number.isFinite(Number(node.visits))) node.visits = 0
+  }
+  return {
+    positions,
+    transitions,
+    transitionMeta,
+    games: Number.isFinite(Number(safe.games)) ? Number(safe.games) : 0,
+    moves: Number.isFinite(Number(safe.moves)) ? Number(safe.moves) : 0
+  }
+}
+
 export function addSequenceToOpeningGraph (graph, sequence) {
   if (!graph || !sequence || !Array.isArray(sequence.positions) || !Array.isArray(sequence.moves)) return graph
   graph.games += 1
