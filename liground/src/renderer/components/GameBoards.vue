@@ -202,7 +202,8 @@ export default {
       positionInfo: '',
       game: null,
       resetAnalysis: false,
-      keydownHandler: null
+      keydownHandler: null,
+      autoReplyBusy: false
     }
   },
   computed: {
@@ -321,6 +322,11 @@ export default {
       }
     }
     window.addEventListener('keydown', this.keydownHandler, false)
+  },
+  watch: {
+    fen () {
+      this.tryAutoOpeningResponse()
+    }
   },
   beforeDestroy () {
     if (this.keydownHandler) {
@@ -506,9 +512,7 @@ export default {
         this.$store.dispatch('position')
         this.$store.dispatch('goEngine')
       }
-      if (this.openingBook.enabled && this.openingBook.autoResponse) {
-        this.$store.dispatch('playOpeningBookMove')
-      }
+      this.tryAutoOpeningResponse()
     },
     addCurrentToOpeningBook () {
       this.$store.dispatch('addCurrentGameToOpeningBook')
@@ -520,6 +524,18 @@ export default {
       this.$store.dispatch('fen', this.$store.getters.board.fen())
       this.$store.dispatch('updateBoard')
       this.$store.dispatch('position')
+    },
+    async tryAutoOpeningResponse () {
+      if (!this.openingBook.enabled || !this.openingBook.autoResponse) return
+      if (this.autoReplyBusy) return
+      if (!this.openingCandidates || this.openingCandidates.length === 0) return
+      this.autoReplyBusy = true
+      try {
+        await this.$nextTick()
+        this.$store.dispatch('playOpeningBookMove')
+      } finally {
+        setTimeout(() => { this.autoReplyBusy = false }, 120)
+      }
     },
     sequencePayload () {
       return {

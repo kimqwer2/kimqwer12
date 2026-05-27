@@ -1578,6 +1578,7 @@ export const store = new Vuex.Store({
           localStorage.removeItem('engines')
         }
       }
+      context.dispatch('loadOpeningBookFromStorage')
       context.commit('newBoard')
       context.dispatch('updateBoard')
       context.dispatch('changeEngine', context.getters.availableEngines[0].name)
@@ -2683,9 +2684,11 @@ export const store = new Vuex.Store({
         if (legal) addSequenceToOpeningGraph(graph, { moves, positions })
       }
       context.commit('openingGraph', graph)
+      context.dispatch('persistOpeningBook')
     },
     openingBook (context, payload) {
       context.commit('openingBook', payload)
+      context.dispatch('persistOpeningBook')
     },
     addCurrentGameToOpeningBook (context) {
       const graph = { ...(context.state.openingGraph || createOpeningGraph()) }
@@ -2707,6 +2710,7 @@ export const store = new Vuex.Store({
       }
       addSequenceToOpeningGraph(graph, { moves, positions })
       context.commit('openingGraph', graph)
+      context.dispatch('persistOpeningBook')
     },
     playOpeningBookMove (context) {
       const cfg = context.state.openingBook || {}
@@ -2719,6 +2723,27 @@ export const store = new Vuex.Store({
       context.dispatch('fen', context.state.board.fen())
       context.dispatch('updateBoard')
       context.dispatch('position')
+    },
+    persistOpeningBook (context) {
+      try {
+        localStorage.setItem('openingBookGraph', JSON.stringify(context.state.openingGraph || createOpeningGraph()))
+        localStorage.setItem('openingBookConfig', JSON.stringify(context.state.openingBook || {}))
+      } catch (err) {}
+    },
+    loadOpeningBookFromStorage (context) {
+      try {
+        const graphRaw = localStorage.getItem('openingBookGraph')
+        if (graphRaw) context.commit('openingGraph', JSON.parse(graphRaw))
+      } catch (err) {}
+      try {
+        const configRaw = localStorage.getItem('openingBookConfig')
+        if (configRaw) context.commit('openingBook', JSON.parse(configRaw))
+      } catch (err) {}
+    },
+    clearOpeningBookStorage (context) {
+      context.commit('openingGraph', createOpeningGraph())
+      context.commit('openingBook', { enabled: true, showSuggestions: true, autoResponse: false })
+      context.dispatch('persistOpeningBook')
     },
     rounds (context, payload) {
       context.commit('rounds', payload)

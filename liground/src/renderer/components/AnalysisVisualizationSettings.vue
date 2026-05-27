@@ -84,6 +84,11 @@
       <label><input v-model="openingBookLocal.enabled" type="checkbox" @change="saveOpeningBook"> 오프닝북 사용</label>
       <label><input v-model="openingBookLocal.showSuggestions" type="checkbox" @change="saveOpeningBook"> 추천 수 표시</label>
       <label><input v-model="openingBookLocal.autoResponse" type="checkbox" @change="saveOpeningBook"> 자동 응수 사용</label>
+      <small>오프닝북 데이터는 앱의 로컬 저장소에 자동 보관됩니다. (openingBookGraph / openingBookConfig)</small>
+      <div class="book-actions">
+        <button type="button" @click="exportOpeningBook">오프닝북 백업 복사</button>
+        <button type="button" @click="clearOpeningBook">오프닝북 초기화</button>
+      </div>
     </div>
 
     <div v-if="deepAnalysis.error" class="deep-error">
@@ -132,6 +137,8 @@
   </div>
 </template>
 <script>
+import { copyTextReliable } from '../../shared/clipboard'
+
 export default {
   name: 'AnalysisVisualizationSettings',
   data: () => ({ local: {}, depthMode: '12', targetDepth: 'infinite', openingBookLocal: {} }),
@@ -235,6 +242,22 @@ export default {
     },
     saveOpeningBook () {
       this.$store.dispatch('openingBook', this.openingBookLocal)
+    },
+    async exportOpeningBook () {
+      const snapshot = {
+        exportedAt: new Date().toISOString(),
+        config: this.$store.getters.openingBook,
+        graph: this.$store.state.openingGraph
+      }
+      const text = `LIGROUND-OPENING-BOOK/1\n${JSON.stringify(snapshot, null, 2)}`
+      const result = await copyTextReliable(text)
+      if (result.ok) alert('오프닝북 백업 데이터를 복사했습니다.')
+      else alert('백업 복사에 실패했습니다.')
+    },
+    clearOpeningBook () {
+      if (!confirm('오프닝북 데이터를 초기화할까요?')) return
+      this.$store.dispatch('clearOpeningBookStorage')
+      alert('오프닝북 데이터를 초기화했습니다.')
     }
   }
 }
