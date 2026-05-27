@@ -2864,12 +2864,38 @@ export const store = new Vuex.Store({
     async analyzeOpeningGenerationPosition (context, payload) {
       const depth = Math.max(4, Number(payload && payload.depth) || 12)
       const topK = Math.max(2, Number(payload && payload.topK) || 3)
+      const variant = payload.variant || context.state.variant
+      const fen = payload.fen
+      let infoHandler = null
+      let bestMoveHandler = null
       try {
         await context.dispatch('stopEngine')
         context.dispatch('resetEngineData')
-        await context.dispatch('setEngineOptions', { MultiPV: topK, UCI_Variant: payload.variant || context.state.variant })
-        const board = new ffish.Board(payload.variant || context.state.variant, payload.fen)
+        await context.dispatch('setEngineOptions', { MultiPV: topK, UCI_Variant: variant })
+        const board = new ffish.Board(variant, fen)
         const command = `position fen ${board.fen()}`
+        const linesByPv = new Map()
+        let reachedDepth = 0
+        let bestmove = ''
+        infoHandler = (info) => {
+          if (!info || typeof info !== 'object') return
+          const curDepth = Number(info.depth || 0)
+          if (curDepth > reachedDepth) reachedDepth = curDepth
+          context.commit('openingGeneration', { currentDepth: curDepth })
+          if (!info.pv) return
+          const ucimove = String(info.pv).split(/\s/)[0]
+          if (!ucimove) return
+          const idx = Math.max(1, Number(info.multipv) || 1)
+          linesByPv.set(idx, {
+            ucimove,
+            cp: typeof info.cp === 'number' ? info.cp : null
+          })
+        }
+        bestMoveHandler = (move) => {
+          bestmove = String(move || '')
+        }
+        engine.on('info', infoHandler)
+        engine.on('bestmove', bestMoveHandler)
         engine.send(command)
         context.commit('active', true)
         context.commit('setEngineClock')
@@ -2877,21 +2903,23 @@ export const store = new Vuex.Store({
         const startedAt = Date.now()
         while (Date.now() - startedAt < 12000) {
           if (context.state.openingGeneration.stopRequested) break
-          const curDepth = Number(context.state.engineStats.depth || 0)
-          const lines = (context.state.multipv || []).filter(v => v && v.ucimove)
-          context.commit('openingGeneration', { currentDepth: curDepth })
-          if (curDepth >= depth && lines.length) {
+          if ((bestmove && linesByPv.size) || (reachedDepth >= depth && linesByPv.size)) {
             await context.dispatch('stopEngine')
-            return lines.slice(0, topK).map((line, idx) => ({
+            return [...linesByPv.entries()].sort((a, b) => a[0] - b[0]).slice(0, topK).map(([, line], idx) => ({
               uci: line.ucimove,
               score: typeof line.cp === 'number' ? line.cp : (1000 - idx * 30),
               trustedCount: 3
             }))
           }
-          await new Promise(resolve => setTimeout(resolve, 80))
+          await new Promise(resolve => setTimeout(resolve, 40))
         }
-      } catch (err) {}
-      await context.dispatch('stopEngine')
+      } catch (err) {
+        return []
+      } finally {
+        if (infoHandler) engine.off('info', infoHandler)
+        if (bestMoveHandler) engine.off('bestmove', bestMoveHandler)
+        await context.dispatch('stopEngine')
+      }
       return []
     },
     persistOpeningBook (context) {
