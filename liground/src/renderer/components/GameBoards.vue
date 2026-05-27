@@ -59,13 +59,49 @@
               :size="setFenSize()"
               @change="checkValidFEN"
             >
-            <div
-              v-if="opening"
-              class="opening-label"
-            >
-              {{ opening.eco }} – {{ opening.name }}
-            </div>
+          <div
+            v-if="opening"
+            class="opening-label"
+          >
+            {{ opening.eco }} – {{ opening.name }}
           </div>
+          <div class="game-sequence-row">
+            <button
+              class="mini-btn"
+              @click="copySequence"
+            >
+              전체 수순 복사
+            </button>
+            <button
+              class="mini-btn"
+              @click="pasteSequence"
+            >
+              수순 붙여넣기
+            </button>
+            <button
+              class="mini-btn"
+              @click="addCurrentToOpeningBook"
+            >
+              현재 기보를 오프닝북에 추가
+            </button>
+          </div>
+          <div
+            v-if="showOpeningSuggestions"
+            class="opening-candidates"
+          >
+            <div class="opening-candidates-title">
+              오프닝 추천 수
+            </div>
+            <button
+              v-for="(cand, idx) in openingCandidates.slice(0, 3)"
+              :key="`${cand.uci}-${idx}`"
+              class="candidate-btn"
+              @click="playCandidate(cand.uci)"
+            >
+              {{ cand.uci }} · {{ Math.round(cand.share * 100) }}%
+            </button>
+          </div>
+        </div>
           <div
             v-else
             id="fen-field-qt"
@@ -146,6 +182,8 @@ import Vue from 'vue'
 import SettingsTab from './SettingsTab'
 import GameInfo from './GameInfo.vue'
 import { findBestOpeningForFen } from '../../shared/openingLookup'
+import { parseGameSequence, serializeGameSequence } from '../../shared/gameSequence'
+import { copyTextReliable, readTextReliable } from '../../shared/clipboard'
 import { mapGetters } from 'vuex'
 
 export default {
@@ -164,7 +202,8 @@ export default {
       positionInfo: '',
       game: null,
       resetAnalysis: false,
-      keydownHandler: null
+      keydownHandler: null,
+      autoReplyBusy: false
     }
   },
   computed: {
@@ -202,6 +241,15 @@ export default {
         }
       }
       return undefined
+    },
+    openingCandidates () {
+      return this.$store.getters.openingCandidates || []
+    },
+    openingBook () {
+      return this.$store.getters.openingBook || {}
+    },
+    showOpeningSuggestions () {
+      return this.openingBook.enabled && this.openingBook.showSuggestions && this.openingCandidates.length > 0
     },
     ...mapGetters(['QuickTourIndex'])
   },
@@ -258,6 +306,14 @@ export default {
           event.preventDefault()
           this.$store.dispatch('playSingleEngineMove')
         }
+        if (event.ctrlKey && keyName.toLowerCase() === 'c') {
+          event.preventDefault()
+          this.copySequence()
+        }
+        if (event.ctrlKey && keyName.toLowerCase() === 'v') {
+          event.preventDefault()
+          this.pasteSequence()
+        }
         if (event.ctrlKey && keyName.toLowerCase() === 't') {
           event.preventDefault()
           const autoPlayBtn = document.getElementById('engine-auto-play-btn')
@@ -266,6 +322,11 @@ export default {
       }
     }
     window.addEventListener('keydown', this.keydownHandler, false)
+  },
+  watch: {
+    fen () {
+      this.tryAutoOpeningResponse()
+    }
   },
   beforeDestroy () {
     if (this.keydownHandler) {
@@ -451,6 +512,63 @@ export default {
         this.$store.dispatch('position')
         this.$store.dispatch('goEngine')
       }
+      this.tryAutoOpeningResponse()
+    },
+    addCurrentToOpeningBook () {
+      this.$store.dispatch('addCurrentGameToOpeningBook')
+      alert('현재 기보를 오프닝북에 추가했습니다.')
+    },
+    playCandidate (uci) {
+      const current = this.currentMove
+      this.$store.commit('appendMoves', { move: uci, prev: current })
+      this.$store.dispatch('fen', this.$store.getters.board.fen())
+      this.$store.dispatch('updateBoard')
+      this.$store.dispatch('position')
+    },
+    async tryAutoOpeningResponse () {
+      if (!this.openingBook.enabled || !this.openingBook.autoResponse) return
+      if (this.autoReplyBusy) return
+      if (!this.openingCandidates || this.openingCandidates.length === 0) return
+      this.autoReplyBusy = true
+      try {
+        await this.$nextTick()
+        this.$store.dispatch('playOpeningBookMove')
+      } finally {
+        setTimeout(() => { this.autoReplyBusy = false }, 120)
+      }
+    },
+    sequencePayload () {
+      return {
+        variant: this.$store.getters.variant,
+        startFen: this.$store.getters.startFen,
+        moves: this.$store.getters.currentMainlineUci,
+        metadata: {
+          exportedAt: new Date().toISOString()
+        }
+      }
+    },
+    async copySequence () {
+      const text = serializeGameSequence(this.sequencePayload())
+      const result = await copyTextReliable(text)
+      if (result.ok) {
+        alert('전체 대국 수순을 복사했습니다.')
+        return
+      }
+      alert('복사에 실패했습니다. 다른 창을 닫고 다시 시도해 주세요.')
+    },
+    async pasteSequence () {
+      const read = await readTextReliable()
+      if (!read.ok) {
+        alert('클립보드를 읽지 못했습니다.')
+        return
+      }
+      const parsed = parseGameSequence(read.text)
+      if (!parsed) {
+        alert('지원되는 수순 형식이 아닙니다.')
+        return
+      }
+      await this.$store.dispatch('loadGameSequence', parsed)
+      alert(`수순 ${parsed.moves.length}개를 불러왔습니다.`)
     },
     drawArrow (event) {
       console.log(`event: ${event}`)
@@ -559,6 +677,30 @@ input {
 #lname {
   background-color: var(--second-bg-color);
   color: var(--main-text-color)
+}
+.game-sequence-row {
+  margin-top: 8px;
+  display: flex;
+  gap: 8px;
+}
+.mini-btn {
+  font-size: 11px;
+  border: 1px solid var(--main-border-color);
+  background: var(--second-bg-color);
+  color: var(--main-text-color);
+}
+.opening-candidates {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.opening-candidates-title {
+  font-size: 12px;
+}
+.candidate-btn {
+  font-size: 11px;
+  text-align: left;
 }
 #pgnbrowser {
   grid-area: pgnbrowser;

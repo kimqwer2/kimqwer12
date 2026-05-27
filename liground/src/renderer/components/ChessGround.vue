@@ -305,7 +305,7 @@ export default {
       // Block mouse input completely when not player's turn
       return this.isPlayerTurn ? 'auto' : 'none'
     },
-    ...mapGetters(['initialized', 'variant', 'multipv', 'hoveredpv', 'redraw', 'pieceStyle', 'boardStyle', 'fen', 'lastFen', 'orientation', 'moves', 'isPast', 'dimensionNumber', 'analysisMode', 'editorMode', 'analysisVisualization', 'reviewSequence', 'reviewSequenceActive', 'reviewPreview', 'reviewPreviewActive', 'reviewOverlays', 'active', 'PvE', 'PvEPlayerIsWhite', 'EvE', 'enginetime', 'resized', 'resized9x9width', 'resized9x9height', 'resized9x10width', 'resized9x10height', 'dimNumber'])
+    ...mapGetters(['initialized', 'variant', 'multipv', 'hoveredpv', 'redraw', 'pieceStyle', 'boardStyle', 'fen', 'lastFen', 'orientation', 'moves', 'isPast', 'dimensionNumber', 'analysisMode', 'editorMode', 'analysisVisualization', 'reviewSequence', 'reviewSequenceActive', 'reviewPreview', 'reviewPreviewActive', 'reviewOverlays', 'active', 'PvE', 'PvEPlayerIsWhite', 'EvE', 'enginetime', 'resized', 'resized9x9width', 'resized9x9height', 'resized9x10width', 'resized9x10height', 'dimNumber', 'openingCandidates', 'openingBook'])
   },
   watch: {
     dimensionNumber () {
@@ -582,10 +582,15 @@ export default {
     stableShapeModifiers (modifiers) {
       if (!modifiers) return undefined
       const lineWidth = Number(modifiers.lineWidth)
+      const opacity = Number(modifiers.opacity)
+      const out = {}
       if (Number.isFinite(lineWidth) && lineWidth > 0) {
-        return { lineWidth: Math.max(2, Math.min(8, lineWidth)) }
+        out.lineWidth = Math.max(2, Math.min(8, lineWidth))
       }
-      return undefined
+      if (Number.isFinite(opacity)) {
+        out.opacity = Math.max(0.2, Math.min(1, opacity))
+      }
+      return Object.keys(out).length ? out : undefined
     },
     reviewOverlayToShape (overlay) {
       if (!overlay) return null
@@ -630,6 +635,24 @@ export default {
           const highlighted = i === 0 ? 'yellow' : (i === this.hoveredpv ? 'blue' : 'paleBlue')
           multipvShapes.unshift({ orig, dest, brush: highlighted, modifiers: { lineWidth: 2 + ((visibleMultiPv.length - i) / Math.max(1, visibleMultiPv.length)) * 8 } })
         }
+      }
+      if (this.openingBook && this.openingBook.enabled && this.openingBook.showSuggestions) {
+        const topCandidates = (this.openingCandidates || []).slice(0, 3)
+        topCandidates.forEach((cand, idx) => {
+          if (!cand || !cand.uci) return
+          const { orig, dest } = this.toBoardKeys(cand.uci)
+          const share = Number(cand.share || 0)
+          const lineWidth = share >= 0.7 ? 8 : (share >= 0.3 ? 5 : 3)
+          const opacity = Math.max(0.35, Math.min(1, 0.35 + share * 0.8))
+          const brush = idx === 0 ? 'yellow' : (idx === 1 ? 'green' : 'blue')
+          multipvShapes.unshift({
+            orig,
+            dest,
+            brush,
+            label: `${Math.round(share * 100)}%`,
+            modifiers: { lineWidth, opacity }
+          })
+        })
       }
       if (cfg.trajectoryEnabled && this.multipv[0] && this.multipv[0].pvUCI) {
         const trajectoryBrushes = ['red', 'yellow', 'green', 'blue', 'paleBlue']
