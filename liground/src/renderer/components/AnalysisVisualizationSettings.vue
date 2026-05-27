@@ -103,6 +103,7 @@
       <label>초반 랜덤 진행 수 <input v-model.number="openingBookLocal.autoGenerateEarlyPlies" min="2" max="40" type="number" @change="saveOpeningBook"></label>
       <label>초반 랜덤 후보 범위 <input v-model.number="openingBookLocal.autoGenerateTopK" min="2" max="8" type="number" @change="saveOpeningBook"></label>
       <label>초반 변화 다양성 <input v-model.number="openingBookLocal.autoGenerateTemperature" min="0.6" max="1.8" step="0.1" type="number" @change="saveOpeningBook"></label>
+      <label><input v-model="openingBookLocal.earlyRandomEnabled" type="checkbox" @change="saveOpeningBook"> 초반 랜덤 진행 사용</label>
       <label>시작 포지션 일괄 입력</label>
       <textarea v-model="poolBulkText" rows="4" placeholder="한 줄에 하나씩 입력: 이름|FEN 또는 FEN" />
       <div class="book-actions">
@@ -123,6 +124,10 @@
         <button type="button" @click="clearOpeningBook">오프닝북 초기화</button>
       </div>
       <small>진행 상황: {{ openingGeneration.completedGames }}판 / {{ openingGeneration.completedMoves }}수</small>
+      <small>현재 시작 포지션: {{ openingGeneration.currentStart || '-' }}</small>
+      <small>현재 분석 깊이: {{ openingGeneration.currentDepth || 0 }}</small>
+      <small>현재 분석 중인 수: {{ openingGeneration.currentMove || '-' }}</small>
+      <small>저장된 분기 수: {{ openingGeneration.savedBranches || 0 }}</small>
     </div>
 
     <div v-if="deepAnalysis.error" class="deep-error">
