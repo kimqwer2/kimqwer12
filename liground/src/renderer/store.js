@@ -2759,6 +2759,7 @@ export const store = new Vuex.Store({
       context.dispatch('persistOpeningBook')
     },
     addCurrentGameToOpeningBook (context) {
+      const graph = normalizeOpeningGraph(context.state.openingGraph || createOpeningGraph())
       const moves = context.getters.currentMainlineUci
       let board
       try {
