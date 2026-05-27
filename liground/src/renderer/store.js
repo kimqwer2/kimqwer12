@@ -6,6 +6,7 @@ import allEngines from './store/engines'
 import { createReviewRequest, emptyReviewState, emptyReviewSequenceState, REVIEW_MARKER_MODES, REVIEW_MODES } from '../shared/review/schema'
 import { analyzeReviewRequest } from '../shared/review/reviewService'
 import { buildMainlineFromMove } from '../shared/gameSequence'
+import { addSequenceToOpeningGraph, createOpeningGraph, openingCandidatesForFen } from '../shared/openingGraph'
 
 import moveAudio from './assets/audio/Move.mp3'
 import captureAudio from './assets/audio/Capture.mp3'
@@ -694,6 +695,7 @@ export const store = new Vuex.Store({
     analysisMode: true,
     editorMode: false,
     review: emptyReviewState(),
+    openingGraph: createOpeningGraph(),
     analysisVisualization: {
       showMultiPvArrows: true,
       multiPvCount: 3,
@@ -1153,6 +1155,9 @@ export const store = new Vuex.Store({
     loadedGames (state, payload) {
       state.loadedGames = payload
       state.selectedGame = null
+    },
+    openingGraph (state, payload) {
+      state.openingGraph = payload || createOpeningGraph()
     },
     rounds (state, payload) {
       state.rounds = payload
@@ -2631,6 +2636,45 @@ export const store = new Vuex.Store({
     },
     loadedGames (context, payload) {
       context.commit('loadedGames', payload)
+      context.dispatch('rebuildOpeningGraphFromLoadedGames')
+    },
+    rebuildOpeningGraphFromLoadedGames (context) {
+      const graph = createOpeningGraph()
+      const games = Array.isArray(context.state.loadedGames) ? context.state.loadedGames : []
+      for (const game of games) {
+        if (!game || !game.mainlineMoves) continue
+        let variant = (game.headers('Variant') || '').toLowerCase()
+        if (!variant) variant = 'chess'
+        if (!context.getters.variantOptions.revGet(variant) && variant !== 'chess960' && variant !== 'fischerandom') continue
+        let fen = game.headers('FEN')
+        let boardVariant = variant
+        let is960 = false
+        if (variant === 'chess960' || variant === 'fischerandom') {
+          boardVariant = 'chess'
+          is960 = true
+        }
+        let board
+        try {
+          board = fen ? new ffish.Board(boardVariant, fen, is960) : new ffish.Board(boardVariant)
+        } catch (err) {
+          continue
+        }
+        const movesText = String(game.mainlineMoves() || '').trim()
+        const moves = movesText ? movesText.split(/\s+/) : []
+        const positions = [board.fen()]
+        let legal = true
+        for (const uci of moves) {
+          try {
+            board.push(uci)
+            positions.push(board.fen())
+          } catch (err) {
+            legal = false
+            break
+          }
+        }
+        if (legal) addSequenceToOpeningGraph(graph, { moves, positions })
+      }
+      context.commit('openingGraph', graph)
     },
     rounds (context, payload) {
       context.commit('rounds', payload)
@@ -3452,6 +3496,9 @@ export const store = new Vuex.Store({
       const current = state.moves.find(m => m.fen === state.fen)
       const anchor = current || state.moves[state.moves.length - 1]
       return buildMainlineFromMove(anchor).map(move => move.uci)
+    },
+    openingCandidates (state) {
+      return openingCandidatesForFen(state.openingGraph, state.fen, 6)
     },
     getMoveByUCIAndPrev (state, uci, prev) {
       return (uci, prev) => state.moves.filter(moves => moves.uci === uci && moves.prev === prev)

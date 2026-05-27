@@ -161,6 +161,7 @@ import SettingsTab from './SettingsTab'
 import GameInfo from './GameInfo.vue'
 import { findBestOpeningForFen } from '../../shared/openingLookup'
 import { parseGameSequence, serializeGameSequence } from '../../shared/gameSequence'
+import { copyTextReliable, readTextReliable } from '../../shared/clipboard'
 import { mapGetters } from 'vuex'
 
 export default {
@@ -487,26 +488,26 @@ export default {
     },
     async copySequence () {
       const text = serializeGameSequence(this.sequencePayload())
-      try {
-        await navigator.clipboard.writeText(text)
+      const result = await copyTextReliable(text)
+      if (result.ok) {
         alert('전체 대국 수순을 복사했습니다.')
-      } catch (err) {
-        alert('클립보드 복사에 실패했습니다.')
+        return
       }
+      alert('복사에 실패했습니다. 다른 창을 닫고 다시 시도해 주세요.')
     },
     async pasteSequence () {
-      try {
-        const text = await navigator.clipboard.readText()
-        const parsed = parseGameSequence(text)
-        if (!parsed) {
-          alert('지원되는 수순 형식이 아닙니다.')
-          return
-        }
-        await this.$store.dispatch('loadGameSequence', parsed)
-        alert(`수순 ${parsed.moves.length}개를 불러왔습니다.`)
-      } catch (err) {
-        alert('클립보드 읽기에 실패했습니다.')
+      const read = await readTextReliable()
+      if (!read.ok) {
+        alert('클립보드를 읽지 못했습니다.')
+        return
       }
+      const parsed = parseGameSequence(read.text)
+      if (!parsed) {
+        alert('지원되는 수순 형식이 아닙니다.')
+        return
+      }
+      await this.$store.dispatch('loadGameSequence', parsed)
+      alert(`수순 ${parsed.moves.length}개를 불러왔습니다.`)
     },
     drawArrow (event) {
       console.log(`event: ${event}`)
