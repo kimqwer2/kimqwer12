@@ -59,13 +59,27 @@
               :size="setFenSize()"
               @change="checkValidFEN"
             >
-            <div
-              v-if="opening"
-              class="opening-label"
-            >
-              {{ opening.eco }} – {{ opening.name }}
-            </div>
+          <div
+            v-if="opening"
+            class="opening-label"
+          >
+            {{ opening.eco }} – {{ opening.name }}
           </div>
+          <div class="game-sequence-row">
+            <button
+              class="mini-btn"
+              @click="copySequence"
+            >
+              전체 수순 복사
+            </button>
+            <button
+              class="mini-btn"
+              @click="pasteSequence"
+            >
+              수순 붙여넣기
+            </button>
+          </div>
+        </div>
           <div
             v-else
             id="fen-field-qt"
@@ -146,6 +160,7 @@ import Vue from 'vue'
 import SettingsTab from './SettingsTab'
 import GameInfo from './GameInfo.vue'
 import { findBestOpeningForFen } from '../../shared/openingLookup'
+import { parseGameSequence, serializeGameSequence } from '../../shared/gameSequence'
 import { mapGetters } from 'vuex'
 
 export default {
@@ -257,6 +272,14 @@ export default {
         if (event.ctrlKey && keyName.toLowerCase() === 'w') {
           event.preventDefault()
           this.$store.dispatch('playSingleEngineMove')
+        }
+        if (event.ctrlKey && keyName.toLowerCase() === 'c') {
+          event.preventDefault()
+          this.copySequence()
+        }
+        if (event.ctrlKey && keyName.toLowerCase() === 'v') {
+          event.preventDefault()
+          this.pasteSequence()
         }
         if (event.ctrlKey && keyName.toLowerCase() === 't') {
           event.preventDefault()
@@ -452,6 +475,39 @@ export default {
         this.$store.dispatch('goEngine')
       }
     },
+    sequencePayload () {
+      return {
+        variant: this.$store.getters.variant,
+        startFen: this.$store.getters.startFen,
+        moves: this.$store.getters.currentMainlineUci,
+        metadata: {
+          exportedAt: new Date().toISOString()
+        }
+      }
+    },
+    async copySequence () {
+      const text = serializeGameSequence(this.sequencePayload())
+      try {
+        await navigator.clipboard.writeText(text)
+        alert('전체 대국 수순을 복사했습니다.')
+      } catch (err) {
+        alert('클립보드 복사에 실패했습니다.')
+      }
+    },
+    async pasteSequence () {
+      try {
+        const text = await navigator.clipboard.readText()
+        const parsed = parseGameSequence(text)
+        if (!parsed) {
+          alert('지원되는 수순 형식이 아닙니다.')
+          return
+        }
+        await this.$store.dispatch('loadGameSequence', parsed)
+        alert(`수순 ${parsed.moves.length}개를 불러왔습니다.`)
+      } catch (err) {
+        alert('클립보드 읽기에 실패했습니다.')
+      }
+    },
     drawArrow (event) {
       console.log(`event: ${event}`)
     },
@@ -559,6 +615,17 @@ input {
 #lname {
   background-color: var(--second-bg-color);
   color: var(--main-text-color)
+}
+.game-sequence-row {
+  margin-top: 8px;
+  display: flex;
+  gap: 8px;
+}
+.mini-btn {
+  font-size: 11px;
+  border: 1px solid var(--main-border-color);
+  background: var(--second-bg-color);
+  color: var(--main-text-color);
 }
 #pgnbrowser {
   grid-area: pgnbrowser;

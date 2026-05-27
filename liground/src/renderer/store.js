@@ -5,6 +5,7 @@ import { engine, Engine } from './engine'
 import allEngines from './store/engines'
 import { createReviewRequest, emptyReviewState, emptyReviewSequenceState, REVIEW_MARKER_MODES, REVIEW_MODES } from '../shared/review/schema'
 import { analyzeReviewRequest } from '../shared/review/reviewService'
+import { buildMainlineFromMove } from '../shared/gameSequence'
 
 import moveAudio from './assets/audio/Move.mp3'
 import captureAudio from './assets/audio/Capture.mp3'
@@ -2688,6 +2689,25 @@ export const store = new Vuex.Store({
       context.dispatch('setEngineOptions', { UCI_Chess960: is960 })
       context.commit('openedPGN', false)
     },
+    async loadGameSequence (context, payload) {
+      const variant = payload && payload.variant ? payload.variant : context.state.variant
+      const startFen = payload && payload.startFen ? payload.startFen : ''
+      const moves = Array.isArray(payload && payload.moves) ? payload.moves : []
+      await context.dispatch('variant', variant)
+      if (startFen) {
+        context.commit('newBoard', { fen: startFen, is960: false })
+      } else {
+        context.commit('newBoard')
+      }
+      await context.dispatch('fen', context.state.startFen)
+      let prev
+      for (const move of moves) {
+        context.commit('appendMoves', { move, prev })
+        prev = context.state.moves[context.state.moves.length - 1]
+      }
+      context.dispatch('updateBoard')
+      context.dispatch('position')
+    },
     increment (context, payload) {
       context.commit('increment', payload)
     },
@@ -3427,6 +3447,11 @@ export const store = new Vuex.Store({
         fen: state.fen,
         is960: state.board && state.board.is960 && state.board.is960()
       }
+    },
+    currentMainlineUci (state) {
+      const current = state.moves.find(m => m.fen === state.fen)
+      const anchor = current || state.moves[state.moves.length - 1]
+      return buildMainlineFromMove(anchor).map(move => move.uci)
     },
     getMoveByUCIAndPrev (state, uci, prev) {
       return (uci, prev) => state.moves.filter(moves => moves.uci === uci && moves.prev === prev)
