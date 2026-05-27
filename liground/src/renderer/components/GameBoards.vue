@@ -78,6 +78,28 @@
             >
               수순 붙여넣기
             </button>
+            <button
+              class="mini-btn"
+              @click="addCurrentToOpeningBook"
+            >
+              현재 기보를 오프닝북에 추가
+            </button>
+          </div>
+          <div
+            v-if="showOpeningSuggestions"
+            class="opening-candidates"
+          >
+            <div class="opening-candidates-title">
+              오프닝 추천 수
+            </div>
+            <button
+              v-for="(cand, idx) in openingCandidates.slice(0, 3)"
+              :key="`${cand.uci}-${idx}`"
+              class="candidate-btn"
+              @click="playCandidate(cand.uci)"
+            >
+              {{ cand.uci }} · {{ Math.round(cand.share * 100) }}%
+            </button>
           </div>
         </div>
           <div
@@ -218,6 +240,15 @@ export default {
         }
       }
       return undefined
+    },
+    openingCandidates () {
+      return this.$store.getters.openingCandidates || []
+    },
+    openingBook () {
+      return this.$store.getters.openingBook || {}
+    },
+    showOpeningSuggestions () {
+      return this.openingBook.enabled && this.openingBook.showSuggestions && this.openingCandidates.length > 0
     },
     ...mapGetters(['QuickTourIndex'])
   },
@@ -475,6 +506,20 @@ export default {
         this.$store.dispatch('position')
         this.$store.dispatch('goEngine')
       }
+      if (this.openingBook.enabled && this.openingBook.autoResponse) {
+        this.$store.dispatch('playOpeningBookMove')
+      }
+    },
+    addCurrentToOpeningBook () {
+      this.$store.dispatch('addCurrentGameToOpeningBook')
+      alert('현재 기보를 오프닝북에 추가했습니다.')
+    },
+    playCandidate (uci) {
+      const current = this.currentMove
+      this.$store.commit('appendMoves', { move: uci, prev: current })
+      this.$store.dispatch('fen', this.$store.getters.board.fen())
+      this.$store.dispatch('updateBoard')
+      this.$store.dispatch('position')
     },
     sequencePayload () {
       return {
@@ -627,6 +672,19 @@ input {
   border: 1px solid var(--main-border-color);
   background: var(--second-bg-color);
   color: var(--main-text-color);
+}
+.opening-candidates {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.opening-candidates-title {
+  font-size: 12px;
+}
+.candidate-btn {
+  font-size: 11px;
+  text-align: left;
 }
 #pgnbrowser {
   grid-area: pgnbrowser;

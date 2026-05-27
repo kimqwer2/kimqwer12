@@ -79,6 +79,13 @@
       </template>
     </div>
 
+    <div class="deep-box">
+      <h4>오프닝북</h4>
+      <label><input v-model="openingBookLocal.enabled" type="checkbox" @change="saveOpeningBook"> 오프닝북 사용</label>
+      <label><input v-model="openingBookLocal.showSuggestions" type="checkbox" @change="saveOpeningBook"> 추천 수 표시</label>
+      <label><input v-model="openingBookLocal.autoResponse" type="checkbox" @change="saveOpeningBook"> 자동 응수 사용</label>
+    </div>
+
     <div v-if="deepAnalysis.error" class="deep-error">
       {{ deepAnalysis.error }}
     </div>
@@ -127,10 +134,11 @@
 <script>
 export default {
   name: 'AnalysisVisualizationSettings',
-  data: () => ({ local: {}, depthMode: '12', targetDepth: 'infinite' }),
+  data: () => ({ local: {}, depthMode: '12', targetDepth: 'infinite', openingBookLocal: {} }),
   computed: {
     cfg () { return this.$store.getters.analysisVisualization },
-    deepAnalysis () { return this.$store.getters.deepAnalysis }
+    deepAnalysis () { return this.$store.getters.deepAnalysis },
+    openingBook () { return this.$store.getters.openingBook }
   },
   watch: {
     cfg: {
@@ -140,6 +148,13 @@ export default {
         this.local = { ...this.cfg }
         this.depthMode = this.cfg.trajectoryUnlimited ? 'unlimited' : String(this.cfg.trajectoryDepth)
         this.targetDepth = this.cfg.analysisTargetDepth || 'infinite'
+      }
+    },
+    openingBook: {
+      deep: true,
+      immediate: true,
+      handler () {
+        this.openingBookLocal = { ...this.openingBook }
       }
     }
   },
@@ -217,6 +232,9 @@ export default {
       if (value === 'highly volatile') return 'volatile-high'
       if (value === 'unstable') return 'volatile-medium'
       return 'volatile-stable'
+    },
+    saveOpeningBook () {
+      this.$store.dispatch('openingBook', this.openingBookLocal)
     }
   }
 }

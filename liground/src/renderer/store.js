@@ -696,6 +696,11 @@ export const store = new Vuex.Store({
     editorMode: false,
     review: emptyReviewState(),
     openingGraph: createOpeningGraph(),
+    openingBook: {
+      enabled: true,
+      showSuggestions: true,
+      autoResponse: false
+    },
     analysisVisualization: {
       showMultiPvArrows: true,
       multiPvCount: 3,
@@ -1158,6 +1163,9 @@ export const store = new Vuex.Store({
     },
     openingGraph (state, payload) {
       state.openingGraph = payload || createOpeningGraph()
+    },
+    openingBook (state, payload) {
+      state.openingBook = { ...state.openingBook, ...(payload || {}) }
     },
     rounds (state, payload) {
       state.rounds = payload
@@ -2676,6 +2684,42 @@ export const store = new Vuex.Store({
       }
       context.commit('openingGraph', graph)
     },
+    openingBook (context, payload) {
+      context.commit('openingBook', payload)
+    },
+    addCurrentGameToOpeningBook (context) {
+      const graph = { ...(context.state.openingGraph || createOpeningGraph()) }
+      const moves = context.getters.currentMainlineUci
+      let board
+      try {
+        board = new ffish.Board(context.state.variant, context.state.startFen, context.state.board && context.state.board.is960 && context.state.board.is960())
+      } catch (err) {
+        return
+      }
+      const positions = [board.fen()]
+      for (const uci of moves) {
+        try {
+          board.push(uci)
+          positions.push(board.fen())
+        } catch (err) {
+          break
+        }
+      }
+      addSequenceToOpeningGraph(graph, { moves, positions })
+      context.commit('openingGraph', graph)
+    },
+    playOpeningBookMove (context) {
+      const cfg = context.state.openingBook || {}
+      if (!cfg.enabled) return
+      const candidates = context.getters.openingCandidates || []
+      if (!candidates.length) return
+      const move = candidates[0].uci
+      const current = context.state.moves.find(m => m.fen === context.state.fen)
+      context.commit('appendMoves', { move, prev: current })
+      context.dispatch('fen', context.state.board.fen())
+      context.dispatch('updateBoard')
+      context.dispatch('position')
+    },
     rounds (context, payload) {
       context.commit('rounds', payload)
     },
@@ -3498,7 +3542,11 @@ export const store = new Vuex.Store({
       return buildMainlineFromMove(anchor).map(move => move.uci)
     },
     openingCandidates (state) {
+      if (!state.openingBook || !state.openingBook.enabled) return []
       return openingCandidatesForFen(state.openingGraph, state.fen, 6)
+    },
+    openingBook (state) {
+      return state.openingBook
     },
     getMoveByUCIAndPrev (state, uci, prev) {
       return (uci, prev) => state.moves.filter(moves => moves.uci === uci && moves.prev === prev)
