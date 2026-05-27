@@ -1837,6 +1837,11 @@ export const store = new Vuex.Store({
       }
     },
     async goEngine (context, payload = {}) {
+      const source = payload && payload.source ? payload.source : 'unknown'
+      if (context.state.openingGeneration && context.state.openingGeneration.running) {
+        console.warn('[engine-guard] goEngine blocked during opening-generation session', { source, payload })
+        return
+      }
       const { goCmd } = await context.dispatch('computeEngineSearchLimits', payload)
       console.log('[engine-order] cmd:', goCmd)
       engine.send(goCmd)
@@ -2161,7 +2166,17 @@ export const store = new Vuex.Store({
         context.commit('active', false)
       }
     },
-    stopEngine (context) {
+    stopEngine (context, payload = {}) {
+      const source = payload && payload.source ? payload.source : 'unknown'
+      if (
+        context.state.openingGeneration &&
+        context.state.openingGeneration.running &&
+        context.state.openingGeneration.analysisActive &&
+        source !== 'opening-generation'
+      ) {
+        console.warn('[engine-guard] stopEngine blocked during opening-generation session', { source })
+        return
+      }
       engine.send('stop')
       context.commit('resetEngineTime')
       context.commit('active', false)
@@ -2893,7 +2908,7 @@ export const store = new Vuex.Store({
       let reachedDepth = 0
       try {
         console.log('[opening-gen] analyze start', { fen, variant, depth, topK })
-        await context.dispatch('stopEngine')
+        await context.dispatch('stopEngine', { source: 'opening-generation' })
         context.dispatch('resetEngineData')
         await context.dispatch('setEngineOptions', { MultiPV: topK, UCI_Variant: variant })
         context.commit('openingGeneration', { analysisActive: true })
@@ -2930,7 +2945,7 @@ export const store = new Vuex.Store({
         while (Date.now() - startedAt < 12000) {
           if (context.state.openingGeneration.stopRequested) break
           if ((bestmove && linesByPv.size) || (reachedDepth >= depth && linesByPv.size)) {
-            await context.dispatch('stopEngine')
+            await context.dispatch('stopEngine', { source: 'opening-generation' })
             console.log('[opening-gen] analyze resolve', { fen, configuredDepth: depth, goDepth: depth, deepestReportedDepth: reachedDepth, bestmove, lines: linesByPv.size })
             return [...linesByPv.entries()].sort((a, b) => a[0] - b[0]).slice(0, topK).map(([, line], idx) => ({
               uci: line.ucimove,
@@ -2948,7 +2963,7 @@ export const store = new Vuex.Store({
         if (bestMoveHandler) engine.off('bestmove', bestMoveHandler)
         context.commit('openingGeneration', { analysisActive: false })
         console.log('[opening-gen] analyze cleanup', { fen, deepestReportedDepth: typeof reachedDepth === 'number' ? reachedDepth : null })
-        await context.dispatch('stopEngine')
+        await context.dispatch('stopEngine', { source: 'opening-generation' })
       }
       return []
     },
