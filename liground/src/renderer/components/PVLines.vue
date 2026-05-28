@@ -83,6 +83,18 @@
         <div ref="previewBoard" />
       </div>
     </div>
+    <div
+      v-if="humanTrapDiagnostics"
+      class="human-trap-diagnostics"
+    >
+      <strong>{{ humanTrapDiagnostics.mode || 'Engine Personality' }}:</strong> {{ humanTrapDiagnostics.type }} ·
+      <span v-if="humanTrapDiagnostics.temptingReply">reply {{ humanTrapDiagnostics.temptingReply }} ·</span>
+      <span v-if="typeof humanTrapDiagnostics.cpLoss === 'number'">loss {{ humanTrapDiagnostics.cpLoss }}cp ·</span>
+      <span v-if="typeof humanTrapDiagnostics.expectedPunishment === 'number'">punish +{{ humanTrapDiagnostics.expectedPunishment }}cp ·</span>
+      <span v-if="typeof humanTrapDiagnostics.choicePressure === 'number'">pressure {{ humanTrapDiagnostics.choicePressure }} ·</span>
+      <span v-if="humanTrapDiagnostics.reason">{{ humanTrapDiagnostics.reason }} ·</span>
+      score {{ humanTrapDiagnostics.trapScore }}
+    </div>
     <footer class="footer">
       <div
         v-if="engineDetails.length > 0"
@@ -169,7 +181,7 @@ export default {
     hasPreviewLine () {
       return this.previewLineId !== null && !!this.lines[this.previewLineId]
     },
-    ...mapGetters(['boardStyle', 'pieceStyle', 'dimensionNumber', 'moves', 'fen', 'is960', 'variant', 'orientation', 'multipv', 'engineSettings', 'mainFirstMove', 'PvE', 'active', 'turn', 'enginetime', 'PvEValue', 'PvEParam', 'PvEInput', 'nodes', 'depth', 'seldepth'])
+    ...mapGetters(['boardStyle', 'pieceStyle', 'dimensionNumber', 'moves', 'fen', 'is960', 'variant', 'orientation', 'multipv', 'engineSettings', 'mainFirstMove', 'PvE', 'active', 'turn', 'enginetime', 'PvEValue', 'PvEParam', 'PvEInput', 'nodes', 'depth', 'seldepth', 'humanTrapDiagnostics'])
   },
   watch: {
     pvcount () {
@@ -487,6 +499,14 @@ export default {
 .item.placeholder {
   font-family: sans-serif;
   justify-content: center;
+}
+
+.human-trap-diagnostics {
+  border-top: 1px solid var(--main-border-color);
+  padding: 4px 6px;
+  font-size: 8pt;
+  color: var(--light-text-color);
+  background: var(--button-color);
 }
 
 .footer {

@@ -176,6 +176,24 @@
               type="checkbox"
             > Show game result modal at game end
           </label>
+          <label
+            v-if="whiteChoice !== blackChoice"
+            class="checkbox-label"
+          >
+            <input
+              v-model="humanTrapMode"
+              type="checkbox"
+            > Human Trap Mode
+          </label>
+          <label
+            v-if="whiteChoice !== blackChoice"
+            class="checkbox-label"
+          >
+            <input
+              v-model="closeWinMode"
+              type="checkbox"
+            > Close Win Mode
+          </label>
         </div>
 
         <p class="hint">
@@ -336,6 +354,16 @@ export default {
       set (v) { this.$store.commit('startGameModal', { showEndGameModal: !!v }) }
     },
 
+    humanTrapMode: {
+      get () { return !!(this.$store.state.startGameModal && this.$store.state.startGameModal.humanTrapMode) },
+      set (v) { this.$store.commit('startGameModal', { humanTrapMode: !!v }) }
+    },
+
+    closeWinMode: {
+      get () { return !!(this.$store.state.startGameModal && this.$store.state.startGameModal.closeWinMode) },
+      set (v) { this.$store.commit('startGameModal', { closeWinMode: !!v }) }
+    },
+
     startDisabled () {
       // Disable if white is engine but no engine selected
       if (this.whiteChoice === 'engine' && !this.whiteEngineObj) {
@@ -449,6 +477,8 @@ export default {
         white: this.whiteChoice,
         black: this.blackChoice,
         showEndGameModal: this.showEndGameModal,
+        humanTrapMode: this.humanTrapMode,
+        closeWinMode: this.closeWinMode,
 
         // Engines are only relevant when a side is set to 'engine'. We emit names for simplicity
         whiteEngine: (this.whiteChoice === 'engine' && this.whiteEngineObj)
@@ -501,7 +531,9 @@ export default {
         engine: playerIsWhite
           ? payload.blackEngine
           : payload.whiteEngine,
-        gameMode: payload.gameMode
+        gameMode: payload.gameMode,
+        humanTrapMode: payload.humanTrapMode,
+        closeWinMode: payload.closeWinMode
       })
 
       // Emit a start event as well (UI layer hook), then close

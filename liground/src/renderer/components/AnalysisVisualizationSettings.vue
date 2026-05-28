@@ -2,6 +2,9 @@
   <div class="viz-settings">
     <h4>시각화</h4>
     <label><input v-model="local.showMultiPvArrows" type="checkbox" @change="save"> 후보수 화살표</label>
+    <label><input v-model="humanTrapMode" type="checkbox"> Human Trap Mode</label>
+    <label><input v-model="closeWinMode" type="checkbox"> Close Win Mode</label>
+    <small>Human Trap은 분석/추천/엔진 선택에 실전 함정 압력을 반영합니다. Close Win은 안전한 우세권 안에서 과도한 압도를 피합니다. 둘 다 기본값은 꺼짐입니다.</small>
     <label>표시 후보 수 <input v-model.number="local.multiPvCount" min="1" type="number" @change="save"></label>
     <label><input v-model="local.trajectoryEnabled" type="checkbox" @change="save"> 최선 수순 궤적</label>
     <label>표시 방향
@@ -219,7 +222,15 @@ export default {
     startPool () { return this.$store.getters.openingStartPool || [] },
     variant () { return this.$store.getters.variant },
     isJanggiVariant () { return ['janggi', 'janggimodern'].includes(this.variant) },
-    openingGeneration () { return this.$store.state.openingGeneration || { running: false, completedGames: 0, completedMoves: 0 } }
+    openingGeneration () { return this.$store.state.openingGeneration || { running: false, completedGames: 0, completedMoves: 0 } },
+    humanTrapMode: {
+      get () { return !!(this.$store.state.startGameModal && this.$store.state.startGameModal.humanTrapMode) },
+      set (value) { this.$store.commit('startGameModal', { humanTrapMode: !!value }) }
+    },
+    closeWinMode: {
+      get () { return !!(this.$store.state.startGameModal && this.$store.state.startGameModal.closeWinMode) },
+      set (value) { this.$store.commit('startGameModal', { closeWinMode: !!value }) }
+    }
   },
   watch: {
     cfg: {
