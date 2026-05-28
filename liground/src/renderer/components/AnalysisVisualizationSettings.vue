@@ -83,6 +83,7 @@
       <h4>오프닝북</h4>
       <label><input v-model="openingBookLocal.enabled" type="checkbox" @change="saveOpeningBook"> 오프닝북 사용</label>
       <label><input v-model="openingBookLocal.showSuggestions" type="checkbox" @change="saveOpeningBook"> 추천 수 표시</label>
+      <label>추천 표시 개수 <input v-model.number="openingBookLocal.recommendationCount" min="1" max="8" type="number" @change="saveOpeningBook"></label>
       <label><input v-model="openingBookLocal.autoResponse" type="checkbox" @change="saveOpeningBook"> 자동 응수 사용</label>
       <label>자동 응수 다양성
         <select v-model.number="openingBookLocal.autoResponseTopK" @change="saveOpeningBook">
@@ -102,6 +103,13 @@
       <label>자동 응수 다양성 <input v-model.number="openingBookLocal.autoResponseTemperature" min="0.4" max="1.6" step="0.1" type="number" @change="saveOpeningBook"></label>
       <label><input v-model="openingBookLocal.autoGenerateEnabled" type="checkbox" @change="saveOpeningBook"> 자동 오프닝 생성 사용</label>
       <label><input v-model="openingBookLocal.useStartPool" type="checkbox" @change="saveOpeningBook"> 시작 포지션 풀 사용</label>
+      <label v-if="isJanggiVariant"><input v-model="openingBookLocal.useStandard16OpeningSet" type="checkbox" @change="saveOpeningBook"> 표준 16 시작 포지션 사용</label>
+      <label v-if="isJanggiVariant && openingBookLocal.useStandard16OpeningSet">표준 16 선택 방식
+        <select v-model="openingBookLocal.standard16SelectionMode" @change="saveOpeningBook">
+          <option value="cycle">순환</option>
+          <option value="random">랜덤</option>
+        </select>
+      </label>
       <label>자동 생성 대국 수 <input v-model.number="openingBookLocal.autoGenerateIterations" min="1" type="number" @change="saveOpeningBook"></label>
       <label><input v-model="openingBookLocal.autoGenerateUnlimited" type="checkbox" @change="saveOpeningBook"> 연속 생성(중간 저장)</label>
       <label>자동 진행 최대 수 <input v-model.number="openingBookLocal.autoGenerateMaxPlies" min="2" max="80" type="number" @change="saveOpeningBook"></label>
@@ -139,6 +147,7 @@
       </div>
       <div class="book-actions">
         <button v-if="!openingGeneration.running" type="button" @click="runAutoOpeningGeneration">자동 오프닝 생성 실행</button>
+        <button v-if="!openingGeneration.running" type="button" @click="runAutoOpeningGenerationFromCurrentPosition">현재 포지션에서 생성</button>
         <button v-else type="button" @click="stopAutoOpeningGeneration">자동 오프닝 생성 중지</button>
         <button type="button" @click="exportOpeningBook">오프닝북 클립보드 복사</button>
         <button type="button" @click="clearOpeningBook">오프닝북 초기화</button>
@@ -148,6 +157,8 @@
       <small>현재 분석 깊이: {{ openingGeneration.currentDepth || 0 }}</small>
       <small>현재 분석 중인 수: {{ openingGeneration.currentMove || '-' }}</small>
       <small>저장된 분기 수: {{ openingGeneration.savedBranches || 0 }}</small>
+      <small>마지막 종료 사유: {{ openingGeneration.lastStopReason || '-' }}</small>
+      <small v-if="openingGeneration.lastStopDetail">상세: {{ openingGeneration.lastStopDetail }}</small>
     </div>
 
     <div v-if="deepAnalysis.error" class="deep-error">
@@ -207,6 +218,7 @@ export default {
     openingBook () { return this.$store.getters.openingBook },
     startPool () { return this.$store.getters.openingStartPool || [] },
     variant () { return this.$store.getters.variant },
+    isJanggiVariant () { return ['janggi', 'janggimodern'].includes(this.variant) },
     openingGeneration () { return this.$store.state.openingGeneration || { running: false, completedGames: 0, completedMoves: 0 } }
   },
   watch: {
@@ -303,6 +315,8 @@ export default {
       return 'volatile-stable'
     },
     saveOpeningBook () {
+      this.openingBookLocal.recommendationCount = Math.max(1, Math.min(8, Number(this.openingBookLocal.recommendationCount) || 3))
+      this.openingBookLocal.standard16SelectionMode = this.openingBookLocal.standard16SelectionMode === 'random' ? 'random' : 'cycle'
       this.$store.dispatch('openingBook', this.openingBookLocal)
     },
     async saveOpeningBookSnapshot () {
@@ -367,6 +381,13 @@ export default {
       const games = result && result.generatedGames ? result.generatedGames : 0
       const moves = result && result.generatedMoves ? result.generatedMoves : 0
       alert(`자동 생성 완료: ${games}판, ${moves}수 누적`)
+    },
+    async runAutoOpeningGenerationFromCurrentPosition () {
+      this.saveOpeningBook()
+      const result = await this.$store.dispatch('runAutoOpeningGenerationFromCurrentPosition')
+      const games = result && result.generatedGames ? result.generatedGames : 0
+      const moves = result && result.generatedMoves ? result.generatedMoves : 0
+      alert(`현재 포지션 생성 완료: ${games}판, ${moves}수 누적`)
     },
     stopAutoOpeningGeneration () {
       this.$store.dispatch('stopAutoOpeningGeneration')

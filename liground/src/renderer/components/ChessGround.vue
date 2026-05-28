@@ -637,14 +637,16 @@ export default {
         }
       }
       if (this.openingBook && this.openingBook.enabled && this.openingBook.showSuggestions) {
-        const topCandidates = (this.openingCandidates || []).slice(0, 3)
+        const recommendationCount = Math.max(1, Math.min(8, Number(this.openingBook.recommendationCount) || 3))
+        const topCandidates = (this.openingCandidates || []).slice(0, recommendationCount)
         topCandidates.forEach((cand, idx) => {
           if (!cand || !cand.uci) return
           const { orig, dest } = this.toBoardKeys(cand.uci)
           const share = Number(cand.share || 0)
           const lineWidth = share >= 0.7 ? 8 : (share >= 0.3 ? 5 : 3)
           const opacity = Math.max(0.35, Math.min(1, 0.35 + share * 0.8))
-          const brush = idx === 0 ? 'yellow' : (idx === 1 ? 'green' : 'blue')
+          const brushes = ['yellow', 'green', 'blue', 'paleBlue']
+          const brush = brushes[Math.min(idx, brushes.length - 1)]
           multipvShapes.unshift({
             orig,
             dest,

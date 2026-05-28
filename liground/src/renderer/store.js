@@ -6,7 +6,7 @@ import allEngines from './store/engines'
 import { createReviewRequest, emptyReviewState, emptyReviewSequenceState, REVIEW_MARKER_MODES, REVIEW_MODES } from '../shared/review/schema'
 import { analyzeReviewRequest } from '../shared/review/reviewService'
 import { buildMainlineFromMove } from '../shared/gameSequence'
-import { addSequenceToOpeningGraph, chooseWeightedCandidate, createOpeningGraph, mergeOpeningGraphs, normalizeOpeningGraph, openingCandidatesForFen, refreshTransitionMeta } from '../shared/openingGraph'
+import { addSequenceToOpeningGraph, applyOpeningExplorationBias, chooseWeightedCandidate, createOpeningGraph, mergeOpeningGraphs, normalizeOpeningGraph, openingCandidatesForFen, refreshTransitionMeta } from '../shared/openingGraph'
 import { fenToEpd } from '../shared/openingLookup'
 
 import moveAudio from './assets/audio/Move.mp3'
@@ -535,6 +535,33 @@ function sanitizeEngineMove (move) {
   return String(move || '').trim().split(/\s+/)[0] || ''
 }
 
+
+const JANGGI_STANDARD_16_BACK_RANKS = [
+  'NBA1ABN',
+  'NBA1ANB',
+  'BNA1ABN',
+  'BNA1ANB'
+]
+
+function janggiStandard16OpeningPositions (variant = 'janggi') {
+  // Fairy-Stockfish/Liground Janggi uses N/n for horses and B/b for elephants
+  // (see piece CSS horse/elephant mappings and the built-in Janggi FEN style).
+  // Each side independently chooses one of four valid horse-elephant back-rank
+  // arrangements, producing 4 x 4 = 16 deterministic start positions.
+  const safeVariant = variant || 'janggi'
+  const rows = []
+  JANGGI_STANDARD_16_BACK_RANKS.forEach((blackBackRank, blackIndex) => {
+    JANGGI_STANDARD_16_BACK_RANKS.forEach((redBackRank, redIndex) => {
+      rows.push({
+        name: `Standard 16 ${blackIndex + 1}-${redIndex + 1}`,
+        variant: safeVariant,
+        fen: `r${blackBackRank.toLowerCase()}r/4k4/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/4K4/R${redBackRank}R w - - 0 1`
+      })
+    })
+  })
+  return rows
+}
+
 export const store = new Vuex.Store({
   state: {
     engineIndex: 1,
@@ -702,6 +729,9 @@ export const store = new Vuex.Store({
       showSuggestions: true,
       autoResponse: false,
       autoResponseTopK: 3,
+      recommendationCount: 3,
+      useStandard16OpeningSet: false,
+      standard16SelectionMode: 'cycle',
       autoResponseTemperature: 0.9,
       autoGenerateEnabled: false,
       autoGenerateIterations: 8,
@@ -732,7 +762,9 @@ export const store = new Vuex.Store({
       currentDepth: 0,
       currentMove: '',
       currentStart: '',
-      savedBranches: 0
+      savedBranches: 0,
+      lastStopReason: '',
+      lastStopDetail: ''
     },
     openingBookPersist: {
       queued: false,
@@ -1205,7 +1237,10 @@ export const store = new Vuex.Store({
       state.openingGraph = payload || createOpeningGraph()
     },
     openingBook (state, payload) {
-      state.openingBook = { ...state.openingBook, ...(payload || {}) }
+      const next = { ...state.openingBook, ...(payload || {}) }
+      next.recommendationCount = Math.max(1, Math.min(8, Number(next.recommendationCount) || 3))
+      next.standard16SelectionMode = next.standard16SelectionMode === 'random' ? 'random' : 'cycle'
+      state.openingBook = next
     },
     openingGeneration (state, payload) {
       state.openingGeneration = { ...state.openingGeneration, ...(payload || {}) }
@@ -2866,11 +2901,12 @@ export const store = new Vuex.Store({
       context.dispatch('updateBoard')
       context.dispatch('position')
     },
-    async runAutoOpeningGeneration (context) {
+    async runAutoOpeningGeneration (context, payload = {}) {
       const nextSessionId = (context.state.openingGeneration.sessionId || 0) + 1
       console.log('[opening-gen] start requested', {
         variant: context.state.variant,
         fen: context.state.startFen,
+        overrideStartPool: Array.isArray(payload && payload.startPoolOverride),
         stopRequested: context.state.openingGeneration && context.state.openingGeneration.stopRequested
       })
       context.commit('openingGeneration', {
@@ -2884,9 +2920,16 @@ export const store = new Vuex.Store({
         currentDepth: 0,
         currentMove: '',
         currentStart: '',
-        savedBranches: 0
+        savedBranches: 0,
+        lastStopReason: '',
+        lastStopDetail: ''
       })
       const cfg = context.state.openingBook || {}
+      const setGenerationStop = (reason, detail = '') => {
+        const lastStopDetail = typeof detail === 'string' ? detail : JSON.stringify(detail)
+        context.commit('openingGeneration', { lastStopReason: reason, lastStopDetail })
+        console.log('[opening-gen] stop reason', { reason, detail })
+      }
       if (!cfg.autoGenerateEnabled) {
         console.log('[opening-gen] autoGenerateEnabled=false, continuing because manual run was requested')
       }
@@ -2894,29 +2937,62 @@ export const store = new Vuex.Store({
       const maxPlies = Math.max(2, Math.min(80, Number(cfg.autoGenerateMaxPlies) || 16))
       const earlyPlies = Math.max(2, Math.min(maxPlies, Number(cfg.autoGenerateEarlyPlies) || 10))
       const usePool = cfg.useStartPool !== false
-      const poolRaw = usePool && Array.isArray(context.state.openingStartPool) && context.state.openingStartPool.length
-        ? context.state.openingStartPool
-        : [{ variant: context.state.variant, fen: context.state.startFen || '' }]
+      const hasOverridePool = Array.isArray(payload && payload.startPoolOverride) && payload.startPoolOverride.length > 0
+      const useStandard16 = !hasOverridePool && cfg.useStandard16OpeningSet === true && ['janggi', 'janggimodern'].includes(context.state.variant)
+      const poolRaw = hasOverridePool
+        ? payload.startPoolOverride
+        : (useStandard16
+          ? janggiStandard16OpeningPositions(context.state.variant)
+          : (usePool && Array.isArray(context.state.openingStartPool) && context.state.openingStartPool.length
+            ? context.state.openingStartPool
+            : [{ variant: context.state.variant, fen: context.state.startFen || '' }]))
       const pool = poolRaw.filter(item => item && item.variant === context.state.variant)
-      const graph = normalizeOpeningGraph(context.state.openingGraph || createOpeningGraph())
+      const validPool = []
+      let invalidStartCount = 0
+      for (const item of pool) {
+        try {
+          const board = item.fen ? new ffish.Board(item.variant || context.state.variant, item.fen) : new ffish.Board(item.variant || context.state.variant)
+          validPool.push({ ...item, fen: board.fen() })
+        } catch (err) {
+          invalidStartCount += 1
+          console.warn('[opening-gen] invalid start position skipped', { name: item && item.name, fen: item && item.fen, error: err && err.message })
+        }
+      }
+      if (!validPool.length) {
+        setGenerationStop('invalid_start_position', `No valid start positions (${invalidStartCount} invalid).`)
+        context.commit('openingGeneration', { running: false, stopRequested: false, currentMove: '', currentDepth: 0, currentStart: '' })
+        await context.dispatch('persistOpeningBookFlush')
+        return { generatedGames: 0, generatedMoves: 0 }
+      }
       let generatedMoves = 0
       let g = 0
       const minTrustedCount = Math.max(0, Number(cfg.autoGenerateMinTrustedCount) || 2)
       while (g < iterations) {
         console.log('[opening-gen] game-loop begin', { gameIndex: g + 1, iterations })
-        if (context.state.openingGeneration.stopRequested) break
-        const start = pool[Math.floor(Math.random() * pool.length)]
+        if (context.state.openingGeneration.stopRequested) {
+          setGenerationStop('stop_requested', `Stopped before game ${g + 1}.`)
+          break
+        }
+        const start = useStandard16 && cfg.standard16SelectionMode !== 'random'
+          ? validPool[g % validPool.length]
+          : validPool[Math.floor(Math.random() * validPool.length)]
         let board
         try {
           board = start.fen ? new ffish.Board(start.variant || context.state.variant, start.fen) : new ffish.Board(start.variant || context.state.variant)
           context.commit('openingGeneration', { currentStart: start.name || board.fen() })
         } catch (err) {
-          continue
+          setGenerationStop('invalid_start_position', err && err.message ? err.message : 'Failed to initialize start position.')
+          break
         }
         const positions = [board.fen()]
         const moves = []
+        let plyStopReason = 'max_depth_reached'
         for (let ply = 0; ply < maxPlies; ply++) {
-          if (context.state.openingGeneration.stopRequested) break
+          if (context.state.openingGeneration.stopRequested) {
+            plyStopReason = 'stop_requested'
+            setGenerationStop('stop_requested', `Stopped at game ${g + 1}, ply ${ply + 1}.`)
+            break
+          }
           console.log('[opening-gen] ply begin', { gameIndex: g + 1, ply: ply + 1, fen: board.fen() })
           const configuredDepth = Number(cfg.autoGenerateDepth)
           const analysisDepth = Math.max(4, configuredDepth || 12)
@@ -2953,18 +3029,59 @@ export const store = new Vuex.Store({
             accepted: acceptedAnalyzed.map(c => ({ uci: c.uci, score: c.score }))
           })
           const liveGraph = normalizeOpeningGraph(context.state.openingGraph || createOpeningGraph())
-          const candidates = (acceptedAnalyzed.length ? acceptedAnalyzed : openingCandidatesForFen(liveGraph, board.fen(), Math.max(1, Number(cfg.autoGenerateTopK) || 3), { policy: cfg.moveSelectionPolicy || 'practical' }))
+          const graphCandidates = openingCandidatesForFen(liveGraph, board.fen(), Math.max(1, Number(cfg.autoGenerateTopK) || 3), {
+            policy: cfg.moveSelectionPolicy || 'practical',
+            explorationStrength: 0.45
+          })
+          const candidates = (acceptedAnalyzed.length ? acceptedAnalyzed : graphCandidates)
+            .map(c => {
+              if (!acceptedAnalyzed.length) return c
+              const known = graphCandidates.find(item => item && item.uci === c.uci)
+              return known
+                ? { ...known, ...c, meta: { ...(known.meta || {}), effectiveCp: c.score }, count: known.count, trustedCount: Math.max(known.trustedCount || 0, minTrustedCount), exploratoryCount: known.exploratoryCount }
+                : { ...c, count: 0, trustedCount: minTrustedCount, exploratoryCount: 0, meta: { effectiveCp: c.score, cpSamples: 0, confidence: 0.25, cpStdDev: 0 } }
+            })
             .filter(c => (c.trustedCount || 0) >= minTrustedCount)
+          const bestCandidateCp = candidates.reduce((best, c) => {
+            const cp = Number(c && (c.score !== undefined ? c.score : (c.effectiveCp !== undefined ? c.effectiveCp : c.meta && c.meta.effectiveCp)))
+            return Number.isFinite(cp) ? (best === null ? cp : Math.max(best, cp)) : best
+          }, null)
           const inExploration = cfg.earlyRandomEnabled !== false && ply < earlyPlies
+          const explorationCandidates = applyOpeningExplorationBias(candidates, {
+            bestEffectiveCp: bestCandidateCp,
+            maxCpDelta: cpThreshold,
+            strength: inExploration ? 1 : 0.45,
+            maxBonus: 0.65
+          })
+          console.log('[opening-gen] exploration candidates', {
+            gameIndex: g + 1,
+            ply: ply + 1,
+            mode: inExploration ? 'frontier' : 'reinforce',
+            candidates: explorationCandidates.map(c => ({
+              uci: c.uci,
+              score: c.score,
+              explorationScore: c.explorationScore,
+              explorationBonus: c.exploration && c.exploration.bonus,
+              samples: c.exploration && c.exploration.samples,
+              confidence: c.exploration && c.exploration.confidence,
+              cpDelta: c.exploration && c.exploration.cpDelta,
+              reason: c.exploration && c.exploration.reason
+            }))
+          })
           let picked = null
-          if (candidates.length) {
-            picked = chooseWeightedCandidate(candidates, {
-              topK: inExploration ? (cfg.autoGenerateTopK || 3) : 1,
+          if (explorationCandidates.length) {
+            picked = chooseWeightedCandidate(explorationCandidates, {
+              topK: inExploration ? (cfg.autoGenerateTopK || 3) : Math.min(2, cfg.autoGenerateTopK || 2),
               temperature: inExploration ? (cfg.autoGenerateTemperature || 1) : 0.6,
-              policy: cfg.moveSelectionPolicy || 'practical'
+              policy: cfg.moveSelectionPolicy || 'practical',
+              explorationBias: true
             })
           }
-          if (!picked || !picked.uci) break
+          if (!picked || !picked.uci) {
+            plyStopReason = analyzed.length ? 'no_candidates' : 'engine_no_lines'
+            setGenerationStop(plyStopReason, `Game ${g + 1}, ply ${ply + 1}: analyzed=${analyzed.length}, accepted=${acceptedAnalyzed.length}, candidates=${candidates.length}.`)
+            break
+          }
           try {
             const beforeFen = board.fen()
             let committedCount = 0
@@ -2996,19 +3113,40 @@ export const store = new Vuex.Store({
               }
             }
           } catch (err) {
+            plyStopReason = 'move_push_failed'
+            setGenerationStop('move_push_failed', `Game ${g + 1}, ply ${ply + 1}: ${err && err.message ? err.message : 'move failed'}`)
             console.warn('[opening-gen] ply failed', { gameIndex: g + 1, ply: ply + 1, error: err && err.message })
             break
           }
         }
+        if (plyStopReason === 'max_depth_reached' && !context.state.openingGeneration.stopRequested) {
+          setGenerationStop('max_depth_reached', `Game ${g + 1} reached ${maxPlies} plies.`)
+        }
         g += 1
         context.commit('openingGeneration', { completedGames: g, completedMoves: generatedMoves })
         console.log('[opening-gen] game-loop end', { completedGames: g, completedMoves: generatedMoves })
-        if (cfg.autoGenerateUnlimited && g % 200 === 0) break
+        if (cfg.autoGenerateUnlimited && g % 200 === 0) {
+          setGenerationStop('batch_checkpoint', `Paused after ${g} generated games for autosave.`)
+          break
+        }
       }
       console.log('[opening-gen] finished', { generatedGames: g, generatedMoves, stopRequested: context.state.openingGeneration.stopRequested })
       context.commit('openingGeneration', { running: false, stopRequested: false, currentMove: '', currentDepth: 0, currentStart: '' })
       await context.dispatch('persistOpeningBookFlush')
       return { generatedGames: g, generatedMoves }
+    },
+    runAutoOpeningGenerationFromCurrentPosition (context) {
+      const fen = context.state.board && typeof context.state.board.fen === 'function'
+        ? context.state.board.fen()
+        : context.state.fen
+      if (!fen) return { generatedGames: 0, generatedMoves: 0 }
+      return context.dispatch('runAutoOpeningGeneration', {
+        startPoolOverride: [{
+          name: '현재 포지션',
+          variant: context.state.variant,
+          fen
+        }]
+      })
     },
     stopAutoOpeningGeneration (context) {
       context.commit('openingGeneration', { stopRequested: true })
@@ -4296,7 +4434,8 @@ export const store = new Vuex.Store({
     },
     openingCandidates (state) {
       if (!state.openingBook || !state.openingBook.enabled) return []
-      return openingCandidatesForFen(state.openingGraph, state.fen, 6, { policy: state.openingBook.moveSelectionPolicy || 'practical' })
+      const recommendationCount = Math.max(1, Math.min(8, Number(state.openingBook.recommendationCount) || 3))
+      return openingCandidatesForFen(state.openingGraph, state.fen, Math.max(6, recommendationCount), { policy: state.openingBook.moveSelectionPolicy || 'practical' })
     },
     openingBook (state) {
       return state.openingBook
