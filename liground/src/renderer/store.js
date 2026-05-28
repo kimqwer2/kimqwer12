@@ -113,6 +113,232 @@ function normalizeFen (fen) {
   return parts.join(' ')
 }
 
+const HUMAN_TRAP_DEFAULTS = {
+  enabled: false,
+  multiPv: 3,
+  preferredCpLoss: 25,
+  maxCpLoss: 40,
+  minCandidateCp: -50,
+  minPunishmentCp: 120,
+  minTrapScore: 55,
+  probeDepth: 8,
+  maxCandidates: 3,
+  maxRepliesPerCandidate: 1
+}
+
+const HUMAN_TRAP_PIECE_VALUES = {
+  p: 100,
+  n: 320,
+  b: 330,
+  r: 500,
+  q: 900,
+  k: 0,
+  a: 300,
+  c: 300,
+  e: 300,
+  f: 300,
+  g: 300,
+  h: 300,
+  m: 300,
+  s: 300,
+  w: 300
+}
+
+function clampNumber (value, min, max) {
+  return Math.max(min, Math.min(max, value))
+}
+
+function parseEngineScoreToCp (score) {
+  if (typeof score === 'number' && Number.isFinite(score)) return score
+  if (typeof score !== 'string') return null
+  const trimmed = score.trim()
+  if (!trimmed) return null
+  if (trimmed[0] === '#') {
+    const mate = Number(trimmed.slice(1))
+    if (!Number.isFinite(mate)) return null
+    return mate > 0 ? 100000 - Math.min(9999, mate) : -100000 - Math.max(-9999, mate)
+  }
+  const cp = Number(trimmed)
+  return Number.isFinite(cp) ? cp : null
+}
+
+function normalizeTrapSettings (settings = {}) {
+  const merged = { ...HUMAN_TRAP_DEFAULTS, ...(settings || {}) }
+  return {
+    ...merged,
+    enabled: !!merged.enabled,
+    multiPv: Math.max(1, Math.min(5, Number(merged.multiPv) || HUMAN_TRAP_DEFAULTS.multiPv)),
+    preferredCpLoss: Math.max(0, Number(merged.preferredCpLoss) || HUMAN_TRAP_DEFAULTS.preferredCpLoss),
+    maxCpLoss: Math.max(1, Number(merged.maxCpLoss) || HUMAN_TRAP_DEFAULTS.maxCpLoss),
+    minCandidateCp: Number.isFinite(Number(merged.minCandidateCp)) ? Number(merged.minCandidateCp) : HUMAN_TRAP_DEFAULTS.minCandidateCp,
+    minPunishmentCp: Math.max(1, Number(merged.minPunishmentCp) || HUMAN_TRAP_DEFAULTS.minPunishmentCp),
+    minTrapScore: Math.max(1, Number(merged.minTrapScore) || HUMAN_TRAP_DEFAULTS.minTrapScore),
+    probeDepth: Math.max(4, Math.min(12, Number(merged.probeDepth) || HUMAN_TRAP_DEFAULTS.probeDepth)),
+    maxCandidates: Math.max(1, Math.min(5, Number(merged.maxCandidates) || HUMAN_TRAP_DEFAULTS.maxCandidates)),
+    maxRepliesPerCandidate: Math.max(1, Math.min(2, Number(merged.maxRepliesPerCandidate) || HUMAN_TRAP_DEFAULTS.maxRepliesPerCandidate))
+  }
+}
+
+function squareFileIndexToName (fileIndex) {
+  return String.fromCharCode('a'.charCodeAt(0) + fileIndex)
+}
+
+function parseFenPieceMap (fen) {
+  const placement = typeof fen === 'string' ? fen.trim().split(/\s+/)[0] : ''
+  const rows = placement ? placement.split('/') : []
+  const pieces = {}
+  for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+    const rank = rows.length - rowIndex
+    let fileIndex = 0
+    const row = rows[rowIndex]
+    for (let i = 0; i < row.length; i++) {
+      const ch = row[i]
+      if (/\d/.test(ch)) {
+        let digits = ch
+        while (i + 1 < row.length && /\d/.test(row[i + 1])) digits += row[++i]
+        fileIndex += Number(digits) || 0
+        continue
+      }
+      if (ch === '+') {
+        const promoted = row[i + 1]
+        if (promoted) {
+          pieces[`${squareFileIndexToName(fileIndex)}${rank}`] = `+${promoted}`
+          i++
+          fileIndex++
+        }
+        continue
+      }
+      pieces[`${squareFileIndexToName(fileIndex)}${rank}`] = ch
+      fileIndex++
+    }
+  }
+  return pieces
+}
+
+function parseUciFromTo (uci) {
+  if (typeof uci !== 'string' || uci.includes('@')) return null
+  const match = uci.match(/^([a-z]\d{1,2})([a-z]\d{1,2})/i)
+  if (!match) return null
+  return { from: match[1], to: match[2] }
+}
+
+function trapPieceValue (piece) {
+  if (!piece) return 0
+  const normalized = String(piece).replace('+', '').slice(-1).toLowerCase()
+  return HUMAN_TRAP_PIECE_VALUES[normalized] || 300
+}
+
+function boardFromFen (variant, fen, is960) {
+  return is960 ? new ffish.Board(variant, fen, true) : new ffish.Board(variant, fen)
+}
+
+function detectPoisonedCaptureReplies ({ variant, is960, fen, candidateUci, settings }) {
+  const candidateMove = parseUciFromTo(candidateUci)
+  if (!candidateMove) return []
+  const board = boardFromFen(variant, fen, is960)
+  board.push(candidateUci)
+  const afterCandidateFen = board.fen()
+  const pieceMap = parseFenPieceMap(afterCandidateFen)
+  const legalMoves = board.legalMoves()
+  const replies = []
+  for (const reply of Array.isArray(legalMoves) ? legalMoves : String(legalMoves || '').split(/\s+/).filter(Boolean)) {
+    const parsed = parseUciFromTo(reply)
+    if (!parsed) continue
+    const captured = pieceMap[parsed.to]
+    if (!captured) continue
+    const capturedValue = trapPieceValue(captured)
+    const capturesMovedPiece = parsed.to === candidateMove.to
+    if (capturedValue < 100) continue
+    if (!capturesMovedPiece && capturedValue < 300) continue
+    const attractiveness = clampNumber((capturedValue / 900) + (capturesMovedPiece ? 0.25 : 0.05), 0.15, 1)
+    const replyBoard = boardFromFen(variant, afterCandidateFen, is960)
+    try {
+      replyBoard.push(reply)
+      replies.push({
+        reply,
+        captured,
+        capturedValue,
+        capturesMovedPiece,
+        attractiveness,
+        fenAfterReply: replyBoard.fen()
+      })
+    } catch (err) {
+      // Ignore invalid speculative reply moves from variants with unusual capture rules.
+    }
+  }
+  return replies
+    .sort((a, b) => (b.capturesMovedPiece - a.capturesMovedPiece) || (b.capturedValue - a.capturedValue) || a.reply.localeCompare(b.reply))
+    .slice(0, settings.maxRepliesPerCandidate)
+}
+
+function normalizeTrapRootCandidates (lines, fallbackBestmove) {
+  const byMove = new Map()
+  const ordered = (Array.isArray(lines) ? lines : [])
+    .filter(line => line && line.ucimove && typeof line.cp === 'number' && Number.isFinite(line.cp) && typeof line.mate !== 'number')
+    .sort((a, b) => (a.multipv || 999) - (b.multipv || 999))
+  for (const line of ordered) {
+    if (!byMove.has(line.ucimove)) byMove.set(line.ucimove, line)
+  }
+  if (fallbackBestmove && !byMove.has(fallbackBestmove)) {
+    byMove.set(fallbackBestmove, { ucimove: fallbackBestmove, cp: null, multipv: 999 })
+  }
+  return [...byMove.values()].filter(line => typeof line.cp === 'number')
+}
+
+async function selectHumanTrapMove ({ engineInstance, fen, variant, is960, bestmove, rootLines, settings }) {
+  const safeSettings = normalizeTrapSettings(settings)
+  if (!safeSettings.enabled || !engineInstance || !fen || !bestmove) return null
+  const candidates = normalizeTrapRootCandidates(rootLines, bestmove).slice(0, safeSettings.maxCandidates)
+  if (!candidates.length) return null
+  const bestLine = candidates.find(item => item.ucimove === bestmove) || candidates[0]
+  if (!bestLine || typeof bestLine.cp !== 'number') return null
+  const bestCp = bestLine.cp
+  const trapCandidates = []
+  for (const candidate of candidates) {
+    const candidateCp = candidate.cp
+    const cpLoss = bestCp - candidateCp
+    if (cpLoss < 0 || cpLoss > safeSettings.maxCpLoss || candidateCp < safeSettings.minCandidateCp) continue
+    const replies = detectPoisonedCaptureReplies({ variant, is960, fen, candidateUci: candidate.ucimove, settings: safeSettings })
+    if (!replies.length) continue
+    for (const reply of replies) {
+      const evaluated = await engineInstance.evaluate(reply.fenAfterReply, safeSettings.probeDepth)
+      const postCaptureCp = parseEngineScoreToCp(evaluated)
+      if (postCaptureCp === null) continue
+      const punishmentCp = postCaptureCp - candidateCp
+      if (punishmentCp < safeSettings.minPunishmentCp) continue
+      const safety = clampNumber(1 - (cpLoss / safeSettings.maxCpLoss), 0, 1)
+      const preferredWindow = Math.max(1, safeSettings.maxCpLoss - safeSettings.preferredCpLoss)
+      const preferredSafety = cpLoss <= safeSettings.preferredCpLoss
+        ? 1
+        : clampNumber(1 - ((cpLoss - safeSettings.preferredCpLoss) / preferredWindow) * 0.35, 0.65, 1)
+      const punishment = clampNumber(punishmentCp / 180, 0, 1.5)
+      const trapScore = Math.round(100 * reply.attractiveness * punishment * safety * preferredSafety)
+      if (trapScore < safeSettings.minTrapScore) continue
+      trapCandidates.push({
+        move: candidate.ucimove,
+        type: 'Poisoned Capture',
+        temptingReply: reply.reply,
+        cpLoss,
+        expectedPunishment: Math.round(punishmentCp),
+        trapScore,
+        candidateCp,
+        bestCp,
+        captured: reply.captured,
+        capturedValue: reply.capturedValue,
+        depth: safeSettings.probeDepth
+      })
+    }
+  }
+  if (!trapCandidates.length) return null
+  trapCandidates.sort((a, b) =>
+    (b.trapScore - a.trapScore) ||
+    (a.cpLoss - b.cpLoss) ||
+    (b.expectedPunishment - a.expectedPunishment) ||
+    a.move.localeCompare(b.move)
+  )
+  return trapCandidates[0]
+}
+
 function normalizedMoveLineFromHistory (moves) {
   if (!Array.isArray(moves) || moves.length === 0) return ''
   const line = []
@@ -575,6 +801,7 @@ export const store = new Vuex.Store({
     PvEInput: 1000,
     PvELimiter: null, // stores the limiter config for the PvE engine
     PvEEngineInstance: null,
+    humanTrapDiagnostics: null,
     playVsEngineEnabled: false,
     playVsEngineHumanSide: 'white',
     engineTimeControlsEnabled: false,
@@ -628,7 +855,8 @@ export const store = new Vuex.Store({
       blackLimiterEnabled: true,
       blackLimiterType: 'time',
       blackLimiterValue: 1000,
-      showEndGameModal: true
+      showEndGameModal: true,
+      humanTrapMode: false
     },
     showGameEndModal: false,
     gameResult: null,
@@ -933,6 +1161,9 @@ export const store = new Vuex.Store({
     },
     PvEEngineInstance (state, payload) {
       state.PvEEngineInstance = payload
+    },
+    humanTrapDiagnostics (state, payload) {
+      state.humanTrapDiagnostics = payload || null
     },
     playVsEngineEnabled (state, payload) {
       state.playVsEngineEnabled = !!payload
@@ -1663,7 +1894,9 @@ export const store = new Vuex.Store({
           graphSizeEstimate: Object.keys(graph.transitions || {}).length,
           elapsedSinceLastFlushMs: elapsedSinceFlush
         })
-      } catch (err) {}
+      } catch (err) {
+      // Ignore invalid speculative reply moves from variants with unusual capture rules.
+    }
     },
     movesChangeDummy (context, payload) {
       context.commit('movesChangeDummy', payload)
@@ -1789,6 +2022,7 @@ export const store = new Vuex.Store({
       context.commit('deleteFromMoves', payload)
     },
     resetEngineData (context) {
+      context.commit('humanTrapDiagnostics', null)
       context.commit('resetMultiPV')
       context.commit('resetEngineStats')
       context.commit('resetWdlCache')
@@ -2035,6 +2269,10 @@ export const store = new Vuex.Store({
         const playerIsWhite = payload && typeof payload.playerIsWhite !== 'undefined' ? payload.playerIsWhite : true
         const engineName = payload.engine
         const pveLimiter = payload.pveLimiter
+        const humanTrapSettings = normalizeTrapSettings({
+          ...(payload.humanTrapSettings || {}),
+          enabled: !!(payload.humanTrapMode || (context.state.startGameModal && context.state.startGameModal.humanTrapMode))
+        })
 
         // Stop old PvE engine if it exists to avoid listener conflicts
         if (context.state.PvEEngineInstance) {
@@ -2064,6 +2302,9 @@ export const store = new Vuex.Store({
         try {
           pveEngine.send(variantCmd)
           pveEngine.send(chess960Cmd)
+          if (humanTrapSettings.enabled) {
+            pveEngine.send(`setoption name MultiPV value ${humanTrapSettings.multiPv}`)
+          }
         } catch (err) {
           console.warn('[PvEtrue] Failed to send variant/960 to PvE engine:', err)
         }
@@ -2076,10 +2317,30 @@ export const store = new Vuex.Store({
         context.commit('active', true)
 
         const engineIsWhite = !playerIsWhite
+        let humanTrapRootFen = ''
+        let humanTrapRootLines = []
+
+        const pveInfoHandler = info => {
+          if (!humanTrapSettings.enabled || !info || !('pv' in info)) return
+          const rank = Number(info.multipv) || 1
+          const ucimove = typeof info.pv === 'string' ? info.pv.split(/\s+/)[0] : ''
+          if (!ucimove) return
+          humanTrapRootLines[rank - 1] = {
+            multipv: rank,
+            cp: info.cp,
+            mate: info.mate,
+            depth: info.depth,
+            pvUCI: info.pv,
+            ucimove
+          }
+        }
 
         // send position and go to the engine instance
         const sendPositionAndGo = (inst, lim) => {
           try {
+            humanTrapRootFen = context.getters.fen
+            humanTrapRootLines = []
+            context.commit('humanTrapDiagnostics', null)
             inst.send(buildPositionCommand(context.getters.gameState))
             inst.send(limiterToGo(lim))
           } catch (err) {
@@ -2094,8 +2355,29 @@ export const store = new Vuex.Store({
 
           if (!context.state.PvE || !engineToMoveNow) return
           try {
-            const move = sanitizeEngineMove(ucimove)
+            let move = sanitizeEngineMove(ucimove)
             if (!move) return
+            if (humanTrapSettings.enabled) {
+              const currentFen = context.getters.fen
+              const trap = await selectHumanTrapMove({
+                engineInstance: pveEngine,
+                fen: humanTrapRootFen || currentFen,
+                variant: context.getters.variant,
+                is960: context.getters.is960,
+                bestmove: move,
+                rootLines: humanTrapRootLines.filter(Boolean),
+                settings: humanTrapSettings
+              })
+              const stillEngineToMove = ((context.getters.turn && engineIsWhite) || (!context.getters.turn && !engineIsWhite))
+              if (!context.state.PvE || !stillEngineToMove || normalizeFen(context.getters.fen) !== normalizeFen(currentFen)) return
+              if (trap && trap.move && context.state.board.legalMoves().includes(trap.move)) {
+                move = trap.move
+                context.commit('humanTrapDiagnostics', { ...trap, selectedAt: Date.now() })
+                console.info('[human-trap] selected', trap)
+              } else {
+                context.commit('humanTrapDiagnostics', null)
+              }
+            }
             await context.dispatch('push', { move, prev: context.getters.currentMove[0] })
           } catch (err) {
             console.error('[PvEMakeMove] Engine provided invalid move:', ucimove, err)
@@ -2105,7 +2387,8 @@ export const store = new Vuex.Store({
           }
         }
 
-        // attach listener
+        // attach listeners
+        if (humanTrapSettings.enabled) pveEngine.on('info', pveInfoHandler)
         pveEngine.on('bestmove', pveEngineHandler)
 
         // kick off the engine if it's the engine's turn now
@@ -2182,7 +2465,7 @@ export const store = new Vuex.Store({
           const turnIsWhite = context.getters.turn
           if (!context.state.EvE || !turnIsWhite) return
           try {
-            const move = sanitizeEngineMove(ucimove)
+            let move = sanitizeEngineMove(ucimove)
             if (!move) return
             await context.dispatch('push', { move, prev: context.getters.currentMove[0] })
             // after white move, trigger black
@@ -2200,7 +2483,7 @@ export const store = new Vuex.Store({
           const turnIsWhite = context.getters.turn
           if (!context.state.EvE || turnIsWhite) return
           try {
-            const move = sanitizeEngineMove(ucimove)
+            let move = sanitizeEngineMove(ucimove)
             if (!move) return
             await context.dispatch('push', { move, prev: context.getters.currentMove[0] })
             // after black move, trigger white
@@ -2264,6 +2547,7 @@ export const store = new Vuex.Store({
       }
       context.commit('PvE', false)
       context.commit('PvEEngineInstance', null)
+      context.commit('humanTrapDiagnostics', null)
       if (!context.getters.turn) {
         context.dispatch('stopEngine')
       } else {
@@ -3431,18 +3715,24 @@ export const store = new Vuex.Store({
       try {
         const graphRaw = localStorage.getItem('openingBookGraph')
         if (graphRaw) context.commit('openingGraph', normalizeOpeningGraph(JSON.parse(graphRaw)))
-      } catch (err) {}
+      } catch (err) {
+      // Ignore invalid speculative reply moves from variants with unusual capture rules.
+    }
       try {
         const configRaw = localStorage.getItem('openingBookConfig')
         if (configRaw) context.commit('openingBook', JSON.parse(configRaw))
-      } catch (err) {}
+      } catch (err) {
+      // Ignore invalid speculative reply moves from variants with unusual capture rules.
+    }
       try {
         const poolRaw = localStorage.getItem('openingStartPool')
         if (poolRaw) {
           const pool = JSON.parse(poolRaw)
           context.state.openingStartPool = Array.isArray(pool) ? pool.filter(item => item && item.variant === context.state.variant) : []
         }
-      } catch (err) {}
+      } catch (err) {
+      // Ignore invalid speculative reply moves from variants with unusual capture rules.
+    }
     },
     clearOpeningBookStorage (context) {
       context.commit('openingGraph', createOpeningGraph())
@@ -4467,6 +4757,9 @@ export const store = new Vuex.Store({
     },
     PvE (state) {
       return state.PvE
+    },
+    humanTrapDiagnostics (state) {
+      return state.humanTrapDiagnostics
     },
     playVsEngineEnabled (state) {
       return state.playVsEngineEnabled
