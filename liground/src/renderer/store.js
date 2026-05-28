@@ -716,7 +716,10 @@ export const store = new Vuex.Store({
       useStartPool: true,
       autoGenerateUnlimited: false,
       autoGenerateMinCountForRecommendation: 3,
-      earlyRandomEnabled: true
+      earlyRandomEnabled: true,
+      moveSelectionPolicy: 'practical',
+      cleanupUseQualityFilter: false,
+      cleanupCpDelta: 120
     },
     openingGeneration: {
       running: false,
@@ -2837,7 +2840,8 @@ export const store = new Vuex.Store({
       if (!candidates.length) return
       const picked = chooseWeightedCandidate(candidates, {
         topK: cfg.autoResponseTopK || 3,
-        temperature: cfg.autoResponseTemperature || 1
+        temperature: cfg.autoResponseTemperature || 1,
+        policy: cfg.moveSelectionPolicy || 'practical'
       })
       if (!picked || !picked.uci) return
       const move = picked.uci
@@ -2908,12 +2912,25 @@ export const store = new Vuex.Store({
             depth: analysisDepth,
             topK: Math.max(1, Number(cfg.autoGenerateTopK) || 3)
           })
-          const cpThreshold = Math.max(0, Number(cfg.autoGenerateCpThreshold) || 50)
+          const baseCpThreshold = Math.max(0, Number(cfg.autoGenerateCpThreshold) || 50)
+          // Lower-depth generated analysis is intentionally given a wider best-relative
+          // CP window; higher-depth searches are allowed to prune more strictly.
+          const depthTolerance = analysisDepth < 12 ? 35 : (analysisDepth > 20 ? -15 : 0)
+          const cpThreshold = Math.max(10, baseCpThreshold + depthTolerance)
           const sortedAnalyzed = (analyzed || []).slice().sort((a, b) => (b.score || -999999) - (a.score || -999999))
           const bestScore = sortedAnalyzed.length ? Number(sortedAnalyzed[0].score || 0) : null
-          const acceptedAnalyzed = bestScore === null
+          const acceptedRaw = bestScore === null
             ? []
             : sortedAnalyzed.filter(c => Number(c.score || -999999) >= (bestScore - cpThreshold))
+          const acceptedTotal = acceptedRaw.reduce((sum, c) => {
+            const delta = Math.max(0, bestScore - Number(c.score || bestScore))
+            return sum + Math.max(0.0001, cpThreshold - delta + 1)
+          }, 0) || 1
+          const acceptedAnalyzed = acceptedRaw.map(c => {
+            const delta = Math.max(0, bestScore - Number(c.score || bestScore))
+            const weight = Math.max(0.0001, cpThreshold - delta + 1)
+            return { ...c, weight, share: weight / acceptedTotal }
+          })
           console.log('[opening-gen] analysis result', {
             gameIndex: g + 1, ply: ply + 1, configuredDepth, analysisDepth, usedFallbackDepth,
             candidateCount: analyzed.length, cpThreshold, bestScore,
@@ -2921,14 +2938,15 @@ export const store = new Vuex.Store({
             accepted: acceptedAnalyzed.map(c => ({ uci: c.uci, score: c.score }))
           })
           const liveGraph = normalizeOpeningGraph(context.state.openingGraph || createOpeningGraph())
-          const candidates = (acceptedAnalyzed.length ? acceptedAnalyzed : openingCandidatesForFen(liveGraph, board.fen(), Math.max(1, Number(cfg.autoGenerateTopK) || 3)))
+          const candidates = (acceptedAnalyzed.length ? acceptedAnalyzed : openingCandidatesForFen(liveGraph, board.fen(), Math.max(1, Number(cfg.autoGenerateTopK) || 3), { policy: cfg.moveSelectionPolicy || 'practical' }))
             .filter(c => (c.trustedCount || 0) >= minTrustedCount)
           const inExploration = cfg.earlyRandomEnabled !== false && ply < earlyPlies
           let picked = null
           if (candidates.length) {
             picked = chooseWeightedCandidate(candidates, {
               topK: inExploration ? (cfg.autoGenerateTopK || 3) : 1,
-              temperature: inExploration ? (cfg.autoGenerateTemperature || 1) : 0.6
+              temperature: inExploration ? (cfg.autoGenerateTemperature || 1) : 0.6,
+              policy: cfg.moveSelectionPolicy || 'practical'
             })
           }
           if (!picked || !picked.uci) break
@@ -3097,7 +3115,8 @@ export const store = new Vuex.Store({
             return [...linesByPv.entries()].sort((a, b) => a[0] - b[0]).slice(0, topK).map(([, line], idx) => ({
               uci: line.ucimove,
               score: typeof line.cp === 'number' ? line.cp : (1000 - idx * 30),
-              trustedCount: 3
+              trustedCount: 3,
+              depth: reachedDepth || depth
             }))
           }
           if (
@@ -3129,7 +3148,8 @@ export const store = new Vuex.Store({
             return [...linesByPv.entries()].sort((a, b) => a[0] - b[0]).slice(0, topK).map(([, line], idx) => ({
               uci: line.ucimove,
               score: typeof line.cp === 'number' ? line.cp : (1000 - idx * 30),
-              trustedCount: 3
+              trustedCount: 3,
+              depth: reachedDepth || depth
             }))
           }
           if (elapsedMs >= hardTimeoutMs && hasLines) {
@@ -3155,7 +3175,8 @@ export const store = new Vuex.Store({
             return [...linesByPv.entries()].sort((a, b) => a[0] - b[0]).slice(0, topK).map(([, line], idx) => ({
               uci: line.ucimove,
               score: typeof line.cp === 'number' ? line.cp : (1000 - idx * 30),
-              trustedCount: 3
+              trustedCount: 3,
+              depth: reachedDepth || depth
             }))
           }
           await new Promise(resolve => setTimeout(resolve, 40))
@@ -3263,9 +3284,45 @@ export const store = new Vuex.Store({
     },
     cleanupOpeningBookByMinDepth (context, payload) {
       const minDepth = Math.max(1, Number(payload && payload.minDepth) || 12)
+      const cfg = context.state.openingBook || {}
+      const useQualityFilter = Boolean(payload && payload.useQualityFilter !== undefined ? payload.useQualityFilter : cfg.cleanupUseQualityFilter)
+      const baseCpDelta = Math.max(0, Number((payload && payload.cpDelta) || cfg.cleanupCpDelta) || 120)
       const graph = normalizeOpeningGraph(context.state.openingGraph || createOpeningGraph())
       let removedTransitions = 0
+      let removedForDepth = 0
+      let removedForQuality = 0
       let preservedManual = 0
+      const bestByEpd = {}
+      if (useQualityFilter) {
+        for (const key of Object.keys(graph.transitionMeta || {})) {
+          const meta = graph.transitionMeta[key] || {}
+          const splitAt = key.lastIndexOf('|')
+          if (splitAt <= 0) continue
+          const epd = key.slice(0, splitAt)
+          const cp = Number.isFinite(Number(meta.effectiveCp)) ? Number(meta.effectiveCp) : (Number.isFinite(Number(meta.avgCp)) ? Number(meta.avgCp) : null)
+          if (cp === null) continue
+          bestByEpd[epd] = bestByEpd[epd] === undefined ? cp : Math.max(bestByEpd[epd], cp)
+        }
+      }
+      const removeTransition = (key, reason) => {
+        delete graph.transitionMeta[key]
+        delete graph.transitions[key]
+        removedTransitions += 1
+        if (reason === 'quality') removedForQuality += 1
+        else removedForDepth += 1
+        const splitAt = key.lastIndexOf('|')
+        if (splitAt > 0) {
+          const epd = key.slice(0, splitAt)
+          const move = key.slice(splitAt + 1)
+          const node = graph.positions[epd]
+          if (node) {
+            if (node.next) delete node.next[move]
+            if (node.trustedNext) delete node.trustedNext[move]
+            if (node.exploratoryNext) delete node.exploratoryNext[move]
+            if (node.weightNext) delete node.weightNext[move]
+          }
+        }
+      }
       for (const key of Object.keys(graph.transitionMeta || {})) {
         const meta = graph.transitionMeta[key] || {}
         const isManual = (meta.manualBoost || 0) > 0
@@ -3275,20 +3332,21 @@ export const store = new Vuex.Store({
           continue
         }
         if (depth > 0 && depth < minDepth) {
-          delete graph.transitionMeta[key]
-          delete graph.transitions[key]
-          removedTransitions += 1
+          removeTransition(key, 'depth')
+          continue
+        }
+        if (useQualityFilter) {
           const splitAt = key.lastIndexOf('|')
-          if (splitAt > 0) {
-            const epd = key.slice(0, splitAt)
-            const move = key.slice(splitAt + 1)
-            const node = graph.positions[epd]
-            if (node) {
-              if (node.next) delete node.next[move]
-              if (node.trustedNext) delete node.trustedNext[move]
-              if (node.exploratoryNext) delete node.exploratoryNext[move]
-              if (node.weightNext) delete node.weightNext[move]
-            }
+          const epd = splitAt > 0 ? key.slice(0, splitAt) : ''
+          const bestCp = bestByEpd[epd]
+          const cp = Number.isFinite(Number(meta.effectiveCp)) ? Number(meta.effectiveCp) : (Number.isFinite(Number(meta.avgCp)) ? Number(meta.avgCp) : null)
+          if (typeof bestCp === 'number' && cp !== null) {
+            // Quality pruning is best-move relative: a candidate is removed only
+            // when its confidence-aware score is too far below the best sibling.
+            const depthTolerance = depth > 20 ? -20 : (depth > 0 && depth < 12 ? 40 : 0)
+            const confidenceTolerance = (meta.confidence || 0) < 0.45 ? 25 : 0
+            const allowedDelta = Math.max(20, baseCpDelta + depthTolerance + confidenceTolerance)
+            if ((bestCp - cp) > allowedDelta) removeTransition(key, 'quality')
           }
         }
       }
@@ -3302,8 +3360,8 @@ export const store = new Vuex.Store({
       graph.moves = Object.values(graph.transitions || {}).reduce((sum, v) => sum + Math.max(0, Number(v) || 0), 0)
       context.commit('openingGraph', normalizeOpeningGraph(graph))
       context.dispatch('scheduleOpeningBookPersist', { immediate: true })
-      console.log('[opening-book] depth cleanup', { thresholdDepth: minDepth, removedTransitionCount: removedTransitions, removedNodeCount: removedNodes, preservedManualEntriesCount: preservedManual })
-      return { removedTransitions, removedNodes, preservedManual, minDepth }
+      console.log('[opening-book] depth cleanup', { thresholdDepth: minDepth, useQualityFilter, baseCpDelta, removedTransitionCount: removedTransitions, removedForDepth, removedForQuality, removedNodeCount: removedNodes, preservedManualEntriesCount: preservedManual })
+      return { removedTransitions, removedNodes, preservedManual, minDepth, removedForDepth, removedForQuality }
     },
     rounds (context, payload) {
       context.commit('rounds', payload)
@@ -4128,7 +4186,7 @@ export const store = new Vuex.Store({
     },
     openingCandidates (state) {
       if (!state.openingBook || !state.openingBook.enabled) return []
-      return openingCandidatesForFen(state.openingGraph, state.fen, 6)
+      return openingCandidatesForFen(state.openingGraph, state.fen, 6, { policy: state.openingBook.moveSelectionPolicy || 'practical' })
     },
     openingBook (state) {
       return state.openingBook
