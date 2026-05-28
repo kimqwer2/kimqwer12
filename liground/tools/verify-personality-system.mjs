@@ -127,6 +127,8 @@ console.log(JSON.stringify({
     attackableExamples: trapAfter.map(item => item.name),
     categoryCounts,
     displayEvalStableAgainstProbeSwings: displayStable,
+    displayEvalSourcePolicy: 'root_multipv_1_only',
+    speculativeValuesIgnoredForDisplay: ['probe', 'trap', 'marginCandidate', 'alternativeMultiPv'],
     displayEvalSamples,
     averageTrapProbesPerMoveBefore: overheadBefore.probesPerMove,
     averageTrapProbesPerMoveAfter: overheadAfter.probesPerMove,

@@ -113,6 +113,28 @@ function normalizeFen (fen) {
   return parts.join(' ')
 }
 
+
+function emptyDisplayAnalysisResult () {
+  return {
+    cp: 0,
+    mate: null,
+    pv: '',
+    ucimove: '',
+    turn: true,
+    displaySource: 'root_multipv_1',
+    displayDepth: 0,
+    displayEval: 0,
+    probeEval: null,
+    trapEval: null,
+    marginCandidateEval: null,
+    selectedPersonalityEval: null,
+    wdl: null,
+    wdlWin: null,
+    wdlDraw: null,
+    wdlLoss: null
+  }
+}
+
 const HUMAN_TRAP_DEFAULTS = {
   enabled: false,
   multiPv: 3,
@@ -922,16 +944,46 @@ async function selectPersonalityMove ({ engineInstance, fen, variant, is960, bes
   const trapSettings = normalizeTrapSettings(humanTrapSettings)
   const marginSettings = normalizeCloseWinSettings(closeWinSettings)
   const combinedMode = trapSettings.enabled && marginSettings.enabled
+  const rootCount = Array.isArray(rootLines) ? rootLines.filter(Boolean).length : 0
+  console.info('[Personality]', {
+    humanTrap: trapSettings.enabled,
+    controlledMargin: marginSettings.enabled,
+    combined: combinedMode,
+    rootCandidates: rootCount,
+    bestmove
+  })
+  const logHumanTrap = trap => console.info('[HumanTrap]', {
+    entered: trapSettings.enabled,
+    candidates: rootCount,
+    filtered: trap && trap.probeStats ? trap.probeStats.rejectedCandidates + trap.probeStats.skippedQuietCandidates : null,
+    probed: trap && trap.probeStats ? trap.probeStats.probes : 0,
+    selected: !!(trap && trap.move),
+    replacement: !!(trap && trap.move && trap.move !== bestmove),
+    reason: trap && trap.move ? trap.type : (rootCount ? 'no_attackable_target_or_budget_exhausted' : 'no_root_candidates')
+  })
+  const logControlledMargin = margin => console.info('[ControlledMargin]', {
+    entered: marginSettings.enabled,
+    bestEval: margin && typeof margin.bestCp === 'number' ? margin.bestCp : null,
+    selectedEval: margin && typeof margin.selectedCp === 'number' ? margin.selectedCp : null,
+    replacement: !!(margin && margin.move),
+    marginReduction: margin && typeof margin.marginReduction === 'number' ? margin.marginReduction : 0,
+    used_for_display: false,
+    reason: margin && margin.move ? margin.reason : (rootCount > 1 ? 'no_safe_margin_replacement' : 'insufficient_root_candidates')
+  })
   if (combinedMode) {
     const trap = await selectHumanTrapMove({ engineInstance, fen, variant, is960, bestmove, rootLines, settings: trapSettings, sideToMove, controlledSettings: marginSettings })
+    logHumanTrap(trap)
     if (trap && trap.move) return { ...trap, mode: 'Combined Personality', governingConstraint: 'Controlled Margin' }
     const closeWin = selectCloseWinMove({ rootLines, settings: marginSettings, sideToMove, fen, variant, is960 })
+    logControlledMargin(closeWin)
     if (closeWin && closeWin.move) return { ...closeWin, mode: 'Combined Personality', governingConstraint: 'Controlled Margin' }
     return null
   }
   const closeWin = selectCloseWinMove({ rootLines, settings: marginSettings, sideToMove, fen, variant, is960 })
+  logControlledMargin(closeWin)
   if (closeWin && closeWin.move) return { ...closeWin, mode: 'Controlled Margin Mode' }
   const trap = await selectHumanTrapMove({ engineInstance, fen, variant, is960, bestmove, rootLines, settings: trapSettings, sideToMove })
+  logHumanTrap(trap)
   if (trap && trap.move) return { ...trap, mode: 'Human Trap Mode' }
   return null
 }
@@ -1577,7 +1629,7 @@ export const store = new Vuex.Store({
         ucimove: ''
       }
     ],
-    lastAnalysisResult: { cp: 0, mate: null, pv: '', ucimove: '', turn: true, displaySource: 'root-best', displayDepth: 0, displayEval: 0, probeEval: null, trapEval: null, marginCandidateEval: null, wdl: null, wdlWin: null, wdlDraw: null, wdlLoss: null },
+    lastAnalysisResult: emptyDisplayAnalysisResult(),
     numberOfEngines: [
       {
         number: 1
@@ -1838,6 +1890,21 @@ export const store = new Vuex.Store({
         const key = diag.type || 'Unknown'
         categorySelections[key] = (categorySelections[key] || 0) + 1
         debug.categorySelections = categorySelections
+        if (diag.type === 'Controlled Margin') {
+          console.info('[ControlledMargin]', {
+            selectedEval: diag.selectedCp,
+            used_for_display: false,
+            replacement: !!diag.move,
+            marginReduction: diag.marginReduction
+          })
+        } else {
+          console.info('[HumanTrap]', {
+            trapEval: diag.trapEval,
+            used_for_display: false,
+            replacement: !!diag.move,
+            type: diag.type
+          })
+        }
         console.info('[engine-personality]', {
           mode: diag.mode,
           type: diag.type,
@@ -2019,16 +2086,7 @@ export const store = new Vuex.Store({
       state.lastAnalysisResult = { ...state.lastAnalysisResult, ...(payload || {}) }
     },
     multipv (state, payload) {
-      let nextPayload = Array.isArray(payload) ? payload.slice() : []
-      const closeWin = selectCloseWinMove({ rootLines: nextPayload.filter(Boolean), settings: { enabled: !!(state.startGameModal && state.startGameModal.closeWinMode) }, sideToMove: state.turn, fen: state.fen, variant: state.variant, is960: state.board && state.board.is960 && state.board.is960() })
-      if (closeWin && closeWin.move) {
-        nextPayload = nextPayload.slice().sort((a, b) => {
-          if (a && a.ucimove === closeWin.move) return -1
-          if (b && b.ucimove === closeWin.move) return 1
-          return 0
-        })
-        state.humanTrapDiagnostics = { ...closeWin, mode: 'Controlled Margin Mode', selectedAt: Date.now(), analysisOnly: true }
-      }
+      const nextPayload = Array.isArray(payload) ? payload.slice() : []
       for (const pvline of nextPayload) {
         if (pvline) {
           pvline.cpDisplay = typeof pvline.mate === 'number' ? `#${pvline.mate}` : cpToString(pvline.cp)
@@ -2087,7 +2145,7 @@ export const store = new Vuex.Store({
       state.startFen = state.board.fen()
       state.selectedGame = null
       state.fenply = 1
-      state.lastAnalysisResult = { cp: 0, mate: null, pv: '', ucimove: '', turn: true }
+      state.lastAnalysisResult = emptyDisplayAnalysisResult()
       state.lastEngineStats = { depth: 0, seldepth: 0, nodes: 0, nps: 0, hashfull: 0, tbhits: 0, time: 0 }
       this.commit('resetEngineStats')
       state.normalizedFen = normalizeFen(state.fen)
@@ -2100,7 +2158,7 @@ export const store = new Vuex.Store({
       this.commit('newBoard', payload)
       state.selectedGame = null
       state.moves = []
-      state.lastAnalysisResult = { cp: 0, mate: null, pv: '', ucimove: '', turn: true }
+      state.lastAnalysisResult = emptyDisplayAnalysisResult()
       state.lastEngineStats = { depth: 0, seldepth: 0, nodes: 0, nps: 0, hashfull: 0, tbhits: 0, time: 0 }
       this.commit('syncGameStateFromStore')
     },
@@ -3761,15 +3819,16 @@ export const store = new Vuex.Store({
       if ('pv' in payload) {
         const rootRank = Number(payload.multipv) || 1
         if (rootRank === 1) {
+          const rootEval = typeof payload.cp === 'number' ? payload.cp : context.state.lastAnalysisResult.cp
           context.commit('lastAnalysisResult', {
-            cp: typeof payload.cp === 'number' ? payload.cp : context.state.lastAnalysisResult.cp,
+            cp: rootEval,
             mate: typeof payload.mate === 'number' ? payload.mate : null,
             pv: payload.pv || '',
             ucimove: payload.pv ? payload.pv.split(/\s/)[0] : '',
             turn: context.state.turn,
-            displaySource: 'root-best',
+            displaySource: 'root_multipv_1',
             displayDepth: payload.depth,
-            displayEval: typeof payload.cp === 'number' ? payload.cp : context.state.lastAnalysisResult.displayEval,
+            displayEval: rootEval,
             probeEval: null,
             trapEval: null,
             marginCandidateEval: null,
@@ -3777,6 +3836,19 @@ export const store = new Vuex.Store({
             wdlWin: 'wdlWin' in payload ? payload.wdlWin : context.state.lastAnalysisResult.wdlWin,
             wdlDraw: 'wdlDraw' in payload ? payload.wdlDraw : context.state.lastAnalysisResult.wdlDraw,
             wdlLoss: 'wdlLoss' in payload ? payload.wdlLoss : context.state.lastAnalysisResult.wdlLoss
+          })
+          console.info('[DisplayEval]', {
+            rootEval,
+            displayEval: rootEval,
+            source: 'root_multipv_1',
+            depth: payload.depth,
+            pv: payload.pv || ''
+          })
+        } else {
+          console.info('[ProbeEval]', {
+            candidate: typeof payload.cp === 'number' ? payload.cp : null,
+            multipv: rootRank,
+            ignored_for_display: true
           })
         }
         const multipv = context.getters.multipv.slice(0)
@@ -5649,7 +5721,7 @@ export const store = new Vuex.Store({
       return typeof state.lastAnalysisResult.cp === 'number' ? state.lastAnalysisResult.cp : 0
     },
     wdl (state) {
-      return state.multipv[0].wdl
+      return state.lastAnalysisResult.wdl
     },
     depth (state) {
       return state.engineStats.depth || state.lastEngineStats.depth
@@ -5689,7 +5761,7 @@ export const store = new Vuex.Store({
     },
     cpForWhiteStr (state, getters) {
       const currentMove = getters.currentMove[0]
-      const mate = typeof state.lastAnalysisResult.mate === 'number' ? state.lastAnalysisResult.mate : (state.multipv[0] && typeof state.multipv[0].mate === 'number' ? state.multipv[0].mate : null)
+      const mate = typeof state.lastAnalysisResult.mate === 'number' ? state.lastAnalysisResult.mate : null
 
       // TODO: Update this block when ffish.board.is_terminal() or ffish.board.check_result() is available
       // Temporary fix, as lang as we don't have an `is_terminal()` or `check_result` function
