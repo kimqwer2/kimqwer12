@@ -115,27 +115,29 @@ function normalizeFen (fen) {
 
 const HUMAN_TRAP_DEFAULTS = {
   enabled: false,
-  multiPv: 4,
+  multiPv: 3,
   preferredCpLoss: 25,
   maxCpLoss: 40,
   minCandidateCp: -50,
   minPunishmentCp: 120,
   minTrapScore: 55,
-  probeDepth: 8,
-  maxCandidates: 4,
+  probeDepth: 6,
+  maxCandidates: 2,
   maxRepliesPerCandidate: 1,
-  choiceProbeDepth: 6,
-  choiceMaxReplies: 6,
-  choiceMinLegalReplies: 8,
+  choiceProbeDepth: 4,
+  choiceMaxReplies: 3,
+  choiceMinLegalReplies: 6,
   choiceMaxCorrectRatio: 0.35,
   choiceNearBestCp: 60,
   choiceMinPenaltyCp: 90,
-  overreactionProbeDepth: 6,
-  overreactionMaxReplies: 5,
+  overreactionProbeDepth: 4,
+  overreactionMaxReplies: 2,
   overreactionMinPenaltyCp: 70,
-  pressureProbeDepth: 6,
-  pressureMaxReplies: 5,
-  pressureMinScore: 45
+  pressureProbeDepth: 4,
+  pressureMaxReplies: 2,
+  pressureMinScore: 45,
+  maxProbeBudget: 6,
+  earlyTrapScore: 85
 }
 
 const CONTROLLED_MARGIN_DEFAULTS = {
@@ -144,7 +146,7 @@ const CONTROLLED_MARGIN_DEFAULTS = {
   maxWinningCp: 130,
   maxCpLoss: 1200,
   minSafetyCp: 60,
-  maxCandidates: 8,
+  maxCandidates: 6,
   hardFloorCp: 50,
   avoidSimplification: true,
   maxPvSimplification: 2
@@ -199,20 +201,22 @@ function normalizeTrapSettings (settings = {}) {
     minPunishmentCp: Math.max(1, Number(merged.minPunishmentCp) || HUMAN_TRAP_DEFAULTS.minPunishmentCp),
     minTrapScore: Math.max(1, Number(merged.minTrapScore) || HUMAN_TRAP_DEFAULTS.minTrapScore),
     probeDepth: Math.max(4, Math.min(12, Number(merged.probeDepth) || HUMAN_TRAP_DEFAULTS.probeDepth)),
-    maxCandidates: Math.max(1, Math.min(5, Number(merged.maxCandidates) || HUMAN_TRAP_DEFAULTS.maxCandidates)),
+    maxCandidates: Math.max(1, Math.min(3, Number(merged.maxCandidates) || HUMAN_TRAP_DEFAULTS.maxCandidates)),
     maxRepliesPerCandidate: Math.max(1, Math.min(2, Number(merged.maxRepliesPerCandidate) || HUMAN_TRAP_DEFAULTS.maxRepliesPerCandidate)),
     choiceProbeDepth: Math.max(3, Math.min(8, Number(merged.choiceProbeDepth) || HUMAN_TRAP_DEFAULTS.choiceProbeDepth)),
-    choiceMaxReplies: Math.max(2, Math.min(8, Number(merged.choiceMaxReplies) || HUMAN_TRAP_DEFAULTS.choiceMaxReplies)),
+    choiceMaxReplies: Math.max(1, Math.min(5, Number(merged.choiceMaxReplies) || HUMAN_TRAP_DEFAULTS.choiceMaxReplies)),
     choiceMinLegalReplies: Math.max(2, Number(merged.choiceMinLegalReplies) || HUMAN_TRAP_DEFAULTS.choiceMinLegalReplies),
     choiceMaxCorrectRatio: clampNumber(Number(merged.choiceMaxCorrectRatio) || HUMAN_TRAP_DEFAULTS.choiceMaxCorrectRatio, 0.1, 0.8),
     choiceNearBestCp: Math.max(20, Number(merged.choiceNearBestCp) || HUMAN_TRAP_DEFAULTS.choiceNearBestCp),
     choiceMinPenaltyCp: Math.max(30, Number(merged.choiceMinPenaltyCp) || HUMAN_TRAP_DEFAULTS.choiceMinPenaltyCp),
     overreactionProbeDepth: Math.max(3, Math.min(8, Number(merged.overreactionProbeDepth) || HUMAN_TRAP_DEFAULTS.overreactionProbeDepth)),
-    overreactionMaxReplies: Math.max(2, Math.min(8, Number(merged.overreactionMaxReplies) || HUMAN_TRAP_DEFAULTS.overreactionMaxReplies)),
+    overreactionMaxReplies: Math.max(1, Math.min(4, Number(merged.overreactionMaxReplies) || HUMAN_TRAP_DEFAULTS.overreactionMaxReplies)),
     overreactionMinPenaltyCp: Math.max(30, Number(merged.overreactionMinPenaltyCp) || HUMAN_TRAP_DEFAULTS.overreactionMinPenaltyCp),
     pressureProbeDepth: Math.max(3, Math.min(8, Number(merged.pressureProbeDepth) || HUMAN_TRAP_DEFAULTS.pressureProbeDepth)),
-    pressureMaxReplies: Math.max(2, Math.min(8, Number(merged.pressureMaxReplies) || HUMAN_TRAP_DEFAULTS.pressureMaxReplies)),
-    pressureMinScore: Math.max(20, Number(merged.pressureMinScore) || HUMAN_TRAP_DEFAULTS.pressureMinScore)
+    pressureMaxReplies: Math.max(1, Math.min(4, Number(merged.pressureMaxReplies) || HUMAN_TRAP_DEFAULTS.pressureMaxReplies)),
+    pressureMinScore: Math.max(20, Number(merged.pressureMinScore) || HUMAN_TRAP_DEFAULTS.pressureMinScore),
+    maxProbeBudget: Math.max(1, Math.min(12, Number(merged.maxProbeBudget) || HUMAN_TRAP_DEFAULTS.maxProbeBudget)),
+    earlyTrapScore: Math.max(40, Number(merged.earlyTrapScore) || HUMAN_TRAP_DEFAULTS.earlyTrapScore)
   }
 }
 
@@ -476,6 +480,31 @@ function detectAttackableTrapTargets ({ variant, is960, fen, candidateUci = '', 
   }
 }
 
+
+function legalReplyCountAfterMove ({ fen, variant, is960, move }) {
+  if (!fen || !move) return null
+  try {
+    const board = boardFromFen(variant, fen, is960)
+    board.push(move)
+    const legal = board.legalMoves()
+    const moves = Array.isArray(legal) ? legal : String(legal || '').split(/\s+/).filter(Boolean)
+    return moves.length
+  } catch (err) {
+    return null
+  }
+}
+
+function controlledMarginForcingInfo ({ fen, variant, is960, move }) {
+  const legalReplies = legalReplyCountAfterMove({ fen, variant, is960, move })
+  if (legalReplies === null) return { legalReplies: null, forcingPenalty: 0, reason: 'forcing check unavailable' }
+  const forcingPenalty = legalReplies <= 2 ? 70 : (legalReplies <= 5 ? 42 : (legalReplies <= 8 ? 20 : 0))
+  return {
+    legalReplies,
+    forcingPenalty,
+    reason: forcingPenalty > 0 ? `avoids forcing line with only ${legalReplies} replies` : 'allows flexible reply choice'
+  }
+}
+
 function controlledMarginCandidateScore ({ item, best, settings, fen, variant, is960 }) {
   const bandCenter = Math.round((settings.minWinningCp + settings.maxWinningCp) / 2)
   const inBand = item.cp >= settings.minWinningCp && item.cp <= settings.maxWinningCp
@@ -483,16 +512,17 @@ function controlledMarginCandidateScore ({ item, best, settings, fen, variant, i
   const bandDistance = inBand ? Math.abs(item.cp - bandCenter) : Math.min(Math.abs(item.cp - settings.minWinningCp), Math.abs(item.cp - settings.maxWinningCp))
   const moveInfo = moveCaptureInfo(fen, item.ucimove)
   const pvSimplification = analyzePvSimplification({ fen, variant, is960, pvUCI: item.pvUCI, maxPlies: Math.max(2, settings.maxPvSimplification) })
-  const quietTensionBonus = moveInfo.isCapture ? 0 : 28
-  const safeCounterplayBonus = item.cp >= settings.minWinningCp && item.cp <= settings.maxWinningCp ? 35 : (item.cp >= settings.hardFloorCp && item.cp < settings.minWinningCp ? 12 : 0)
-  const conversionPenalty = (moveInfo.isCapture ? 35 + Math.round(moveInfo.capturedValue / 35) : 0) + (settings.avoidSimplification ? pvSimplification.simplificationPenalty : 0)
-  const excessiveMarginPenalty = Math.max(0, item.cp - settings.maxWinningCp) * 0.8
-  const dangerPenalty = belowBand ? (settings.minWinningCp - item.cp) * 1.4 : 0
-  const targetScore = 220 - bandDistance - excessiveMarginPenalty - dangerPenalty
+  const forcingInfo = controlledMarginForcingInfo({ fen, variant, is960, move: item.ucimove })
+  const quietTensionBonus = moveInfo.isCapture ? 0 : 42
+  const safeCounterplayBonus = item.cp >= settings.minWinningCp && item.cp <= settings.maxWinningCp ? 52 : (item.cp >= settings.hardFloorCp && item.cp < settings.minWinningCp ? 16 : 0)
+  const conversionPenalty = (moveInfo.isCapture ? 55 + Math.round(moveInfo.capturedValue / 28) : 0) + (settings.avoidSimplification ? pvSimplification.simplificationPenalty * 1.5 : 0) + forcingInfo.forcingPenalty
+  const excessiveMarginPenalty = Math.max(0, item.cp - settings.maxWinningCp) * 1.1
+  const dangerPenalty = belowBand ? (settings.minWinningCp - item.cp) * 1.6 : 0
+  const targetScore = 235 - bandDistance - excessiveMarginPenalty - dangerPenalty
   const score = Math.round(targetScore + quietTensionBonus + safeCounterplayBonus - conversionPenalty)
   const simplificationAvoidanceReason = conversionPenalty > 0
-    ? `${moveInfo.isCapture ? 'root capture/conversion; ' : ''}${pvSimplification.reason}`.trim()
-    : 'quiet/tension-preserving candidate'
+    ? `${moveInfo.isCapture ? 'root capture/conversion; ' : ''}${pvSimplification.reason}; ${forcingInfo.reason}`.trim()
+    : `quiet/tension-preserving candidate; ${forcingInfo.reason}`
   return {
     ...item,
     inBand,
@@ -503,6 +533,7 @@ function controlledMarginCandidateScore ({ item, best, settings, fen, variant, i
     conversionPenalty,
     simplificationPenalty: pvSimplification.simplificationPenalty,
     pvSimplification,
+    forcingInfo,
     simplificationAvoidanceReason,
     controlledMarginScore: score
   }
@@ -709,6 +740,9 @@ function selectCloseWinMove ({ rootLines, settings, sideToMove = true, fen = '',
     reason: bandPosition === 'above-band' ? 'margin reduction with tension preservation' : 'controlled edge inside target band',
     targetBand: `${safeSettings.minWinningCp}-${safeSettings.maxWinningCp}cp`,
     currentEval: best.cp,
+    displayEval: best.cp,
+    rootBestEval: best.cp,
+    marginCandidateEval: selected.cp,
     averageCandidateCp,
     bandPosition,
     marginReduction: selected.marginReduction,
@@ -739,12 +773,26 @@ async function selectHumanTrapMove ({ engineInstance, fen, variant, is960, bestm
   const activeMaxCpLoss = tolerance.maxCpLoss
   const activePreferredCpLoss = tolerance.preferredCpLoss
   const activeMinCandidateCp = combinedMode ? Math.max(safeSettings.minCandidateCp, controlledSettings.hardFloorCp) : safeSettings.minCandidateCp
+  const probeStats = { probes: 0, rejectedCandidates: 0, earlyExits: 0, attackabilityChecks: 0, skippedQuietCandidates: 0 }
+  const probeEngine = {
+    ...engineInstance,
+    evaluate: async (probeFen, depth) => {
+      probeStats.probes++
+      return engineInstance.evaluate(probeFen, depth)
+    }
+  }
   const trapCandidates = []
   for (const candidate of candidates) {
     const candidateCp = candidate.cp
     const cpLoss = bestCp - candidateCp
-    if (cpLoss < 0 || cpLoss > activeMaxCpLoss || candidateCp < activeMinCandidateCp) continue
-    if (combinedMode && controlledSettings && candidateCp > controlledSettings.maxWinningCp + 60) continue
+    if (cpLoss < 0 || cpLoss > activeMaxCpLoss || candidateCp < activeMinCandidateCp) {
+      probeStats.rejectedCandidates++
+      continue
+    }
+    if (combinedMode && controlledSettings && candidateCp > controlledSettings.maxWinningCp + 60) {
+      probeStats.rejectedCandidates++
+      continue
+    }
     const safety = clampNumber(1 - (cpLoss / activeMaxCpLoss), 0, 1)
     const preferredWindow = Math.max(1, activeMaxCpLoss - activePreferredCpLoss)
     const preferredSafety = cpLoss <= activePreferredCpLoss
@@ -756,12 +804,18 @@ async function selectHumanTrapMove ({ engineInstance, fen, variant, is960, bestm
       board.push(candidate.ucimove)
       afterCandidateFen = board.fen()
     } catch (err) {}
+    probeStats.attackabilityChecks++
     const temptationValidation = afterCandidateFen
       ? detectAttackableTrapTargets({ variant, is960, fen: afterCandidateFen, candidateUci: candidate.ucimove })
       : { attackable: false, enemyAttackCoverage: 0, attackableTargets: [], validationReason: 'candidate position unavailable' }
     const replies = detectPoisonedCaptureReplies({ variant, is960, fen, candidateUci: candidate.ucimove, settings: safeSettings })
+    if (!temptationValidation.attackable && replies.length === 0) {
+      probeStats.skippedQuietCandidates++
+      continue
+    }
     for (const reply of replies) {
-      const evaluated = await engineInstance.evaluate(reply.fenAfterReply, safeSettings.probeDepth)
+      if (probeStats.probes >= safeSettings.maxProbeBudget) break
+      const evaluated = await probeEngine.evaluate(reply.fenAfterReply, safeSettings.probeDepth)
       const postCaptureRawCp = parseEngineScoreToCp(evaluated)
       if (postCaptureRawCp === null) continue
       const postCaptureCp = calcForSide(postCaptureRawCp, sideToMove)
@@ -788,8 +842,10 @@ async function selectHumanTrapMove ({ engineInstance, fen, variant, is960, bestm
         adaptiveTolerance: tolerance
       })
     }
-    if (afterCandidateFen) {
-      const overload = await evaluateReplySpace({ engineInstance, fen: afterCandidateFen, variant, is960, candidateCp, settings: safeSettings, sideToMove })
+    if (afterCandidateFen && probeStats.probes < safeSettings.maxProbeBudget) {
+      const overload = temptationValidation.attackable
+        ? await evaluateReplySpace({ engineInstance: probeEngine, fen: afterCandidateFen, variant, is960, candidateCp, settings: safeSettings, sideToMove })
+        : null
       if (overload) {
         trapCandidates.push({
           ...overload,
@@ -804,8 +860,8 @@ async function selectHumanTrapMove ({ engineInstance, fen, variant, is960, bestm
           adaptiveTolerance: tolerance
         })
       }
-      const overreaction = temptationValidation.attackable
-        ? await evaluateOverreactionTrap({ engineInstance, fen: afterCandidateFen, variant, is960, candidateCp, settings: safeSettings, sideToMove })
+      const overreaction = (temptationValidation.attackable && probeStats.probes < safeSettings.maxProbeBudget)
+        ? await evaluateOverreactionTrap({ engineInstance: probeEngine, fen: afterCandidateFen, variant, is960, candidateCp, settings: safeSettings, sideToMove })
         : null
       if (overreaction) {
         trapCandidates.push({
@@ -821,7 +877,9 @@ async function selectHumanTrapMove ({ engineInstance, fen, variant, is960, bestm
           adaptiveTolerance: tolerance
         })
       }
-      const pressure = await evaluatePracticalPressure({ engineInstance, fen: afterCandidateFen, variant, is960, candidateCp, settings: safeSettings, sideToMove })
+      const pressure = (temptationValidation.attackable && probeStats.probes < safeSettings.maxProbeBudget)
+        ? await evaluatePracticalPressure({ engineInstance: probeEngine, fen: afterCandidateFen, variant, is960, candidateCp, settings: safeSettings, sideToMove })
+        : null
       if (pressure) {
         trapCandidates.push({
           ...pressure,
@@ -837,6 +895,10 @@ async function selectHumanTrapMove ({ engineInstance, fen, variant, is960, bestm
         })
       }
     }
+    if (trapCandidates.some(item => item.trapScore >= safeSettings.earlyTrapScore) || probeStats.probes >= safeSettings.maxProbeBudget) {
+      probeStats.earlyExits++
+      break
+    }
   }
   if (!trapCandidates.length) return null
   trapCandidates.sort((a, b) =>
@@ -845,7 +907,14 @@ async function selectHumanTrapMove ({ engineInstance, fen, variant, is960, bestm
     (b.expectedPunishment - a.expectedPunishment) ||
     a.move.localeCompare(b.move)
   )
-  return trapCandidates[0]
+  return {
+    ...trapCandidates[0],
+    probeStats,
+    probeEval: trapCandidates[0].candidateCp,
+    trapEval: trapCandidates[0].expectedPunishment,
+    displayEval: bestCp,
+    rootBestEval: bestCp
+  }
 }
 
 
@@ -1508,7 +1577,7 @@ export const store = new Vuex.Store({
         ucimove: ''
       }
     ],
-    lastAnalysisResult: { cp: 0, mate: null, pv: '', ucimove: '', turn: true },
+    lastAnalysisResult: { cp: 0, mate: null, pv: '', ucimove: '', turn: true, displaySource: 'root-best', displayDepth: 0, displayEval: 0, probeEval: null, trapEval: null, marginCandidateEval: null, wdl: null, wdlWin: null, wdlDraw: null, wdlLoss: null },
     numberOfEngines: [
       {
         number: 1
@@ -1772,9 +1841,15 @@ export const store = new Vuex.Store({
         console.info('[engine-personality]', {
           mode: diag.mode,
           type: diag.type,
+          displayEval: diag.displayEval,
+          rootBestEval: diag.rootBestEval,
+          probeEval: diag.probeEval,
+          trapEval: diag.trapEval,
+          marginCandidateEval: diag.marginCandidateEval,
           bestCp: diag.bestCp,
           selectedCp: diag.selectedCp,
           marginReduction: diag.marginReduction,
+          probeStats: diag.probeStats,
           attackableTrapTarget: diag.attackableTrapTarget,
           enemyAttackCoverage: diag.enemyAttackCoverage,
           temptationValidation: diag.temptationValidation,
@@ -3681,15 +3756,29 @@ export const store = new Vuex.Store({
         return
       }
 
-      // update pvline
+      // update pvline. Display eval is deliberately anchored to root MultiPV #1 only;
+      // speculative/personality candidates remain internal diagnostics and must not move the eval bar.
       if ('pv' in payload) {
-        context.commit('lastAnalysisResult', {
-          cp: typeof payload.cp === 'number' ? payload.cp : context.state.lastAnalysisResult.cp,
-          mate: typeof payload.mate === 'number' ? payload.mate : null,
-          pv: payload.pv || '',
-          ucimove: payload.pv ? payload.pv.split(/\s/)[0] : '',
-          turn: context.state.turn
-        })
+        const rootRank = Number(payload.multipv) || 1
+        if (rootRank === 1) {
+          context.commit('lastAnalysisResult', {
+            cp: typeof payload.cp === 'number' ? payload.cp : context.state.lastAnalysisResult.cp,
+            mate: typeof payload.mate === 'number' ? payload.mate : null,
+            pv: payload.pv || '',
+            ucimove: payload.pv ? payload.pv.split(/\s/)[0] : '',
+            turn: context.state.turn,
+            displaySource: 'root-best',
+            displayDepth: payload.depth,
+            displayEval: typeof payload.cp === 'number' ? payload.cp : context.state.lastAnalysisResult.displayEval,
+            probeEval: null,
+            trapEval: null,
+            marginCandidateEval: null,
+            wdl: Array.isArray(payload.wdl) ? payload.wdl : context.state.lastAnalysisResult.wdl,
+            wdlWin: 'wdlWin' in payload ? payload.wdlWin : context.state.lastAnalysisResult.wdlWin,
+            wdlDraw: 'wdlDraw' in payload ? payload.wdlDraw : context.state.lastAnalysisResult.wdlDraw,
+            wdlLoss: 'wdlLoss' in payload ? payload.wdlLoss : context.state.lastAnalysisResult.wdlLoss
+          })
+        }
         const multipv = context.getters.multipv.slice(0)
 
         // handle checkmate
@@ -5557,8 +5646,7 @@ export const store = new Vuex.Store({
       return state.hoveredpv
     },
     cp (state) {
-      if (typeof state.multipv[0].cp === 'number' && (state.multipv[0].pv || typeof state.multipv[0].mate === 'number')) return state.multipv[0].cp
-      return state.lastAnalysisResult.cp
+      return typeof state.lastAnalysisResult.cp === 'number' ? state.lastAnalysisResult.cp : 0
     },
     wdl (state) {
       return state.multipv[0].wdl
@@ -5594,15 +5682,14 @@ export const store = new Vuex.Store({
       return state.enginetime
     },
     pv (state) {
-      return state.multipv[0].pv || state.lastAnalysisResult.pv
+      return state.lastAnalysisResult.pv || (state.multipv[0] && state.multipv[0].pv) || ''
     },
     cpForWhite (state) {
-      const hasLiveCp = typeof state.multipv[0].cp === 'number' && (state.multipv[0].pv || typeof state.multipv[0].mate === 'number')
-      return hasLiveCp ? state.multipv[0].cp : state.lastAnalysisResult.cp
+      return typeof state.lastAnalysisResult.cp === 'number' ? state.lastAnalysisResult.cp : 0
     },
     cpForWhiteStr (state, getters) {
       const currentMove = getters.currentMove[0]
-      const mate = typeof state.multipv[0].mate === 'number' ? state.multipv[0].mate : state.lastAnalysisResult.mate
+      const mate = typeof state.lastAnalysisResult.mate === 'number' ? state.lastAnalysisResult.mate : (state.multipv[0] && typeof state.multipv[0].mate === 'number' ? state.multipv[0].mate : null)
 
       // TODO: Update this block when ffish.board.is_terminal() or ffish.board.check_result() is available
       // Temporary fix, as lang as we don't have an `is_terminal()` or `check_result` function
@@ -5633,7 +5720,7 @@ export const store = new Vuex.Store({
     },
     cpForWhitePerc (state, getters) {
       const currentMove = getters.currentMove[0]
-      const mate = typeof state.multipv[0].mate === 'number' ? state.multipv[0].mate : state.lastAnalysisResult.mate
+      const mate = typeof state.lastAnalysisResult.mate === 'number' ? state.lastAnalysisResult.mate : null
       if (typeof mate === 'number') {
         return (Math.sign(mate) + 1) / 2
       } else if (currentMove && currentMove.name.includes('#')) {
@@ -5644,9 +5731,8 @@ export const store = new Vuex.Store({
     },
     cpForBarPerc (state, getters) {
       const currentMove = getters.currentMove[0]
-      const liveHasPv = Boolean(state.multipv[0] && (state.multipv[0].pv || typeof state.multipv[0].mate === 'number'))
-      const effectiveTurn = liveHasPv ? state.turn : (typeof state.lastAnalysisResult.turn === 'boolean' ? state.lastAnalysisResult.turn : state.turn)
-      const mate = typeof state.multipv[0].mate === 'number' ? state.multipv[0].mate : state.lastAnalysisResult.mate
+      const effectiveTurn = typeof state.lastAnalysisResult.turn === 'boolean' ? state.lastAnalysisResult.turn : state.turn
+      const mate = typeof state.lastAnalysisResult.mate === 'number' ? state.lastAnalysisResult.mate : null
       if (typeof mate === 'number') {
         // Bar visualization uses fixed board-side perspective (Cho positive),
         // normalized from transient side-to-move engine outputs.
@@ -5654,24 +5740,12 @@ export const store = new Vuex.Store({
       } else if (currentMove && currentMove.name.includes('#')) {
         return state.turn ? 0 : 1
       }
-      const liveCpRaw = typeof state.multipv[0].cp === 'number' ? state.multipv[0].cp : null
-      const lastCpRaw = typeof state.lastAnalysisResult.cp === 'number' ? state.lastAnalysisResult.cp : null
-      const liveCpStable = liveCpRaw === null ? null : calcForSide(liveCpRaw, state.turn)
-      const lastCpStable = lastCpRaw === null ? null : calcForSide(lastCpRaw, typeof state.lastAnalysisResult.turn === 'boolean' ? state.lastAnalysisResult.turn : state.turn)
-
-      let stableCp = calcForSide(getters.cpForWhite, effectiveTurn)
-      // Live search can temporarily emit opposite-perspective scores.
-      // Keep bar perspective stable by anchoring sign to last completed analysis when signs conflict.
-      if (liveHasPv && liveCpStable !== null) {
-        stableCp = liveCpStable
-        if (lastCpStable !== null && Math.sign(liveCpStable) !== 0 && Math.sign(lastCpStable) !== 0 && Math.sign(liveCpStable) !== Math.sign(lastCpStable)) {
-          stableCp = Math.sign(lastCpStable) * Math.abs(liveCpStable)
-        }
-      }
+      const rootCpRaw = typeof state.lastAnalysisResult.cp === 'number' ? state.lastAnalysisResult.cp : 0
+      const stableCp = calcForSide(rootCpRaw, effectiveTurn)
       return 1 / (1 + Math.exp(-0.003 * stableCp))
     },
     wdlForWhiteWin (state) {
-      const wdl = normalizeWdl(state.multipv[0])
+      const wdl = normalizeWdl(state.lastAnalysisResult)
       if (wdl) {
         const win = state.turn ? wdl.win : wdl.loss
         state.lastWdlWin = win
@@ -5680,7 +5754,7 @@ export const store = new Vuex.Store({
       return state.lastWdlWin
     },
     wdlForWhiteDraw (state) {
-      const wdl = normalizeWdl(state.multipv[0])
+      const wdl = normalizeWdl(state.lastAnalysisResult)
       if (wdl) {
         state.lastWdlDraw = wdl.draw
         return wdl.draw
@@ -5688,7 +5762,7 @@ export const store = new Vuex.Store({
       return state.lastWdlDraw
     },
     wdlForWhiteLoss (state) {
-      const wdl = normalizeWdl(state.multipv[0])
+      const wdl = normalizeWdl(state.lastAnalysisResult)
       if (wdl) {
         const loss = state.turn ? wdl.loss : wdl.win
         state.lastWdlLoss = loss

@@ -97,6 +97,9 @@
       <span v-if="humanTrapDiagnostics.targetBand">band {{ humanTrapDiagnostics.targetBand }} ·</span>
       <span v-if="humanTrapDiagnostics.bandPosition">{{ humanTrapDiagnostics.bandPosition }} ·</span>
       <span v-if="typeof humanTrapDiagnostics.marginReduction === 'number'">reduce {{ humanTrapDiagnostics.marginReduction }}cp ·</span>
+      <span v-if="typeof humanTrapDiagnostics.displayEval === 'number'">display {{ humanTrapDiagnostics.displayEval }}cp ·</span>
+      <span v-if="typeof humanTrapDiagnostics.probeEval === 'number'">probe {{ humanTrapDiagnostics.probeEval }}cp ·</span>
+      <span v-if="humanTrapDiagnostics.probeStats">probes {{ humanTrapDiagnostics.probeStats.probes }} ·</span>
       <span v-if="typeof humanTrapDiagnostics.enemyAttackCoverage === 'number'">coverage {{ humanTrapDiagnostics.enemyAttackCoverage }} ·</span>
       <span v-if="humanTrapDiagnostics.attackableTrapTarget">attackable target ·</span>
       <span v-if="humanTrapDiagnostics.simplificationAvoidanceReason">{{ humanTrapDiagnostics.simplificationAvoidanceReason }} ·</span>
