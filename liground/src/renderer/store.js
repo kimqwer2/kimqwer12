@@ -535,6 +535,33 @@ function sanitizeEngineMove (move) {
   return String(move || '').trim().split(/\s+/)[0] || ''
 }
 
+
+const JANGGI_STANDARD_16_BACK_RANKS = [
+  'NBA1ABN',
+  'NBA1ANB',
+  'BNA1ABN',
+  'BNA1ANB'
+]
+
+function janggiStandard16OpeningPositions (variant = 'janggi') {
+  // Fairy-Stockfish/Liground Janggi uses N/n for horses and B/b for elephants
+  // (see piece CSS horse/elephant mappings and the built-in Janggi FEN style).
+  // Each side independently chooses one of four valid horse-elephant back-rank
+  // arrangements, producing 4 x 4 = 16 deterministic start positions.
+  const safeVariant = variant || 'janggi'
+  const rows = []
+  JANGGI_STANDARD_16_BACK_RANKS.forEach((blackBackRank, blackIndex) => {
+    JANGGI_STANDARD_16_BACK_RANKS.forEach((redBackRank, redIndex) => {
+      rows.push({
+        name: `Standard 16 ${blackIndex + 1}-${redIndex + 1}`,
+        variant: safeVariant,
+        fen: `r${blackBackRank.toLowerCase()}r/4k4/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/4K4/R${redBackRank}R w - - 0 1`
+      })
+    })
+  })
+  return rows
+}
+
 export const store = new Vuex.Store({
   state: {
     engineIndex: 1,
@@ -703,6 +730,8 @@ export const store = new Vuex.Store({
       autoResponse: false,
       autoResponseTopK: 3,
       recommendationCount: 3,
+      useStandard16OpeningSet: false,
+      standard16SelectionMode: 'cycle',
       autoResponseTemperature: 0.9,
       autoGenerateEnabled: false,
       autoGenerateIterations: 8,
@@ -1210,6 +1239,7 @@ export const store = new Vuex.Store({
     openingBook (state, payload) {
       const next = { ...state.openingBook, ...(payload || {}) }
       next.recommendationCount = Math.max(1, Math.min(8, Number(next.recommendationCount) || 3))
+      next.standard16SelectionMode = next.standard16SelectionMode === 'random' ? 'random' : 'cycle'
       state.openingBook = next
     },
     openingGeneration (state, payload) {
@@ -2871,11 +2901,12 @@ export const store = new Vuex.Store({
       context.dispatch('updateBoard')
       context.dispatch('position')
     },
-    async runAutoOpeningGeneration (context) {
+    async runAutoOpeningGeneration (context, payload = {}) {
       const nextSessionId = (context.state.openingGeneration.sessionId || 0) + 1
       console.log('[opening-gen] start requested', {
         variant: context.state.variant,
         fen: context.state.startFen,
+        overrideStartPool: Array.isArray(payload && payload.startPoolOverride),
         stopRequested: context.state.openingGeneration && context.state.openingGeneration.stopRequested
       })
       context.commit('openingGeneration', {
@@ -2906,9 +2937,15 @@ export const store = new Vuex.Store({
       const maxPlies = Math.max(2, Math.min(80, Number(cfg.autoGenerateMaxPlies) || 16))
       const earlyPlies = Math.max(2, Math.min(maxPlies, Number(cfg.autoGenerateEarlyPlies) || 10))
       const usePool = cfg.useStartPool !== false
-      const poolRaw = usePool && Array.isArray(context.state.openingStartPool) && context.state.openingStartPool.length
-        ? context.state.openingStartPool
-        : [{ variant: context.state.variant, fen: context.state.startFen || '' }]
+      const hasOverridePool = Array.isArray(payload && payload.startPoolOverride) && payload.startPoolOverride.length > 0
+      const useStandard16 = !hasOverridePool && cfg.useStandard16OpeningSet === true && ['janggi', 'janggimodern'].includes(context.state.variant)
+      const poolRaw = hasOverridePool
+        ? payload.startPoolOverride
+        : (useStandard16
+          ? janggiStandard16OpeningPositions(context.state.variant)
+          : (usePool && Array.isArray(context.state.openingStartPool) && context.state.openingStartPool.length
+            ? context.state.openingStartPool
+            : [{ variant: context.state.variant, fen: context.state.startFen || '' }]))
       const pool = poolRaw.filter(item => item && item.variant === context.state.variant)
       const validPool = []
       let invalidStartCount = 0
@@ -2936,7 +2973,9 @@ export const store = new Vuex.Store({
           setGenerationStop('stop_requested', `Stopped before game ${g + 1}.`)
           break
         }
-        const start = validPool[Math.floor(Math.random() * validPool.length)]
+        const start = useStandard16 && cfg.standard16SelectionMode !== 'random'
+          ? validPool[g % validPool.length]
+          : validPool[Math.floor(Math.random() * validPool.length)]
         let board
         try {
           board = start.fen ? new ffish.Board(start.variant || context.state.variant, start.fen) : new ffish.Board(start.variant || context.state.variant)
@@ -3095,6 +3134,19 @@ export const store = new Vuex.Store({
       context.commit('openingGeneration', { running: false, stopRequested: false, currentMove: '', currentDepth: 0, currentStart: '' })
       await context.dispatch('persistOpeningBookFlush')
       return { generatedGames: g, generatedMoves }
+    },
+    runAutoOpeningGenerationFromCurrentPosition (context) {
+      const fen = context.state.board && typeof context.state.board.fen === 'function'
+        ? context.state.board.fen()
+        : context.state.fen
+      if (!fen) return { generatedGames: 0, generatedMoves: 0 }
+      return context.dispatch('runAutoOpeningGeneration', {
+        startPoolOverride: [{
+          name: '현재 포지션',
+          variant: context.state.variant,
+          fen
+        }]
+      })
     },
     stopAutoOpeningGeneration (context) {
       context.commit('openingGeneration', { stopRequested: true })
