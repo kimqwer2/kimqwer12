@@ -940,6 +940,26 @@ async function selectHumanTrapMove ({ engineInstance, fen, variant, is960, bestm
 }
 
 
+
+function personalityNoReplacementDiagnostic ({ trapSettings, marginSettings, combinedMode, rootCount, bestmove, reason }) {
+  return {
+    mode: combinedMode ? 'Combined Personality' : (marginSettings.enabled ? 'Controlled Margin Mode' : 'Human Trap Mode'),
+    type: 'No Personality Replacement',
+    selectorEntered: true,
+    humanTrapEnabled: trapSettings.enabled,
+    controlledMarginEnabled: marginSettings.enabled,
+    selected: false,
+    replacement: false,
+    bestmove,
+    rootCandidates: rootCount,
+    reason,
+    displayEval: null,
+    probeEval: null,
+    trapEval: null,
+    marginCandidateEval: null
+  }
+}
+
 async function selectPersonalityMove ({ engineInstance, fen, variant, is960, bestmove, rootLines, humanTrapSettings, closeWinSettings, sideToMove = true }) {
   const trapSettings = normalizeTrapSettings(humanTrapSettings)
   const marginSettings = normalizeCloseWinSettings(closeWinSettings)
@@ -948,6 +968,7 @@ async function selectPersonalityMove ({ engineInstance, fen, variant, is960, bes
   console.info('[Personality]', {
     humanTrap: trapSettings.enabled,
     controlledMargin: marginSettings.enabled,
+    selectorEntered: true,
     combined: combinedMode,
     rootCandidates: rootCount,
     bestmove
@@ -977,7 +998,7 @@ async function selectPersonalityMove ({ engineInstance, fen, variant, is960, bes
     const closeWin = selectCloseWinMove({ rootLines, settings: marginSettings, sideToMove, fen, variant, is960 })
     logControlledMargin(closeWin)
     if (closeWin && closeWin.move) return { ...closeWin, mode: 'Combined Personality', governingConstraint: 'Controlled Margin' }
-    return null
+    return personalityNoReplacementDiagnostic({ trapSettings, marginSettings, combinedMode, rootCount, bestmove, reason: rootCount ? 'no_combined_replacement' : 'no_root_candidates' })
   }
   const closeWin = selectCloseWinMove({ rootLines, settings: marginSettings, sideToMove, fen, variant, is960 })
   logControlledMargin(closeWin)
@@ -985,7 +1006,7 @@ async function selectPersonalityMove ({ engineInstance, fen, variant, is960, bes
   const trap = await selectHumanTrapMove({ engineInstance, fen, variant, is960, bestmove, rootLines, settings: trapSettings, sideToMove })
   logHumanTrap(trap)
   if (trap && trap.move) return { ...trap, mode: 'Human Trap Mode' }
-  return null
+  return personalityNoReplacementDiagnostic({ trapSettings, marginSettings, combinedMode, rootCount, bestmove, reason: rootCount ? 'no_personality_replacement' : 'no_root_candidates' })
 }
 
 
@@ -1870,6 +1891,21 @@ export const store = new Vuex.Store({
       state.humanTrapDiagnostics = diag
       if (diag) {
         const debug = { ...(state.enginePersonalityDebug || {}) }
+        debug.selectorPasses = (debug.selectorPasses || 0) + 1
+        if (!diag.move && diag.type === 'No Personality Replacement') {
+          console.info('[engine-personality]', {
+            mode: diag.mode,
+            type: diag.type,
+            selectorEntered: diag.selectorEntered,
+            humanTrapEnabled: diag.humanTrapEnabled,
+            controlledMarginEnabled: diag.controlledMarginEnabled,
+            replacement: false,
+            reason: diag.reason,
+            rootCandidates: diag.rootCandidates
+          })
+          state.enginePersonalityDebug = debug
+          return
+        }
         if (diag.type === 'Controlled Margin') {
           debug.closeWinSelections = (debug.closeWinSelections || 0) + 1
           if (typeof diag.marginReduction === 'number' && diag.marginReduction > 0) {
@@ -1978,7 +2014,18 @@ export const store = new Vuex.Store({
       state.gameConfig = payload
     },
     startGameModal (state, payload) {
-      state.startGameModal = Object.assign({}, state.startGameModal || {}, payload)
+      const before = state.startGameModal || {}
+      state.startGameModal = Object.assign({}, before, payload)
+      if (payload && ('humanTrapMode' in payload || 'closeWinMode' in payload)) {
+        console.info('[Personality]', {
+          selectorEntered: false,
+          settingsChanged: true,
+          humanTrap: !!state.startGameModal.humanTrapMode,
+          controlledMargin: !!state.startGameModal.closeWinMode
+        })
+        if ('humanTrapMode' in payload) console.info('[HumanTrap]', { entered: !!state.startGameModal.humanTrapMode, selected: 'n/a', reason: 'setting_changed' })
+        if ('closeWinMode' in payload) console.info('[ControlledMargin]', { entered: !!state.startGameModal.closeWinMode, selected: 'n/a', reason: 'setting_changed' })
+      }
     },
     showGameEndModal (state, payload) {
       state.showGameEndModal = payload
@@ -2954,6 +3001,8 @@ export const store = new Vuex.Store({
           if (selected && selected.move && context.state.board.legalMoves().includes(selected.move) && normalizeFen(context.getters.fen) === normalizeFen(rootFen)) {
             bestmove = selected.move
             context.commit('personalityDiagnostics', { ...selected, selectedAt: Date.now() })
+          } else if (selected) {
+            context.commit('personalityDiagnostics', { ...selected, selectedAt: Date.now() })
           }
         }
         await context.dispatch('push', { move: bestmove, prev: context.getters.currentMove[0] })
@@ -2976,6 +3025,28 @@ export const store = new Vuex.Store({
       const { goCmd } = await context.dispatch('computeEngineSearchLimits', payload)
       const personality = personalityFlagsFromState(context.state)
       if (personality.enabled) {
+        console.info('[Personality]', {
+          humanTrap: personality.humanTrapSettings.enabled,
+          controlledMargin: personality.closeWinSettings.enabled,
+          selectorEntered: true,
+          phase: 'analysis-search-start',
+          source
+        })
+        if (personality.humanTrapSettings.enabled) {
+          console.info('[HumanTrap]', { entered: true, candidates: 0, filtered: 0, probed: 0, selected: 'pending', reason: 'awaiting_root_bestmove' })
+        }
+        if (personality.closeWinSettings.enabled) {
+          console.info('[ControlledMargin]', { entered: true, bestEval: null, selected: 'pending', reason: 'awaiting_root_bestmove' })
+        }
+        context.commit('humanTrapDiagnostics', {
+          mode: 'Engine Personality',
+          type: 'Selector Active',
+          selectorEntered: true,
+          humanTrapEnabled: personality.humanTrapSettings.enabled,
+          controlledMarginEnabled: personality.closeWinSettings.enabled,
+          reason: 'analysis_root_search_started',
+          selectedAt: Date.now()
+        })
         engine.send(`setoption name MultiPV value ${Math.max(personality.humanTrapSettings.multiPv, personality.closeWinSettings.maxCandidates)}`)
       }
       console.log('[engine-order] cmd:', goCmd)
@@ -3106,6 +3177,14 @@ export const store = new Vuex.Store({
           pveEngine.send(variantCmd)
           pveEngine.send(chess960Cmd)
           if (humanTrapSettings.enabled || closeWinSettings.enabled) {
+            console.info('[Personality]', {
+              humanTrap: humanTrapSettings.enabled,
+              controlledMargin: closeWinSettings.enabled,
+              selectorEntered: true,
+              phase: 'pve-configured'
+            })
+            if (humanTrapSettings.enabled) console.info('[HumanTrap]', { entered: true, candidates: 0, filtered: 0, probed: 0, selected: 'pending', reason: 'pve_waiting_for_engine_turn' })
+            if (closeWinSettings.enabled) console.info('[ControlledMargin]', { entered: true, bestEval: null, selected: 'pending', reason: 'pve_waiting_for_engine_turn' })
             pveEngine.send(`setoption name MultiPV value ${Math.max(humanTrapSettings.multiPv, closeWinSettings.maxCandidates)}`)
           }
         } catch (err) {
@@ -3143,7 +3222,27 @@ export const store = new Vuex.Store({
           try {
             humanTrapRootFen = context.getters.fen
             humanTrapRootLines = []
-            context.commit('humanTrapDiagnostics', null)
+            if (humanTrapSettings.enabled || closeWinSettings.enabled) {
+              console.info('[Personality]', {
+                humanTrap: humanTrapSettings.enabled,
+                controlledMargin: closeWinSettings.enabled,
+                selectorEntered: true,
+                phase: 'pve-search-start'
+              })
+              if (humanTrapSettings.enabled) console.info('[HumanTrap]', { entered: true, candidates: 0, filtered: 0, probed: 0, selected: 'pending', reason: 'awaiting_root_bestmove' })
+              if (closeWinSettings.enabled) console.info('[ControlledMargin]', { entered: true, bestEval: null, selected: 'pending', reason: 'awaiting_root_bestmove' })
+              context.commit('humanTrapDiagnostics', {
+                mode: 'Engine Personality',
+                type: 'Selector Active',
+                selectorEntered: true,
+                humanTrapEnabled: humanTrapSettings.enabled,
+                controlledMarginEnabled: closeWinSettings.enabled,
+                reason: 'pve_root_search_started',
+                selectedAt: Date.now()
+              })
+            } else {
+              context.commit('humanTrapDiagnostics', null)
+            }
             inst.send(buildPositionCommand(context.getters.gameState))
             inst.send(limiterToGo(lim))
           } catch (err) {
@@ -3180,6 +3279,8 @@ export const store = new Vuex.Store({
                 move = selected.move
                 context.commit('personalityDiagnostics', { ...selected, selectedAt: Date.now() })
                 console.info('[engine-personality] selected', selected)
+              } else if (selected) {
+                context.commit('personalityDiagnostics', { ...selected, selectedAt: Date.now() })
               } else {
                 context.commit('personalityDiagnostics', null)
               }
