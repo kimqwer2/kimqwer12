@@ -2,6 +2,8 @@
   <div class="viz-settings">
     <h4>시각화</h4>
     <label><input v-model="local.showMultiPvArrows" type="checkbox" @change="save"> 후보수 화살표</label>
+    <label><input v-model="humanTrapMode" type="checkbox"> Human Trap Mode (PvE)</label>
+    <small>켜면 플레이어 대 엔진(PvE)에서만 안전한 포이즌드 캡처 후보를 검토합니다. 기본값은 꺼짐입니다.</small>
     <label>표시 후보 수 <input v-model.number="local.multiPvCount" min="1" type="number" @change="save"></label>
     <label><input v-model="local.trajectoryEnabled" type="checkbox" @change="save"> 최선 수순 궤적</label>
     <label>표시 방향
@@ -219,7 +221,11 @@ export default {
     startPool () { return this.$store.getters.openingStartPool || [] },
     variant () { return this.$store.getters.variant },
     isJanggiVariant () { return ['janggi', 'janggimodern'].includes(this.variant) },
-    openingGeneration () { return this.$store.state.openingGeneration || { running: false, completedGames: 0, completedMoves: 0 } }
+    openingGeneration () { return this.$store.state.openingGeneration || { running: false, completedGames: 0, completedMoves: 0 } },
+    humanTrapMode: {
+      get () { return !!(this.$store.state.startGameModal && this.$store.state.startGameModal.humanTrapMode) },
+      set (value) { this.$store.commit('startGameModal', { humanTrapMode: !!value }) }
+    }
   },
   watch: {
     cfg: {
