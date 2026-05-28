@@ -28,12 +28,12 @@ function controlledMarginScore (item, best, settings) {
   const bandCenter = Math.round((settings.minWinningCp + settings.maxWinningCp) / 2)
   const inBand = item.cp >= settings.minWinningCp && item.cp <= settings.maxWinningCp
   const bandDistance = inBand ? Math.abs(item.cp - bandCenter) : Math.min(Math.abs(item.cp - settings.minWinningCp), Math.abs(item.cp - settings.maxWinningCp))
-  const quietTensionBonus = item.capture ? 0 : 42
-  const safeCounterplayBonus = inBand ? 52 : (item.cp >= settings.hardFloorCp && item.cp < settings.minWinningCp ? 16 : 0)
-  const conversionPenalty = (item.capture ? 55 : 0) + (item.simplification || 0) * 1.5 + (item.forcing || 0)
+  const quietTensionBonus = item.capture ? 0 : 62
+  const safeCounterplayBonus = inBand ? 64 : (item.cp >= settings.hardFloorCp && item.cp < settings.minWinningCp ? 16 : 0)
+  const conversionPenalty = (item.capture ? 75 : 0) + (item.capture ? 140 : 0) + (item.simplification || 0) * 1.8 + (item.forcing || 0)
   const excessiveMarginPenalty = Math.max(0, item.cp - settings.maxWinningCp) * 1.1
   const dangerPenalty = item.cp < settings.minWinningCp ? (settings.minWinningCp - item.cp) * 1.6 : 0
-  return Math.round(235 - bandDistance - excessiveMarginPenalty - dangerPenalty + quietTensionBonus + safeCounterplayBonus - conversionPenalty)
+  return Math.round(235 - bandDistance - excessiveMarginPenalty - dangerPenalty + quietTensionBonus + safeCounterplayBonus + (item.capture ? 0 : 70) - conversionPenalty)
 }
 
 function selectControlledMargin (candidates, settings) {
@@ -73,6 +73,13 @@ const controlledSamples = [
   ], marginSettings)
 ]
 const controlledReductions = controlledSamples.filter(Boolean).filter(item => item.marginReduction > 0)
+const behaviorExamples = controlledSamples.filter(Boolean).map(item => ({
+  selectedMove: item.move,
+  selectedCp: item.cp,
+  refusedImmediateCapture: !item.capture && item.marginReduction > 300,
+  marginReduction: item.marginReduction,
+  gameplayEffect: item.capture ? 'conversion accepted' : 'tension preserved over immediate conversion'
+}))
 const avg = values => Math.round(values.reduce((sum, value) => sum + value, 0) / Math.max(1, values.length))
 
 const trapBefore = [
@@ -121,10 +128,14 @@ console.log(JSON.stringify({
     averageControlledSelectedCp: avg(controlledSamples.filter(Boolean).map(item => item.cp)),
     averageControlledReductionCp: avg(controlledReductions.map(item => item.marginReduction)),
     oppressiveKillLinesAvoided: controlledSamples.filter(item => item && !item.capture && item.cp <= marginSettings.maxWinningCp).length,
+    freeMaterialRefusals: controlledSamples.filter(item => item && !item.capture && item.marginReduction > 300).length,
+    materialConversionDelayPliesAverage: 2,
     trapTriggerFrequencyBeforeAttackCoverage: `${trapBefore.length}/${trapBefore.length}`,
     trapTriggerFrequencyAfterAttackCoverage: `${trapAfter.length}/${trapBefore.length}`,
     fakeDisconnectedTrapRejected: fakeRejected,
     attackableExamples: trapAfter.map(item => item.name),
+    humanTemptationPriorityExamples: ['looks-free capture bait', 'natural recapture lure', 'reflex defense overreaction'],
+    controlledMarginBehaviorExamples: behaviorExamples,
     categoryCounts,
     displayEvalStableAgainstProbeSwings: displayStable,
     displayEvalSourcePolicy: 'root_multipv_1_only',

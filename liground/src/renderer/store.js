@@ -171,7 +171,9 @@ const CONTROLLED_MARGIN_DEFAULTS = {
   maxCandidates: 6,
   hardFloorCp: 50,
   avoidSimplification: true,
-  maxPvSimplification: 2
+  maxPvSimplification: 2,
+  refusalMinBestCp: 180,
+  refusalCapturePenalty: 140
 }
 
 
@@ -256,7 +258,9 @@ function normalizeCloseWinSettings (settings = {}) {
     maxCandidates: Math.max(2, Math.min(8, Number(merged.maxCandidates) || CONTROLLED_MARGIN_DEFAULTS.maxCandidates)),
     hardFloorCp: Math.max(0, Number(merged.hardFloorCp) || CONTROLLED_MARGIN_DEFAULTS.hardFloorCp),
     avoidSimplification: merged.avoidSimplification !== false,
-    maxPvSimplification: Math.max(0, Math.min(6, Number(merged.maxPvSimplification) || CONTROLLED_MARGIN_DEFAULTS.maxPvSimplification))
+    maxPvSimplification: Math.max(0, Math.min(6, Number(merged.maxPvSimplification) || CONTROLLED_MARGIN_DEFAULTS.maxPvSimplification)),
+    refusalMinBestCp: Math.max(100, Number(merged.refusalMinBestCp) || CONTROLLED_MARGIN_DEFAULTS.refusalMinBestCp),
+    refusalCapturePenalty: Math.max(0, Number(merged.refusalCapturePenalty) || CONTROLLED_MARGIN_DEFAULTS.refusalCapturePenalty)
   }
 }
 
@@ -335,7 +339,8 @@ function detectPoisonedCaptureReplies ({ variant, is960, fen, candidateUci, sett
     if (capturedValue < 100) continue
     if (!capturesMovedPiece && capturedValue < 300) continue
     const trapType = capturesMovedPiece ? 'Poisoned Capture' : 'Greed Trap'
-    const attractiveness = clampNumber((capturedValue / 900) + (capturesMovedPiece ? 0.25 : 0.12), 0.15, 1)
+    const humanTemptation = clampNumber((capturedValue / 600) + (capturesMovedPiece ? 0.45 : 0.25) + (reply.endsWith('q') ? 0.2 : 0), 0.25, 1.8)
+    const attractiveness = clampNumber((capturedValue / 900) + (capturesMovedPiece ? 0.25 : 0.12), 0.15, 1) * humanTemptation
     const replyBoard = boardFromFen(variant, afterCandidateFen, is960)
     try {
       replyBoard.push(reply)
@@ -347,6 +352,8 @@ function detectPoisonedCaptureReplies ({ variant, is960, fen, candidateUci, sett
         greedGain,
         trapType,
         attractiveness,
+        humanTemptation,
+        looksFree: capturesMovedPiece || capturedValue >= 300,
         temptationValidation: {
           attackable: true,
           enemyAttackCoverage: 1,
@@ -527,24 +534,45 @@ function controlledMarginForcingInfo ({ fen, variant, is960, move }) {
   }
 }
 
+
+function controlledMarginRefusalInfo ({ item, best, settings, fen }) {
+  const moveInfo = moveCaptureInfo(fen, item.ucimove)
+  const alreadyComfortable = best && typeof best.cp === 'number' && best.cp >= settings.refusalMinBestCp
+  const refusalPenalty = alreadyComfortable && moveInfo.isCapture
+    ? settings.refusalCapturePenalty + Math.round(moveInfo.capturedValue / 8)
+    : 0
+  const refusalBonus = alreadyComfortable && !moveInfo.isCapture ? 70 : 0
+  return {
+    moveInfo,
+    alreadyComfortable,
+    refusalPenalty,
+    refusalBonus,
+    delayedConversion: alreadyComfortable && !moveInfo.isCapture,
+    reason: moveInfo.isCapture && alreadyComfortable
+      ? `refuses immediate ${moveInfo.capturedValue} material conversion`
+      : (alreadyComfortable ? 'delays conversion and keeps tension' : 'normal margin control')
+  }
+}
+
 function controlledMarginCandidateScore ({ item, best, settings, fen, variant, is960 }) {
   const bandCenter = Math.round((settings.minWinningCp + settings.maxWinningCp) / 2)
   const inBand = item.cp >= settings.minWinningCp && item.cp <= settings.maxWinningCp
   const belowBand = item.cp < settings.minWinningCp
   const bandDistance = inBand ? Math.abs(item.cp - bandCenter) : Math.min(Math.abs(item.cp - settings.minWinningCp), Math.abs(item.cp - settings.maxWinningCp))
-  const moveInfo = moveCaptureInfo(fen, item.ucimove)
+  const refusalInfo = controlledMarginRefusalInfo({ item, best, settings, fen })
+  const moveInfo = refusalInfo.moveInfo
   const pvSimplification = analyzePvSimplification({ fen, variant, is960, pvUCI: item.pvUCI, maxPlies: Math.max(2, settings.maxPvSimplification) })
   const forcingInfo = controlledMarginForcingInfo({ fen, variant, is960, move: item.ucimove })
-  const quietTensionBonus = moveInfo.isCapture ? 0 : 42
-  const safeCounterplayBonus = item.cp >= settings.minWinningCp && item.cp <= settings.maxWinningCp ? 52 : (item.cp >= settings.hardFloorCp && item.cp < settings.minWinningCp ? 16 : 0)
-  const conversionPenalty = (moveInfo.isCapture ? 55 + Math.round(moveInfo.capturedValue / 28) : 0) + (settings.avoidSimplification ? pvSimplification.simplificationPenalty * 1.5 : 0) + forcingInfo.forcingPenalty
+  const quietTensionBonus = moveInfo.isCapture ? 0 : 62
+  const safeCounterplayBonus = item.cp >= settings.minWinningCp && item.cp <= settings.maxWinningCp ? 64 : (item.cp >= settings.hardFloorCp && item.cp < settings.minWinningCp ? 24 : 0)
+  const conversionPenalty = (moveInfo.isCapture ? 75 + Math.round(moveInfo.capturedValue / 18) : 0) + refusalInfo.refusalPenalty + (settings.avoidSimplification ? pvSimplification.simplificationPenalty * 1.8 : 0) + forcingInfo.forcingPenalty
   const excessiveMarginPenalty = Math.max(0, item.cp - settings.maxWinningCp) * 1.1
   const dangerPenalty = belowBand ? (settings.minWinningCp - item.cp) * 1.6 : 0
   const targetScore = 235 - bandDistance - excessiveMarginPenalty - dangerPenalty
-  const score = Math.round(targetScore + quietTensionBonus + safeCounterplayBonus - conversionPenalty)
+  const score = Math.round(targetScore + quietTensionBonus + safeCounterplayBonus + refusalInfo.refusalBonus - conversionPenalty)
   const simplificationAvoidanceReason = conversionPenalty > 0
-    ? `${moveInfo.isCapture ? 'root capture/conversion; ' : ''}${pvSimplification.reason}; ${forcingInfo.reason}`.trim()
-    : `quiet/tension-preserving candidate; ${forcingInfo.reason}`
+    ? `${moveInfo.isCapture ? 'root capture/conversion; ' : ''}${pvSimplification.reason}; ${forcingInfo.reason}; ${refusalInfo.reason}`.trim()
+    : `quiet/tension-preserving candidate; ${forcingInfo.reason}; ${refusalInfo.reason}`
   return {
     ...item,
     inBand,
@@ -556,6 +584,8 @@ function controlledMarginCandidateScore ({ item, best, settings, fen, variant, i
     simplificationPenalty: pvSimplification.simplificationPenalty,
     pvSimplification,
     forcingInfo,
+    refusalInfo,
+    controlledRefusal: refusalInfo.delayedConversion,
     simplificationAvoidanceReason,
     controlledMarginScore: score
   }
@@ -614,6 +644,7 @@ async function evaluateReplySpace ({ engineInstance, fen, variant, is960, candid
   const legalFactor = clampNumber(legalCount / 24, 0.25, 1.25)
   const score = Math.round(100 * overload * penaltyFactor * legalFactor)
   if (score < settings.minTrapScore) return null
+  const humanTemptation = clampNumber((naturalMiss.naturalScore / 500) + overload + penaltyFactor * 0.35, 0.2, 1.7)
   return {
     move: null,
     type: 'Choice Overload',
@@ -621,6 +652,8 @@ async function evaluateReplySpace ({ engineInstance, fen, variant, is960, candid
     cpLoss: 0,
     expectedPunishment: Math.round(naturalMiss.cp - bestReplyCp),
     trapScore: score,
+    humanTemptation,
+    looksFree: naturalMiss.naturalScore >= 300,
     choicePressure: score,
     legalReplies: legalCount,
     sampledReplies: evaluated.length,
@@ -673,6 +706,7 @@ async function evaluateOverreactionTrap ({ engineInstance, fen, variant, is960, 
   const top = overDefended[0]
   const apparentPressure = clampNumber((top.defensiveScore + Math.max(0, legalCount - 4) * 3) / 130, 0.25, 1.25)
   const penaltyFactor = clampNumber(top.penalty / 160, 0, 1.4)
+  const humanTemptation = clampNumber(apparentPressure + penaltyFactor * 0.35 + (top.defensiveScore > 80 ? 0.25 : 0), 0.25, 1.6)
   const score = Math.round(100 * apparentPressure * penaltyFactor)
   if (score < settings.minTrapScore) return null
   return {
@@ -682,6 +716,8 @@ async function evaluateOverreactionTrap ({ engineInstance, fen, variant, is960, 
     cpLoss: 0,
     expectedPunishment: Math.round(top.penalty),
     trapScore: score,
+    humanTemptation,
+    looksFree: false,
     overreactionPressure: score,
     legalReplies: legalCount,
     sampledReplies: evaluated.length,
@@ -714,6 +750,7 @@ async function evaluatePracticalPressure ({ engineInstance, fen, variant, is960,
   const instability = clampNumber((avgPenalty + worstPenalty * 0.45) / 220, 0, 1.5)
   const score = Math.round(100 * (0.35 + forcing * 0.3 + asymmetry * 0.35) * instability)
   if (score < settings.pressureMinScore) return null
+  const humanTemptation = clampNumber(asymmetry + instability * 0.35 + forcing * 0.2, 0.2, 1.5)
   const miss = evaluated
     .map((item, idx) => ({ ...item, penalty: penalties[idx] }))
     .sort((a, b) => (b.penalty - a.penalty) || a.move.localeCompare(b.move))[0]
@@ -724,6 +761,8 @@ async function evaluatePracticalPressure ({ engineInstance, fen, variant, is960,
     cpLoss: 0,
     expectedPunishment: Math.round(worstPenalty),
     trapScore: score,
+    humanTemptation,
+    looksFree: miss && miss.naturalScore >= 300,
     practicalPressure: score,
     replyInstability: Math.round(avgPenalty),
     legalReplies: legalCount,
@@ -777,6 +816,9 @@ function selectCloseWinMove ({ rootLines, settings, sideToMove = true, fen = '',
     tensionScore: selected.quietTensionBonus + selected.safeCounterplayBonus,
     controlledMarginScore: selected.controlledMarginScore,
     pvSimplification: selected.pvSimplification,
+    controlledRefusal: selected.controlledRefusal,
+    refusalInfo: selected.refusalInfo,
+    materialConversionDelayed: selected.controlledRefusal ? 1 : 0,
     trapScore: Math.max(1, Math.min(100, selected.controlledMarginScore))
   }
 }
@@ -857,6 +899,8 @@ async function selectHumanTrapMove ({ engineInstance, fen, variant, is960, bestm
         bestCp,
         captured: reply.captured,
         capturedValue: reply.capturedValue,
+        humanTemptation: reply.humanTemptation,
+        looksFree: reply.looksFree,
         attackableTrapTarget: true,
         enemyAttackCoverage: reply.temptationValidation ? reply.temptationValidation.enemyAttackCoverage : 1,
         temptationValidation: reply.temptationValidation || temptationValidation,
@@ -924,6 +968,7 @@ async function selectHumanTrapMove ({ engineInstance, fen, variant, is960, bestm
   }
   if (!trapCandidates.length) return null
   trapCandidates.sort((a, b) =>
+    ((b.humanTemptation || 0) - (a.humanTemptation || 0)) ||
     (b.trapScore - a.trapScore) ||
     (a.cpLoss - b.cpLoss) ||
     (b.expectedPunishment - a.expectedPunishment) ||
@@ -1515,6 +1560,7 @@ export const store = new Vuex.Store({
       combinedSelections: 0,
       controlledMarginReductions: 0,
       controlledMarginReductionCp: 0,
+      controlledRefusals: 0,
       controlledMarginBestCpTotal: 0,
       controlledMarginSelectedCpTotal: 0,
       controlledMarginAverageBestCp: 0,
@@ -1911,6 +1957,9 @@ export const store = new Vuex.Store({
           if (typeof diag.marginReduction === 'number' && diag.marginReduction > 0) {
             debug.controlledMarginReductions = (debug.controlledMarginReductions || 0) + 1
             debug.controlledMarginReductionCp = (debug.controlledMarginReductionCp || 0) + diag.marginReduction
+          }
+          if (diag.controlledRefusal) {
+            debug.controlledRefusals = (debug.controlledRefusals || 0) + 1
           }
           if (typeof diag.bestCp === 'number' && typeof diag.selectedCp === 'number') {
             debug.controlledMarginBestCpTotal = (debug.controlledMarginBestCpTotal || 0) + diag.bestCp
@@ -2834,7 +2883,7 @@ export const store = new Vuex.Store({
     },
     resetEngineData (context) {
       context.commit('humanTrapDiagnostics', null)
-      context.commit('enginePersonalityDebug', { trapAttempts: 0, trapSelections: 0, closeWinSelections: 0, replacementSelections: 0, combinedSelections: 0, controlledMarginReductions: 0, controlledMarginReductionCp: 0, controlledMarginBestCpTotal: 0, controlledMarginSelectedCpTotal: 0, controlledMarginAverageBestCp: 0, controlledMarginAverageSelectedCp: 0, categorySelections: {} })
+      context.commit('enginePersonalityDebug', { trapAttempts: 0, trapSelections: 0, closeWinSelections: 0, replacementSelections: 0, combinedSelections: 0, controlledMarginReductions: 0, controlledMarginReductionCp: 0, controlledRefusals: 0, controlledMarginBestCpTotal: 0, controlledMarginSelectedCpTotal: 0, controlledMarginAverageBestCp: 0, controlledMarginAverageSelectedCp: 0, categorySelections: {} })
       context.commit('resetMultiPV')
       context.commit('resetEngineStats')
       context.commit('resetWdlCache')
