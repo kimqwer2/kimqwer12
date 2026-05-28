@@ -185,6 +185,15 @@
               type="checkbox"
             > Human Trap Mode
           </label>
+          <label
+            v-if="whiteChoice !== blackChoice"
+            class="checkbox-label"
+          >
+            <input
+              v-model="closeWinMode"
+              type="checkbox"
+            > Close Win Mode
+          </label>
         </div>
 
         <p class="hint">
@@ -350,6 +359,11 @@ export default {
       set (v) { this.$store.commit('startGameModal', { humanTrapMode: !!v }) }
     },
 
+    closeWinMode: {
+      get () { return !!(this.$store.state.startGameModal && this.$store.state.startGameModal.closeWinMode) },
+      set (v) { this.$store.commit('startGameModal', { closeWinMode: !!v }) }
+    },
+
     startDisabled () {
       // Disable if white is engine but no engine selected
       if (this.whiteChoice === 'engine' && !this.whiteEngineObj) {
@@ -464,6 +478,7 @@ export default {
         black: this.blackChoice,
         showEndGameModal: this.showEndGameModal,
         humanTrapMode: this.humanTrapMode,
+        closeWinMode: this.closeWinMode,
 
         // Engines are only relevant when a side is set to 'engine'. We emit names for simplicity
         whiteEngine: (this.whiteChoice === 'engine' && this.whiteEngineObj)
@@ -517,7 +532,8 @@ export default {
           ? payload.blackEngine
           : payload.whiteEngine,
         gameMode: payload.gameMode,
-        humanTrapMode: payload.humanTrapMode
+        humanTrapMode: payload.humanTrapMode,
+        closeWinMode: payload.closeWinMode
       })
 
       // Emit a start event as well (UI layer hook), then close

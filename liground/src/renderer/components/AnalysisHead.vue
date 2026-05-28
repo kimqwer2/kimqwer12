@@ -389,7 +389,8 @@ export default {
           pveLimiter: playerIsWhite ? payload.blackLimiter : payload.whiteLimiter,
           engine: playerIsWhite ? payload.blackEngine : payload.whiteEngine,
           gameMode: payload.gameMode,
-          humanTrapMode: payload.humanTrapMode
+          humanTrapMode: payload.humanTrapMode,
+          closeWinMode: payload.closeWinMode
         })
       } else if (isEvE) {
         // start Engine vs Engine with provided engine names and limiter settings

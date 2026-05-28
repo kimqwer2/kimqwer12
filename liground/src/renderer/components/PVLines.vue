@@ -87,10 +87,12 @@
       v-if="humanTrapDiagnostics"
       class="human-trap-diagnostics"
     >
-      <strong>Human Trap:</strong> {{ humanTrapDiagnostics.type }} ·
-      reply {{ humanTrapDiagnostics.temptingReply }} ·
-      loss {{ humanTrapDiagnostics.cpLoss }}cp ·
-      punish +{{ humanTrapDiagnostics.expectedPunishment }}cp ·
+      <strong>{{ humanTrapDiagnostics.mode || 'Engine Personality' }}:</strong> {{ humanTrapDiagnostics.type }} ·
+      <span v-if="humanTrapDiagnostics.temptingReply">reply {{ humanTrapDiagnostics.temptingReply }} ·</span>
+      <span v-if="typeof humanTrapDiagnostics.cpLoss === 'number'">loss {{ humanTrapDiagnostics.cpLoss }}cp ·</span>
+      <span v-if="typeof humanTrapDiagnostics.expectedPunishment === 'number'">punish +{{ humanTrapDiagnostics.expectedPunishment }}cp ·</span>
+      <span v-if="typeof humanTrapDiagnostics.choicePressure === 'number'">pressure {{ humanTrapDiagnostics.choicePressure }} ·</span>
+      <span v-if="humanTrapDiagnostics.reason">{{ humanTrapDiagnostics.reason }} ·</span>
       score {{ humanTrapDiagnostics.trapScore }}
     </div>
     <footer class="footer">
