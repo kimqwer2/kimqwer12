@@ -3,8 +3,8 @@
     <h4>시각화</h4>
     <label><input v-model="local.showMultiPvArrows" type="checkbox" @change="save"> 후보수 화살표</label>
     <label><input v-model="humanTrapMode" type="checkbox"> Human Trap Mode</label>
-    <label><input v-model="closeWinMode" type="checkbox"> Close Win Mode</label>
-    <small>Human Trap은 분석/추천/엔진 선택에 실전 함정 압력을 반영합니다. Close Win은 안전한 우세권 안에서 과도한 압도를 피합니다. 둘 다 기본값은 꺼짐입니다.</small>
+    <label><input v-model="closeWinMode" type="checkbox"> Controlled Margin Mode</label>
+    <small>Human Trap은 분석/추천/엔진 선택에 실전 함정 압력을 반영합니다. Controlled Margin은 작은 목표 우세권(+0.7~+1.3) 안에서 승리 마진을 조절합니다. 둘 다 기본값은 꺼짐입니다.</small>
     <label>표시 후보 수 <input v-model.number="local.multiPvCount" min="1" type="number" @change="save"></label>
     <label><input v-model="local.trajectoryEnabled" type="checkbox" @change="save"> 최선 수순 궤적</label>
     <label>표시 방향
