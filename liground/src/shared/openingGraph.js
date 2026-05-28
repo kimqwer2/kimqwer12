@@ -107,6 +107,71 @@ function scoreCandidate (candidate, policy = 'practical') {
   return base * (1 + trustedCount * 0.04) * (1 + exploratoryCount * 0.01)
 }
 
+function formatSigned (value) {
+  const rounded = Math.round(value)
+  return `${rounded >= 0 ? '+' : ''}${rounded}`
+}
+
+function confidenceLabel (confidence) {
+  if (confidence >= 0.85) return '신뢰 높음'
+  if (confidence >= 0.5) return '신뢰 보통'
+  return '신뢰 낮음'
+}
+
+function deriveCandidateUi (candidate, bestEffectiveCp, policy) {
+  const meta = candidate.meta || {}
+  const effectiveCp = Number.isFinite(Number(meta.effectiveCp)) ? Number(meta.effectiveCp) : null
+  const cpStdDev = Math.max(0, finiteNumber(meta.cpStdDev))
+  const confidence = clamp(finiteNumber(meta.confidence, 0.35), 0.05, 1.2)
+  const avgDepth = Math.max(0, finiteNumber(meta.avgDepth || meta.lastDepth))
+  const samples = Math.max(0, finiteNumber(meta.cpSamples))
+  const repeatCount = Math.max(0, finiteNumber(candidate.count))
+  const manualBoost = Math.max(0, finiteNumber(meta.manualBoost))
+  const cpDelta = effectiveCp !== null && typeof bestEffectiveCp === 'number' ? Math.max(0, bestEffectiveCp - effectiveCp) : null
+  const stabilityPenalty = Math.min(14, cpStdDev / 18)
+  const deltaPenalty = cpDelta === null ? 0 : Math.min(18, cpDelta / 9)
+  const repeatBonus = Math.min(8, Math.log(repeatCount + 1) * 2.5)
+  const depthBonus = Math.min(5, avgDepth / 8)
+  const manualBonus = Math.min(5, manualBoost * 5)
+  // This is a UI explanation score, not an engine evaluation. It blends the
+  // already-persisted ranking metadata into a small relative "practicality"
+  // number so users can see why a move was preferred without reading raw CP.
+  const practicalScore = Math.round(clamp((confidence * 16) + repeatBonus + depthBonus + manualBonus - stabilityPenalty - deltaPenalty, -30, 30))
+  let tag = '실전적'
+  if (manualBoost > 0.12 && policy === 'user-priority') tag = '사용자 선호'
+  else if (cpDelta !== null && cpDelta <= 12 && confidence >= 0.65 && cpStdDev <= 55) tag = '최선 실전'
+  else if (confidence >= 0.75 && cpStdDev <= 65) tag = '안정적'
+  else if (cpStdDev >= 115 || confidence < 0.32) tag = '불안정'
+  else if (cpDelta !== null && cpDelta >= 75) tag = '위험'
+  else if ((candidate.exploratoryCount || 0) > (candidate.trustedCount || 0) * 2) tag = '실험적'
+  else if (effectiveCp !== null && cpDelta !== null && cpDelta <= 35 && confidence < 0.55) tag = '공격적'
+  let reason = '반복/깊이/안정성을 함께 반영한 추천입니다.'
+  if (tag === '최선 실전') reason = '상위 후보 대비 손실이 작고 평가가 안정적입니다.'
+  else if (tag === '안정적') reason = '반복 평가와 낮은 변동성이 추천을 뒷받침합니다.'
+  else if (tag === '불안정') reason = '평가 변동 또는 낮은 신뢰도로 주의가 필요합니다.'
+  else if (tag === '위험') reason = '최선 후보와의 상대 격차가 큰 편입니다.'
+  else if (tag === '실험적') reason = '탐색 데이터 비중이 높아 검증이 더 필요합니다.'
+  else if (tag === '사용자 선호') reason = '직접 추가한 수순의 가중치를 우선 반영합니다.'
+  return {
+    shareText: `${Math.round((candidate.share || 0) * 100)}%`,
+    practicalText: `실전성 ${formatSigned(practicalScore)}`,
+    practicalScore,
+    confidenceText: confidenceLabel(confidence),
+    tag,
+    reason,
+    cpDelta,
+    cpDeltaText: cpDelta === null ? '-' : `${Math.round(cpDelta)}cp 차`,
+    effectiveCpText: effectiveCp === null ? '-' : `${formatSigned(effectiveCp)}cp`,
+    confidenceValue: confidence,
+    confidencePercent: `${Math.round(clamp(confidence / 1.2, 0, 1) * 100)}%`,
+    cpStdDevText: `${Math.round(cpStdDev)}cp`,
+    avgDepthText: avgDepth > 0 ? avgDepth.toFixed(1) : '-',
+    samplesText: samples > 0 ? String(Math.round(samples)) : '-',
+    qualityWeightText: Number.isFinite(Number(meta.qualityWeight)) ? Number(meta.qualityWeight).toFixed(2) : '-',
+    manualBoostText: manualBoost > 0 ? manualBoost.toFixed(2) : '-'
+  }
+}
+
 export function createOpeningGraph () {
   return {
     positions: {},
@@ -231,13 +296,21 @@ export function openingCandidatesForFen (graph, fen, limit = 6, options = {}) {
     return item
   })
   const scoreTotal = items.reduce((sum, cur) => sum + cur.score, 0) || 1
+  const bestEffectiveCp = items.reduce((best, item) => {
+    const cp = Number.isFinite(Number(item.effectiveCp)) ? Number(item.effectiveCp) : null
+    return cp === null ? best : (best === null ? cp : Math.max(best, cp))
+  }, null)
   return items
+    .map(item => {
+      const withShare = {
+        ...item,
+        share: item.score / scoreTotal
+      }
+      withShare.ui = deriveCandidateUi(withShare, bestEffectiveCp, policy)
+      return withShare
+    })
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
-    .map(item => ({
-      ...item,
-      share: item.score / scoreTotal
-    }))
 }
 
 export function chooseWeightedCandidate (candidates, { topK = 3, temperature = 1, policy = 'practical' } = {}) {

@@ -90,17 +90,53 @@
             class="opening-candidates"
           >
             <div class="opening-candidates-title">
-              오프닝 추천 수
+              <span>오프닝 추천 수</span>
+              <button
+                class="candidate-detail-toggle"
+                type="button"
+                @click.stop="showOpeningCandidateDetails = !showOpeningCandidateDetails"
+              >
+                {{ showOpeningCandidateDetails ? '간단히' : '상세' }}
+              </button>
             </div>
-            <button
+            <div
               v-for="(cand, idx) in openingCandidates.slice(0, 3)"
               :key="`${cand.uci}-${idx}`"
-              class="candidate-btn"
-              @click="playCandidate(cand.uci)"
+              class="candidate-card"
               @contextmenu.prevent="removeOpeningCandidate(cand)"
             >
-              {{ cand.uci }} · {{ Math.round(cand.share * 100) }}%
-            </button>
+              <button
+                class="candidate-btn"
+                type="button"
+                :title="candidateUi(cand).reason"
+                @click="playCandidate(cand.uci)"
+              >
+                <span class="candidate-main">
+                  <strong>{{ cand.uci }}</strong>
+                  <span>{{ candidateUi(cand).shareText }}</span>
+                </span>
+                <span class="candidate-chips">
+                  <span class="candidate-chip weight">추천 {{ candidateUi(cand).shareText }}</span>
+                  <span class="candidate-chip practical">{{ candidateUi(cand).practicalText }}</span>
+                  <span class="candidate-chip">{{ candidateUi(cand).tag }}</span>
+                  <span class="candidate-chip">{{ candidateUi(cand).confidenceText }}</span>
+                </span>
+                <span class="candidate-reason">{{ candidateUi(cand).reason }}</span>
+              </button>
+              <div
+                v-if="showOpeningCandidateDetails"
+                class="candidate-debug"
+              >
+                <span>상대차 {{ candidateUi(cand).cpDeltaText }}</span>
+                <span>효과CP {{ candidateUi(cand).effectiveCpText }}</span>
+                <span>신뢰 {{ candidateUi(cand).confidencePercent }}</span>
+                <span>깊이 {{ candidateUi(cand).avgDepthText }}</span>
+                <span>표본 {{ candidateUi(cand).samplesText }}</span>
+                <span>변동 {{ candidateUi(cand).cpStdDevText }}</span>
+                <span>가중 {{ candidateUi(cand).qualityWeightText }}</span>
+                <span>수동 {{ candidateUi(cand).manualBoostText }}</span>
+              </div>
+            </div>
           </div>
         </div>
           <div
@@ -204,7 +240,8 @@ export default {
       game: null,
       resetAnalysis: false,
       keydownHandler: null,
-      autoReplyBusy: false
+      autoReplyBusy: false,
+      showOpeningCandidateDetails: false
     }
   },
   computed: {
@@ -339,6 +376,25 @@ export default {
   methods: {
     setFenSize () {
       return this.fen.length + 3
+    },
+    candidateUi (cand) {
+      if (cand && cand.ui) return cand.ui
+      const share = Math.round(Number((cand && cand.share) || 0) * 100)
+      return {
+        shareText: `${share}%`,
+        practicalText: '실전성 -',
+        tag: '실전적',
+        confidenceText: '신뢰 보통',
+        reason: '기존 오프닝북 가중치를 기반으로 한 추천입니다.',
+        cpDeltaText: '-',
+        effectiveCpText: '-',
+        confidencePercent: '-',
+        avgDepthText: '-',
+        samplesText: '-',
+        cpStdDevText: '-',
+        qualityWeightText: '-',
+        manualBoostText: '-'
+      }
     },
     scroll (event) { // TODO: also moves back and forth when being slightly next to the board and for example over the pockets
       if (event.deltaY < 0) {
@@ -711,10 +767,68 @@ input {
 }
 .opening-candidates-title {
   font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.candidate-detail-toggle {
+  font-size: 10px;
+  border: 1px solid var(--main-border-color);
+  border-radius: 999px;
+  padding: 1px 6px;
+  background: var(--second-bg-color);
+  color: var(--second-text-color, #9aa0a6);
+}
+.candidate-card {
+  border: 1px solid var(--main-border-color);
+  border-radius: 6px;
+  background: rgba(127, 127, 127, 0.06);
+  overflow: hidden;
 }
 .candidate-btn {
+  width: 100%;
   font-size: 11px;
   text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  border: none;
+  background: transparent;
+  color: var(--main-text-color);
+  padding: 5px 6px;
+}
+.candidate-main {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.candidate-chips, .candidate-debug {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+.candidate-chip {
+  border-radius: 999px;
+  padding: 1px 5px;
+  background: rgba(114, 137, 218, 0.16);
+  color: var(--main-text-color);
+}
+.candidate-chip.weight {
+  background: rgba(114, 137, 218, 0.26);
+}
+.candidate-chip.practical {
+  background: rgba(67, 181, 129, 0.18);
+}
+.candidate-reason {
+  color: var(--second-text-color, #9aa0a6);
+  line-height: 1.25;
+}
+.candidate-debug {
+  padding: 4px 6px 5px;
+  border-top: 1px solid var(--main-border-color);
+  color: var(--second-text-color, #9aa0a6);
+  font-size: 10px;
 }
 #pgnbrowser {
   grid-area: pgnbrowser;
