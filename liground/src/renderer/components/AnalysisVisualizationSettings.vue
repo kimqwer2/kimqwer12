@@ -129,10 +129,18 @@
         </div>
       </div>
       <small>오프닝북 데이터는 앱의 로컬 저장소에 자동 보관됩니다. (openingBookGraph / openingBookConfig)</small>
+      <input ref="openingBookFile" type="file" accept="application/json,.json,.txt" style="display:none" @change="handleOpeningBookFile">
+      <div class="book-actions">
+        <button type="button" @click="saveOpeningBookSnapshot">오프닝북 저장</button>
+        <button type="button" @click="loadOpeningBookSnapshot">오프닝북 불러오기</button>
+        <button type="button" @click="downloadOpeningBook">오프닝북 파일 내보내기</button>
+        <button type="button" @click="pickOpeningBookFile('replace')">파일 가져오기(교체)</button>
+        <button type="button" @click="pickOpeningBookFile('merge')">파일 가져오기(병합)</button>
+      </div>
       <div class="book-actions">
         <button v-if="!openingGeneration.running" type="button" @click="runAutoOpeningGeneration">자동 오프닝 생성 실행</button>
         <button v-else type="button" @click="stopAutoOpeningGeneration">자동 오프닝 생성 중지</button>
-        <button type="button" @click="exportOpeningBook">오프닝북 백업 복사</button>
+        <button type="button" @click="exportOpeningBook">오프닝북 클립보드 복사</button>
         <button type="button" @click="clearOpeningBook">오프닝북 초기화</button>
       </div>
       <small>진행 상황: {{ openingGeneration.completedGames }}판 / {{ openingGeneration.completedMoves }}수</small>
@@ -192,7 +200,7 @@ import { copyTextReliable } from '../../shared/clipboard'
 
 export default {
   name: 'AnalysisVisualizationSettings',
-  data: () => ({ local: {}, depthMode: '12', targetDepth: 'infinite', openingBookLocal: {}, poolBulkText: '', cleanupMinDepth: 12 }),
+  data: () => ({ local: {}, depthMode: '12', targetDepth: 'infinite', openingBookLocal: {}, poolBulkText: '', cleanupMinDepth: 12, pendingImportMode: 'replace' }),
   computed: {
     cfg () { return this.$store.getters.analysisVisualization },
     deepAnalysis () { return this.$store.getters.deepAnalysis },
@@ -297,13 +305,53 @@ export default {
     saveOpeningBook () {
       this.$store.dispatch('openingBook', this.openingBookLocal)
     },
-    async exportOpeningBook () {
-      const snapshot = {
-        exportedAt: new Date().toISOString(),
-        config: this.$store.getters.openingBook,
-        graph: this.$store.state.openingGraph
+    async saveOpeningBookSnapshot () {
+      await this.$store.dispatch('saveOpeningBookSnapshot')
+      alert('오프닝북을 로컬 저장 슬롯에 저장했습니다.')
+    },
+    async loadOpeningBookSnapshot () {
+      if (!confirm('저장된 오프닝북을 불러와 현재 데이터를 교체할까요?')) return
+      const ok = await this.$store.dispatch('loadOpeningBookSnapshot')
+      alert(ok ? '오프닝북을 불러왔습니다.' : '저장된 오프닝북을 찾지 못했습니다.')
+    },
+    async openingBookSnapshotText () {
+      const snapshot = await this.$store.dispatch('createOpeningBookSnapshot')
+      return `LIGROUND-OPENING-BOOK/2\n${JSON.stringify(snapshot, null, 2)}`
+    },
+    async downloadOpeningBook () {
+      const text = await this.openingBookSnapshotText()
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+      const blob = new Blob([text], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `liground-opening-book-${stamp}.json`
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      URL.revokeObjectURL(url)
+    },
+    pickOpeningBookFile (mode) {
+      this.pendingImportMode = mode === 'merge' ? 'merge' : 'replace'
+      if (this.$refs.openingBookFile) {
+        this.$refs.openingBookFile.value = ''
+        this.$refs.openingBookFile.click()
       }
-      const text = `LIGROUND-OPENING-BOOK/1\n${JSON.stringify(snapshot, null, 2)}`
+    },
+    handleOpeningBookFile (event) {
+      const file = event && event.target && event.target.files && event.target.files[0]
+      if (!file) return
+      const mode = this.pendingImportMode === 'merge' ? 'merge' : 'replace'
+      if (mode === 'replace' && !confirm('파일의 오프닝북으로 현재 데이터를 교체할까요?')) return
+      const reader = new FileReader()
+      reader.onload = async () => {
+        const ok = await this.$store.dispatch('importOpeningBookSnapshot', { text: String(reader.result || ''), mode })
+        alert(ok ? (mode === 'merge' ? '오프닝북 파일을 병합했습니다.' : '오프닝북 파일을 가져왔습니다.') : '오프닝북 파일을 읽지 못했습니다.')
+      }
+      reader.readAsText(file)
+    },
+    async exportOpeningBook () {
+      const text = await this.openingBookSnapshotText()
       const result = await copyTextReliable(text)
       if (result.ok) alert('오프닝북 백업 데이터를 복사했습니다.')
       else alert('백업 복사에 실패했습니다.')
@@ -333,7 +381,8 @@ export default {
       })
       const removed = result && typeof result.removedTransitions === 'number' ? result.removedTransitions : 0
       const quality = result && typeof result.removedForQuality === 'number' ? result.removedForQuality : 0
-      alert(`오프닝북 정리 완료: ${removed}개 전이 삭제 (품질 필터 ${quality}개)`)
+      const buckets = result && typeof result.removedBuckets === 'number' ? result.removedBuckets : 0
+      alert(`오프닝북 정리 완료: ${removed}개 전이 삭제, ${buckets}개 깊이 버킷 정리 (품질 필터 ${quality}개)`)
     },
     importStartPositions () {
       const raw = String(this.poolBulkText || '').trim()

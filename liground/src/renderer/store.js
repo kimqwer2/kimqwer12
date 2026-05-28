@@ -6,7 +6,7 @@ import allEngines from './store/engines'
 import { createReviewRequest, emptyReviewState, emptyReviewSequenceState, REVIEW_MARKER_MODES, REVIEW_MODES } from '../shared/review/schema'
 import { analyzeReviewRequest } from '../shared/review/reviewService'
 import { buildMainlineFromMove } from '../shared/gameSequence'
-import { addSequenceToOpeningGraph, chooseWeightedCandidate, createOpeningGraph, normalizeOpeningGraph, openingCandidatesForFen } from '../shared/openingGraph'
+import { addSequenceToOpeningGraph, chooseWeightedCandidate, createOpeningGraph, mergeOpeningGraphs, normalizeOpeningGraph, openingCandidatesForFen, refreshTransitionMeta } from '../shared/openingGraph'
 import { fenToEpd } from '../shared/openingLookup'
 
 import moveAudio from './assets/audio/Move.mp3'
@@ -737,7 +737,8 @@ export const store = new Vuex.Store({
     openingBookPersist: {
       queued: false,
       pendingCommits: 0,
-      lastFlushedAt: 0
+      lastFlushedAt: 0,
+      lastSnapshotAt: 0
     },
     openingStartPool: [],
     analysisVisualization: {
@@ -1608,6 +1609,20 @@ export const store = new Vuex.Store({
         localStorage.setItem('openingBookGraph', JSON.stringify(graph))
         localStorage.setItem('openingBookConfig', JSON.stringify(context.state.openingBook || {}))
         localStorage.setItem('openingStartPool', JSON.stringify(context.state.openingStartPool || []))
+        if (!state.lastSnapshotAt || now - state.lastSnapshotAt > 5 * 60 * 1000) {
+          const snapshot = {
+            format: 'LIGROUND-OPENING-BOOK',
+            version: 2,
+            exportedAt: new Date().toISOString(),
+            config: context.state.openingBook || {},
+            graph,
+            startPool: context.state.openingStartPool || []
+          }
+          localStorage.setItem('openingBookAutosave3', localStorage.getItem('openingBookAutosave2') || '')
+          localStorage.setItem('openingBookAutosave2', localStorage.getItem('openingBookAutosave1') || '')
+          localStorage.setItem('openingBookAutosave1', JSON.stringify(snapshot))
+          state.lastSnapshotAt = now
+        }
         console.log('[opening-book] persist flushed', {
           queuedCommitCount,
           graphSizeEstimate: Object.keys(graph.transitions || {}).length,
@@ -2958,7 +2973,7 @@ export const store = new Vuex.Store({
               try {
                 const branchBoard = new ffish.Board(context.state.variant, beforeFen)
                 branchBoard.push(branch.uci)
-                const committedBranch = await context.dispatch('commitGeneratedTransition', { fromFen: beforeFen, toFen: branchBoard.fen(), move: branch.uci, depth: analysisDepth, cp: branch.score, source: 'exploration' })
+                const committedBranch = await context.dispatch('commitGeneratedTransition', { fromFen: beforeFen, toFen: branchBoard.fen(), move: branch.uci, depth: analysisDepth, cp: branch.score, source: 'exploration', sessionId: nextSessionId })
                 if (committedBranch) {
                   committedCount += 1
                   context.commit('openingGeneration', { savedBranches: context.state.openingGeneration.savedBranches + 1 })
@@ -2974,7 +2989,7 @@ export const store = new Vuex.Store({
             generatedMoves += 1
             context.commit('openingGeneration', { currentMove: picked.uci })
             if (!acceptedAnalyzed.length) {
-              const committed = await context.dispatch('commitGeneratedTransition', { fromFen: beforeFen, toFen: board.fen(), move: picked.uci, depth: analysisDepth, cp: picked.score, source: 'exploration' })
+              const committed = await context.dispatch('commitGeneratedTransition', { fromFen: beforeFen, toFen: board.fen(), move: picked.uci, depth: analysisDepth, cp: picked.score, source: 'exploration', sessionId: nextSessionId })
               console.log('[opening-gen] commit result', { gameIndex: g + 1, ply: ply + 1, move: picked.uci, committed, committedBranchCount: committedCount })
               if (committed) {
                 context.commit('openingGeneration', { savedBranches: context.state.openingGeneration.savedBranches + 1 })
@@ -2999,18 +3014,31 @@ export const store = new Vuex.Store({
       context.commit('openingGeneration', { stopRequested: true })
     },
     commitGeneratedTransition (context, payload) {
+      if (payload && payload.sessionId && context.state.openingGeneration && payload.sessionId !== context.state.openingGeneration.sessionId) {
+        console.warn('[opening-gen] stale transition skipped', { move: payload.move, payloadSessionId: payload.sessionId, currentSessionId: context.state.openingGeneration.sessionId })
+        return false
+      }
       const graph = normalizeOpeningGraph(context.state.openingGraph || createOpeningGraph())
       const positions = [payload.fromFen, payload.toFen].filter(Boolean)
       const moves = [payload.move].filter(Boolean)
       if (!positions.length || !moves.length) return false
+      const epd = fenToEpd(payload.fromFen)
+      const key = `${epd}|${payload.move}`
+      const beforeCount = Math.max(0, Number((graph.transitions && graph.transitions[key]) || 0))
       addSequenceToOpeningGraph(graph, {
         moves,
         positions,
         source: payload && payload.source ? payload.source : 'exploration',
         moveMeta: [{ depth: payload && payload.depth, cp: payload && payload.cp }]
       })
-      context.commit('openingGraph', graph)
+      const afterCount = Math.max(0, Number((graph.transitions && graph.transitions[key]) || 0))
+      if (afterCount <= beforeCount) {
+        console.warn('[opening-gen] transition commit produced no count increase', { move: payload.move, beforeCount, afterCount })
+        return false
+      }
+      context.commit('openingGraph', normalizeOpeningGraph(graph))
       context.dispatch('scheduleOpeningBookPersist', { immediate: true })
+      console.log('[opening-gen] transition committed', { move: payload.move, depth: payload.depth, cp: payload.cp, afterCount })
       return true
     },
     async analyzeOpeningGenerationPosition (context, payload) {
@@ -3208,6 +3236,56 @@ export const store = new Vuex.Store({
       }
       return []
     },
+    createOpeningBookSnapshot (context) {
+      return {
+        format: 'LIGROUND-OPENING-BOOK',
+        version: 2,
+        exportedAt: new Date().toISOString(),
+        config: context.state.openingBook || {},
+        graph: normalizeOpeningGraph(context.state.openingGraph || createOpeningGraph()),
+        startPool: context.state.openingStartPool || []
+      }
+    },
+    saveOpeningBookSnapshot (context) {
+      const snapshot = {
+        format: 'LIGROUND-OPENING-BOOK',
+        version: 2,
+        exportedAt: new Date().toISOString(),
+        config: context.state.openingBook || {},
+        graph: normalizeOpeningGraph(context.state.openingGraph || createOpeningGraph()),
+        startPool: context.state.openingStartPool || []
+      }
+      localStorage.setItem('openingBookSavedSnapshot', JSON.stringify(snapshot))
+      context.dispatch('scheduleOpeningBookPersist', { immediate: true })
+      return snapshot
+    },
+    loadOpeningBookSnapshot (context) {
+      const raw = localStorage.getItem('openingBookSavedSnapshot') || localStorage.getItem('openingBookAutosave1')
+      if (!raw) return false
+      return context.dispatch('importOpeningBookSnapshot', { text: raw, mode: 'replace' })
+    },
+    importOpeningBookSnapshot (context, payload = {}) {
+      const text = typeof payload === 'string' ? payload : String(payload.text || '')
+      const mode = payload.mode === 'merge' ? 'merge' : 'replace'
+      const raw = text.startsWith('LIGROUND-OPENING-BOOK/') ? text.slice(text.indexOf(String.fromCharCode(10)) + 1) : text
+      let snapshot
+      try {
+        snapshot = JSON.parse(raw)
+      } catch (err) {
+        console.warn('[opening-book] import parse failed', err)
+        return false
+      }
+      const incomingGraph = normalizeOpeningGraph(snapshot.graph || snapshot.openingGraph || snapshot)
+      const nextGraph = mode === 'merge'
+        ? mergeOpeningGraphs(context.state.openingGraph || createOpeningGraph(), incomingGraph)
+        : incomingGraph
+      context.commit('openingGraph', nextGraph)
+      if (mode === 'replace' && snapshot.config && typeof snapshot.config === 'object') context.commit('openingBook', snapshot.config)
+      if (mode === 'replace' && Array.isArray(snapshot.startPool)) context.state.openingStartPool = snapshot.startPool.filter(item => item && (!item.variant || item.variant === context.state.variant))
+      context.dispatch('scheduleOpeningBookPersist', { immediate: true })
+      console.log('[opening-book] imported snapshot', { mode, transitionCount: Object.keys(nextGraph.transitions || {}).length })
+      return true
+    },
     persistOpeningBook (context) {
       context.dispatch('scheduleOpeningBookPersist', { immediate: true })
     },
@@ -3291,19 +3369,8 @@ export const store = new Vuex.Store({
       let removedTransitions = 0
       let removedForDepth = 0
       let removedForQuality = 0
+      let removedBuckets = 0
       let preservedManual = 0
-      const bestByEpd = {}
-      if (useQualityFilter) {
-        for (const key of Object.keys(graph.transitionMeta || {})) {
-          const meta = graph.transitionMeta[key] || {}
-          const splitAt = key.lastIndexOf('|')
-          if (splitAt <= 0) continue
-          const epd = key.slice(0, splitAt)
-          const cp = Number.isFinite(Number(meta.effectiveCp)) ? Number(meta.effectiveCp) : (Number.isFinite(Number(meta.avgCp)) ? Number(meta.avgCp) : null)
-          if (cp === null) continue
-          bestByEpd[epd] = bestByEpd[epd] === undefined ? cp : Math.max(bestByEpd[epd], cp)
-        }
-      }
       const removeTransition = (key, reason) => {
         delete graph.transitionMeta[key]
         delete graph.transitions[key]
@@ -3326,23 +3393,66 @@ export const store = new Vuex.Store({
       for (const key of Object.keys(graph.transitionMeta || {})) {
         const meta = graph.transitionMeta[key] || {}
         const isManual = (meta.manualBoost || 0) > 0
+        if (isManual) preservedManual += 1
+        const splitAt = key.lastIndexOf('|')
+        const epd = splitAt > 0 ? key.slice(0, splitAt) : ''
+        const move = splitAt > 0 ? key.slice(splitAt + 1) : ''
+        const node = graph.positions[epd]
+        const buckets = meta.depthBuckets && typeof meta.depthBuckets === 'object' ? meta.depthBuckets : null
+        if (buckets && Object.keys(buckets).length) {
+          for (const depthKey of Object.keys(buckets)) {
+            const depth = Number(depthKey)
+            if (!Number.isFinite(depth) || depth >= minDepth) continue
+            const bucket = buckets[depthKey] || {}
+            const bucketCount = Math.max(0, Number(bucket.count || 0))
+            const trustedRemove = Math.max(0, Number(bucket.trusted || 0))
+            const exploratoryRemove = Math.max(0, Number(bucket.exploratory || 0))
+            delete buckets[depthKey]
+            removedBuckets += 1
+            removedForDepth += bucketCount
+            if (graph.transitions && graph.transitions[key]) graph.transitions[key] = Math.max(0, Number(graph.transitions[key] || 0) - bucketCount)
+            if (node && node.next && node.next[move]) node.next[move] = Math.max(0, Number(node.next[move] || 0) - bucketCount)
+            if (node && node.trustedNext && node.trustedNext[move]) node.trustedNext[move] = Math.max(0, Number(node.trustedNext[move] || 0) - trustedRemove)
+            if (node && node.exploratoryNext && node.exploratoryNext[move]) node.exploratoryNext[move] = Math.max(0, Number(node.exploratoryNext[move] || 0) - exploratoryRemove)
+            meta.trusted = Math.max(0, Number(meta.trusted || 0) - trustedRemove)
+            meta.exploratory = Math.max(0, Number(meta.exploratory || 0) - exploratoryRemove)
+          }
+          if (node && node.next && node.next[move] <= 0) delete node.next[move]
+          if (node && node.trustedNext && node.trustedNext[move] <= 0) delete node.trustedNext[move]
+          if (node && node.exploratoryNext && node.exploratoryNext[move] <= 0) delete node.exploratoryNext[move]
+          if (graph.transitions && graph.transitions[key] <= 0) delete graph.transitions[key]
+          if (Object.keys(buckets).length || isManual) {
+            refreshTransitionMeta(meta)
+            graph.transitionMeta[key] = meta
+            if (node && node.next && node.next[move]) node.weightNext[move] = Math.max(0.0001, Number(node.next[move] || 0) * (meta.qualityWeight || 1))
+          } else {
+            removeTransition(key, 'depth')
+          }
+          continue
+        }
         const depth = Number(meta.avgDepth || meta.lastDepth || 0)
-        if (isManual) {
-          preservedManual += 1
-          continue
+        if (!isManual && depth > 0 && depth < minDepth) removeTransition(key, 'depth')
+      }
+      const bestByEpd = {}
+      if (useQualityFilter) {
+        for (const key of Object.keys(graph.transitionMeta || {})) {
+          const meta = graph.transitionMeta[key] || {}
+          const splitAt = key.lastIndexOf('|')
+          if (splitAt <= 0) continue
+          const epd = key.slice(0, splitAt)
+          const cp = Number.isFinite(Number(meta.effectiveCp)) ? Number(meta.effectiveCp) : (Number.isFinite(Number(meta.avgCp)) ? Number(meta.avgCp) : null)
+          if (cp === null) continue
+          bestByEpd[epd] = bestByEpd[epd] === undefined ? cp : Math.max(bestByEpd[epd], cp)
         }
-        if (depth > 0 && depth < minDepth) {
-          removeTransition(key, 'depth')
-          continue
-        }
-        if (useQualityFilter) {
+        for (const key of Object.keys(graph.transitionMeta || {})) {
+          const meta = graph.transitionMeta[key] || {}
+          if ((meta.manualBoost || 0) > 0) continue
           const splitAt = key.lastIndexOf('|')
           const epd = splitAt > 0 ? key.slice(0, splitAt) : ''
           const bestCp = bestByEpd[epd]
           const cp = Number.isFinite(Number(meta.effectiveCp)) ? Number(meta.effectiveCp) : (Number.isFinite(Number(meta.avgCp)) ? Number(meta.avgCp) : null)
+          const depth = Number(meta.avgDepth || meta.lastDepth || 0)
           if (typeof bestCp === 'number' && cp !== null) {
-            // Quality pruning is best-move relative: a candidate is removed only
-            // when its confidence-aware score is too far below the best sibling.
             const depthTolerance = depth > 20 ? -20 : (depth > 0 && depth < 12 ? 40 : 0)
             const confidenceTolerance = (meta.confidence || 0) < 0.45 ? 25 : 0
             const allowedDelta = Math.max(20, baseCpDelta + depthTolerance + confidenceTolerance)
@@ -3360,8 +3470,8 @@ export const store = new Vuex.Store({
       graph.moves = Object.values(graph.transitions || {}).reduce((sum, v) => sum + Math.max(0, Number(v) || 0), 0)
       context.commit('openingGraph', normalizeOpeningGraph(graph))
       context.dispatch('scheduleOpeningBookPersist', { immediate: true })
-      console.log('[opening-book] depth cleanup', { thresholdDepth: minDepth, useQualityFilter, baseCpDelta, removedTransitionCount: removedTransitions, removedForDepth, removedForQuality, removedNodeCount: removedNodes, preservedManualEntriesCount: preservedManual })
-      return { removedTransitions, removedNodes, preservedManual, minDepth, removedForDepth, removedForQuality }
+      console.log('[opening-book] depth cleanup', { thresholdDepth: minDepth, useQualityFilter, baseCpDelta, removedTransitionCount: removedTransitions, removedBuckets, removedForDepth, removedForQuality, removedNodeCount: removedNodes, preservedManualEntriesCount: preservedManual })
+      return { removedTransitions, removedNodes, preservedManual, minDepth, removedForDepth, removedForQuality, removedBuckets }
     },
     rounds (context, payload) {
       context.commit('rounds', payload)
