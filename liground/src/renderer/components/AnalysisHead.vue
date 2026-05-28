@@ -384,7 +384,14 @@ export default {
       const isPvE = !isPvP && !isEvE
       if (isPvE) {
         const playerIsWhite = payload.white === 'player'
-        this.$store.dispatch('PvEtrue', { playerIsWhite })
+        this.$store.dispatch('PvEtrue', {
+          playerIsWhite,
+          pveLimiter: playerIsWhite ? payload.blackLimiter : payload.whiteLimiter,
+          engine: playerIsWhite ? payload.blackEngine : payload.whiteEngine,
+          gameMode: payload.gameMode,
+          humanTrapMode: payload.humanTrapMode,
+          closeWinMode: payload.closeWinMode
+        })
       } else if (isEvE) {
         // start Engine vs Engine with provided engine names and limiter settings
         this.$store.dispatch('EvEtrue', {
