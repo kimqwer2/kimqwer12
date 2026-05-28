@@ -100,7 +100,7 @@
               </button>
             </div>
             <div
-              v-for="(cand, idx) in openingCandidates.slice(0, 3)"
+              v-for="(cand, idx) in openingCandidates.slice(0, recommendationDisplayCount)"
               :key="`${cand.uci}-${idx}`"
               class="candidate-card"
               @contextmenu.prevent="removeOpeningCandidate(cand)"
@@ -285,6 +285,9 @@ export default {
     },
     openingBook () {
       return this.$store.getters.openingBook || {}
+    },
+    recommendationDisplayCount () {
+      return Math.max(1, Math.min(8, Number(this.openingBook.recommendationCount) || 3))
     },
     showOpeningSuggestions () {
       return this.openingBook.enabled && this.openingBook.showSuggestions && this.openingCandidates.length > 0

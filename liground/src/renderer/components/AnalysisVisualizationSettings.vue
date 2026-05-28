@@ -83,6 +83,7 @@
       <h4>오프닝북</h4>
       <label><input v-model="openingBookLocal.enabled" type="checkbox" @change="saveOpeningBook"> 오프닝북 사용</label>
       <label><input v-model="openingBookLocal.showSuggestions" type="checkbox" @change="saveOpeningBook"> 추천 수 표시</label>
+      <label>추천 표시 개수 <input v-model.number="openingBookLocal.recommendationCount" min="1" max="8" type="number" @change="saveOpeningBook"></label>
       <label><input v-model="openingBookLocal.autoResponse" type="checkbox" @change="saveOpeningBook"> 자동 응수 사용</label>
       <label>자동 응수 다양성
         <select v-model.number="openingBookLocal.autoResponseTopK" @change="saveOpeningBook">
@@ -148,6 +149,8 @@
       <small>현재 분석 깊이: {{ openingGeneration.currentDepth || 0 }}</small>
       <small>현재 분석 중인 수: {{ openingGeneration.currentMove || '-' }}</small>
       <small>저장된 분기 수: {{ openingGeneration.savedBranches || 0 }}</small>
+      <small>마지막 종료 사유: {{ openingGeneration.lastStopReason || '-' }}</small>
+      <small v-if="openingGeneration.lastStopDetail">상세: {{ openingGeneration.lastStopDetail }}</small>
     </div>
 
     <div v-if="deepAnalysis.error" class="deep-error">
@@ -303,6 +306,7 @@ export default {
       return 'volatile-stable'
     },
     saveOpeningBook () {
+      this.openingBookLocal.recommendationCount = Math.max(1, Math.min(8, Number(this.openingBookLocal.recommendationCount) || 3))
       this.$store.dispatch('openingBook', this.openingBookLocal)
     },
     async saveOpeningBookSnapshot () {
