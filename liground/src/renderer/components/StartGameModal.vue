@@ -192,7 +192,7 @@
             <input
               v-model="closeWinMode"
               type="checkbox"
-            > Close Win Mode
+            > Controlled Margin Mode
           </label>
         </div>
 

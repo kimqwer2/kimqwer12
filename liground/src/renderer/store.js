@@ -115,31 +115,39 @@ function normalizeFen (fen) {
 
 const HUMAN_TRAP_DEFAULTS = {
   enabled: false,
-  multiPv: 3,
+  multiPv: 4,
   preferredCpLoss: 25,
   maxCpLoss: 40,
   minCandidateCp: -50,
   minPunishmentCp: 120,
   minTrapScore: 55,
   probeDepth: 8,
-  maxCandidates: 3,
+  maxCandidates: 4,
   maxRepliesPerCandidate: 1,
   choiceProbeDepth: 6,
   choiceMaxReplies: 6,
   choiceMinLegalReplies: 8,
   choiceMaxCorrectRatio: 0.35,
   choiceNearBestCp: 60,
-  choiceMinPenaltyCp: 90
+  choiceMinPenaltyCp: 90,
+  overreactionProbeDepth: 6,
+  overreactionMaxReplies: 5,
+  overreactionMinPenaltyCp: 70,
+  pressureProbeDepth: 6,
+  pressureMaxReplies: 5,
+  pressureMinScore: 45
 }
 
-const CLOSE_WIN_DEFAULTS = {
+const CONTROLLED_MARGIN_DEFAULTS = {
   enabled: false,
   minWinningCp: 100,
   maxWinningCp: 300,
-  maxCpLoss: 700,
+  maxCpLoss: 900,
   minSafetyCp: 80,
-  maxCandidates: 5
+  maxCandidates: 6,
+  hardFloorCp: 60
 }
+
 
 const HUMAN_TRAP_PIECE_VALUES = {
   p: 100,
@@ -196,20 +204,29 @@ function normalizeTrapSettings (settings = {}) {
     choiceMinLegalReplies: Math.max(2, Number(merged.choiceMinLegalReplies) || HUMAN_TRAP_DEFAULTS.choiceMinLegalReplies),
     choiceMaxCorrectRatio: clampNumber(Number(merged.choiceMaxCorrectRatio) || HUMAN_TRAP_DEFAULTS.choiceMaxCorrectRatio, 0.1, 0.8),
     choiceNearBestCp: Math.max(20, Number(merged.choiceNearBestCp) || HUMAN_TRAP_DEFAULTS.choiceNearBestCp),
-    choiceMinPenaltyCp: Math.max(30, Number(merged.choiceMinPenaltyCp) || HUMAN_TRAP_DEFAULTS.choiceMinPenaltyCp)
+    choiceMinPenaltyCp: Math.max(30, Number(merged.choiceMinPenaltyCp) || HUMAN_TRAP_DEFAULTS.choiceMinPenaltyCp),
+    overreactionProbeDepth: Math.max(3, Math.min(8, Number(merged.overreactionProbeDepth) || HUMAN_TRAP_DEFAULTS.overreactionProbeDepth)),
+    overreactionMaxReplies: Math.max(2, Math.min(8, Number(merged.overreactionMaxReplies) || HUMAN_TRAP_DEFAULTS.overreactionMaxReplies)),
+    overreactionMinPenaltyCp: Math.max(30, Number(merged.overreactionMinPenaltyCp) || HUMAN_TRAP_DEFAULTS.overreactionMinPenaltyCp),
+    pressureProbeDepth: Math.max(3, Math.min(8, Number(merged.pressureProbeDepth) || HUMAN_TRAP_DEFAULTS.pressureProbeDepth)),
+    pressureMaxReplies: Math.max(2, Math.min(8, Number(merged.pressureMaxReplies) || HUMAN_TRAP_DEFAULTS.pressureMaxReplies)),
+    pressureMinScore: Math.max(20, Number(merged.pressureMinScore) || HUMAN_TRAP_DEFAULTS.pressureMinScore)
   }
 }
 
 function normalizeCloseWinSettings (settings = {}) {
-  const merged = { ...CLOSE_WIN_DEFAULTS, ...(settings || {}) }
+  const merged = { ...CONTROLLED_MARGIN_DEFAULTS, ...(settings || {}) }
+  const minWinningCp = Math.max(50, Number(merged.minWinningCp) || CONTROLLED_MARGIN_DEFAULTS.minWinningCp)
+  const maxWinningCp = Math.max(minWinningCp + 20, Number(merged.maxWinningCp) || CONTROLLED_MARGIN_DEFAULTS.maxWinningCp)
   return {
     ...merged,
     enabled: !!merged.enabled,
-    minWinningCp: Math.max(50, Number(merged.minWinningCp) || CLOSE_WIN_DEFAULTS.minWinningCp),
-    maxWinningCp: Math.max(120, Number(merged.maxWinningCp) || CLOSE_WIN_DEFAULTS.maxWinningCp),
-    maxCpLoss: Math.max(100, Number(merged.maxCpLoss) || CLOSE_WIN_DEFAULTS.maxCpLoss),
-    minSafetyCp: Math.max(0, Number(merged.minSafetyCp) || CLOSE_WIN_DEFAULTS.minSafetyCp),
-    maxCandidates: Math.max(2, Math.min(8, Number(merged.maxCandidates) || CLOSE_WIN_DEFAULTS.maxCandidates))
+    minWinningCp,
+    maxWinningCp,
+    maxCpLoss: Math.max(100, Number(merged.maxCpLoss) || CONTROLLED_MARGIN_DEFAULTS.maxCpLoss),
+    minSafetyCp: Math.max(0, Number(merged.minSafetyCp) || CONTROLLED_MARGIN_DEFAULTS.minSafetyCp),
+    maxCandidates: Math.max(2, Math.min(8, Number(merged.maxCandidates) || CONTROLLED_MARGIN_DEFAULTS.maxCandidates)),
+    hardFloorCp: Math.max(0, Number(merged.hardFloorCp) || CONTROLLED_MARGIN_DEFAULTS.hardFloorCp)
   }
 }
 
@@ -311,18 +328,57 @@ function detectPoisonedCaptureReplies ({ variant, is960, fen, candidateUci, sett
     .slice(0, settings.maxRepliesPerCandidate)
 }
 
-function normalizeTrapRootCandidates (lines, fallbackBestmove) {
+function normalizeTrapRootCandidates (lines, fallbackBestmove, sideToMove = true) {
   const byMove = new Map()
   const ordered = (Array.isArray(lines) ? lines : [])
     .filter(line => line && line.ucimove && typeof line.cp === 'number' && Number.isFinite(line.cp) && typeof line.mate !== 'number')
     .sort((a, b) => (a.multipv || 999) - (b.multipv || 999))
   for (const line of ordered) {
-    if (!byMove.has(line.ucimove)) byMove.set(line.ucimove, line)
+    if (!byMove.has(line.ucimove)) {
+      byMove.set(line.ucimove, {
+        ...line,
+        rawCp: line.cp,
+        cp: calcForSide(line.cp, sideToMove)
+      })
+    }
   }
   if (fallbackBestmove && !byMove.has(fallbackBestmove)) {
-    byMove.set(fallbackBestmove, { ucimove: fallbackBestmove, cp: null, multipv: 999 })
+    byMove.set(fallbackBestmove, { ucimove: fallbackBestmove, cp: null, rawCp: null, multipv: 999 })
   }
   return [...byMove.values()].filter(line => typeof line.cp === 'number')
+}
+
+function adaptiveTrapTolerance (bestCp, settings, combinedMode = false) {
+  const baseMax = Math.max(1, settings.maxCpLoss)
+  const basePreferred = Math.max(0, settings.preferredCpLoss)
+  const winningCp = Math.max(0, Number(bestCp) || 0)
+  const winningBonus = winningCp <= 120 ? 0 : Math.min(combinedMode ? 520 : 300, Math.round((winningCp - 120) * (combinedMode ? 0.34 : 0.22)))
+  return {
+    maxCpLoss: baseMax + winningBonus,
+    preferredCpLoss: basePreferred + Math.round(winningBonus * 0.45),
+    adaptiveBonus: winningBonus,
+    bestCp
+  }
+}
+
+function controlledBandPosition (cp, settings) {
+  if (typeof cp !== 'number') return 'unknown'
+  if (cp < settings.minWinningCp) return 'below-band'
+  if (cp > settings.maxWinningCp) return 'above-band'
+  return 'inside-band'
+}
+
+function quietReplyScore (fen, move) {
+  const parsed = parseUciFromTo(move)
+  if (!parsed) return 0
+  const pieceMap = parseFenPieceMap(fen)
+  const moving = pieceMap[parsed.from] || ''
+  const captured = pieceMap[parsed.to]
+  if (captured) return -200
+  const kingBonus = String(moving).toLowerCase() === 'k' ? 90 : 0
+  const retreatBonus = /[18]$/.test(parsed.to) ? 20 : 0
+  const castleLike = parsed.from[0] === 'e' && ['c', 'g'].includes(parsed.to[0]) ? 35 : 0
+  return kingBonus + retreatBonus + castleLike + 10
 }
 
 
@@ -348,7 +404,7 @@ function chooseNaturalReplies (fen, variant, is960, limit) {
   return { replies: scored.slice(0, Math.max(1, limit)), legalCount: moves.length }
 }
 
-async function evaluateReplySpace ({ engineInstance, fen, variant, is960, candidateCp, settings }) {
+async function evaluateReplySpace ({ engineInstance, fen, variant, is960, candidateCp, settings, sideToMove = true }) {
   const { replies, legalCount } = chooseNaturalReplies(fen, variant, is960, settings.choiceMaxReplies)
   if (legalCount < settings.choiceMinLegalReplies || replies.length < 2) return null
   const evaluated = []
@@ -363,7 +419,7 @@ async function evaluateReplySpace ({ engineInstance, fen, variant, is960, candid
     }
     const score = parseEngineScoreToCp(await engineInstance.evaluate(replyFen, settings.choiceProbeDepth))
     if (score === null) continue
-    evaluated.push({ ...item, cp: score })
+    evaluated.push({ ...item, cp: calcForSide(score, sideToMove), rawCp: score })
   }
   if (evaluated.length < 2) return null
   const bestReplyCp = Math.min(...evaluated.map(item => item.cp))
@@ -393,10 +449,10 @@ async function evaluateReplySpace ({ engineInstance, fen, variant, is960, candid
   }
 }
 
-async function annotatePersonalityCandidates ({ engineInstance, fen, variant, is960, rootLines, settings }) {
+async function annotatePersonalityCandidates ({ engineInstance, fen, variant, is960, rootLines, settings, sideToMove = true }) {
   const safeSettings = normalizeTrapSettings(settings)
   if (!safeSettings.enabled || !engineInstance || !fen) return []
-  const candidates = normalizeTrapRootCandidates(rootLines, rootLines && rootLines[0] && rootLines[0].ucimove).slice(0, safeSettings.maxCandidates)
+  const candidates = normalizeTrapRootCandidates(rootLines, rootLines && rootLines[0] && rootLines[0].ucimove, sideToMove).slice(0, safeSettings.maxCandidates)
   const annotations = []
   for (const candidate of candidates) {
     let afterCandidateFen = ''
@@ -407,63 +463,169 @@ async function annotatePersonalityCandidates ({ engineInstance, fen, variant, is
     } catch (err) {
       continue
     }
-    const overload = await evaluateReplySpace({ engineInstance, fen: afterCandidateFen, variant, is960, candidateCp: candidate.cp, settings: safeSettings })
+    const overload = await evaluateReplySpace({ engineInstance, fen: afterCandidateFen, variant, is960, candidateCp: candidate.cp, settings: safeSettings, sideToMove })
     if (overload) annotations.push({ ...overload, move: candidate.ucimove, candidateCp: candidate.cp })
   }
   return annotations
 }
 
-function selectCloseWinMove ({ rootLines, settings }) {
-  const safeSettings = normalizeCloseWinSettings(settings)
-  if (!safeSettings.enabled) return null
-  const candidates = normalizeTrapRootCandidates(rootLines, rootLines && rootLines[0] && rootLines[0].ucimove).slice(0, safeSettings.maxCandidates)
-  if (candidates.length < 2) return null
-  const best = candidates[0]
-  if (typeof best.cp !== 'number' || best.cp < safeSettings.maxWinningCp) return null
-  const stable = candidates
-    .filter(item => typeof item.cp === 'number' && item.cp >= safeSettings.minSafetyCp && best.cp - item.cp <= safeSettings.maxCpLoss)
-    .map(item => {
-      const target = item.cp >= safeSettings.minWinningCp && item.cp <= safeSettings.maxWinningCp
-        ? 0
-        : Math.min(Math.abs(item.cp - safeSettings.minWinningCp), Math.abs(item.cp - safeSettings.maxWinningCp))
-      return { ...item, closeWinDistance: target }
-    })
-    .sort((a, b) => (a.closeWinDistance - b.closeWinDistance) || (b.cp - a.cp) || ((a.multipv || 999) - (b.multipv || 999)))
-  if (!stable.length || stable[0].ucimove === best.ucimove) return null
+
+async function evaluateOverreactionTrap ({ engineInstance, fen, variant, is960, candidateCp, settings, sideToMove = true }) {
+  const { replies, legalCount } = chooseNaturalReplies(fen, variant, is960, Math.max(settings.overreactionMaxReplies, settings.choiceMaxReplies))
+  if (replies.length < 2 || legalCount < 4) return null
+  const evaluated = []
+  for (const item of replies.slice(0, Math.max(settings.overreactionMaxReplies, settings.choiceMaxReplies))) {
+    try {
+      const board = boardFromFen(variant, fen, is960)
+      board.push(item.move)
+      const score = parseEngineScoreToCp(await engineInstance.evaluate(board.fen(), settings.overreactionProbeDepth))
+      if (score !== null) evaluated.push({ ...item, defensiveScore: quietReplyScore(fen, item.move), cp: calcForSide(score, sideToMove), rawCp: score })
+    } catch (err) {}
+  }
+  if (evaluated.length < 2) return null
+  const bestReplyCp = Math.min(...evaluated.map(item => item.cp))
+  const overDefended = evaluated
+    .filter(item => item.defensiveScore > 0)
+    .map(item => ({ ...item, penalty: item.cp - bestReplyCp }))
+    .filter(item => item.penalty >= settings.overreactionMinPenaltyCp)
+    .sort((a, b) => (b.penalty - a.penalty) || (b.defensiveScore - a.defensiveScore) || a.move.localeCompare(b.move))
+  if (!overDefended.length) return null
+  const top = overDefended[0]
+  const apparentPressure = clampNumber((top.defensiveScore + Math.max(0, legalCount - 4) * 3) / 130, 0.25, 1.25)
+  const penaltyFactor = clampNumber(top.penalty / 160, 0, 1.4)
+  const score = Math.round(100 * apparentPressure * penaltyFactor)
+  if (score < settings.minTrapScore) return null
   return {
-    move: stable[0].ucimove,
-    type: 'Close Win',
-    reason: `stable winning band ${safeSettings.minWinningCp}-${safeSettings.maxWinningCp}cp`,
-    bestCp: best.cp,
-    selectedCp: stable[0].cp,
-    cpLoss: best.cp - stable[0].cp,
-    trapScore: Math.max(1, Math.round(100 - Math.min(90, stable[0].closeWinDistance / 5)))
+    move: null,
+    type: 'Overreaction Trap',
+    temptingReply: top.move,
+    cpLoss: 0,
+    expectedPunishment: Math.round(top.penalty),
+    trapScore: score,
+    overreactionPressure: score,
+    legalReplies: legalCount,
+    sampledReplies: evaluated.length,
+    candidateCp,
+    depth: settings.overreactionProbeDepth
   }
 }
 
-async function selectHumanTrapMove ({ engineInstance, fen, variant, is960, bestmove, rootLines, settings }) {
+
+async function evaluatePracticalPressure ({ engineInstance, fen, variant, is960, candidateCp, settings, sideToMove = true }) {
+  const { replies, legalCount } = chooseNaturalReplies(fen, variant, is960, settings.pressureMaxReplies)
+  if (replies.length < 2) return null
+  const evaluated = []
+  for (const item of replies) {
+    try {
+      const board = boardFromFen(variant, fen, is960)
+      board.push(item.move)
+      const score = parseEngineScoreToCp(await engineInstance.evaluate(board.fen(), settings.pressureProbeDepth))
+      if (score !== null) evaluated.push({ ...item, cp: calcForSide(score, sideToMove), rawCp: score })
+    } catch (err) {}
+  }
+  if (evaluated.length < 2) return null
+  const bestReplyCp = Math.min(...evaluated.map(item => item.cp))
+  const penalties = evaluated.map(item => Math.max(0, item.cp - bestReplyCp))
+  const avgPenalty = penalties.reduce((sum, value) => sum + value, 0) / penalties.length
+  const worstPenalty = Math.max(...penalties)
+  const correctReplies = evaluated.filter(item => item.cp <= bestReplyCp + settings.choiceNearBestCp).length
+  const asymmetry = clampNumber(1 - (correctReplies / evaluated.length), 0, 1)
+  const forcing = clampNumber((settings.pressureMaxReplies + 2 - Math.min(legalCount, settings.pressureMaxReplies + 2)) / settings.pressureMaxReplies, 0, 1)
+  const instability = clampNumber((avgPenalty + worstPenalty * 0.45) / 220, 0, 1.5)
+  const score = Math.round(100 * (0.35 + forcing * 0.3 + asymmetry * 0.35) * instability)
+  if (score < settings.pressureMinScore) return null
+  const miss = evaluated
+    .map((item, idx) => ({ ...item, penalty: penalties[idx] }))
+    .sort((a, b) => (b.penalty - a.penalty) || a.move.localeCompare(b.move))[0]
+  return {
+    move: null,
+    type: 'Practical Pressure',
+    temptingReply: miss ? miss.move : '',
+    cpLoss: 0,
+    expectedPunishment: Math.round(worstPenalty),
+    trapScore: score,
+    practicalPressure: score,
+    replyInstability: Math.round(avgPenalty),
+    legalReplies: legalCount,
+    sampledReplies: evaluated.length,
+    correctReplies,
+    candidateCp,
+    depth: settings.pressureProbeDepth
+  }
+}
+
+function selectCloseWinMove ({ rootLines, settings, sideToMove = true }) {
+  const safeSettings = normalizeCloseWinSettings(settings)
+  if (!safeSettings.enabled) return null
+  const candidates = normalizeTrapRootCandidates(rootLines, rootLines && rootLines[0] && rootLines[0].ucimove, sideToMove).slice(0, safeSettings.maxCandidates)
+  if (candidates.length < 2) return null
+  const best = candidates[0]
+  if (typeof best.cp !== 'number') return null
+  const bandPosition = controlledBandPosition(best.cp, safeSettings)
+  if (bandPosition === 'below-band') return null
+  const bandCenter = Math.round((safeSettings.minWinningCp + safeSettings.maxWinningCp) / 2)
+  const stable = candidates
+    .filter(item => typeof item.cp === 'number' && item.cp >= safeSettings.hardFloorCp && best.cp - item.cp <= safeSettings.maxCpLoss)
+    .map(item => {
+      const inBand = item.cp >= safeSettings.minWinningCp && item.cp <= safeSettings.maxWinningCp
+      const marginDistance = inBand ? Math.abs(item.cp - bandCenter) : Math.min(Math.abs(item.cp - safeSettings.minWinningCp), Math.abs(item.cp - safeSettings.maxWinningCp))
+      const reduction = best.cp - item.cp
+      const provocativeBonus = bandPosition === 'above-band' ? clampNumber(reduction / Math.max(1, best.cp - safeSettings.maxWinningCp), 0, 1) : 0
+      return { ...item, marginDistance, inBand, reduction, provocativeBonus }
+    })
+    .filter(item => bandPosition !== 'above-band' || item.cp < best.cp)
+    .sort((a, b) => {
+      if (a.inBand !== b.inBand) return a.inBand ? -1 : 1
+      return (a.marginDistance - b.marginDistance) || (b.provocativeBonus - a.provocativeBonus) || (b.cp - a.cp) || ((a.multipv || 999) - (b.multipv || 999))
+    })
+  if (!stable.length || stable[0].ucimove === best.ucimove) return null
+  const selected = stable[0]
+  return {
+    move: selected.ucimove,
+    type: 'Controlled Margin',
+    reason: bandPosition === 'above-band' ? 'margin reduction toward target band' : 'stable target-band control',
+    targetBand: `${safeSettings.minWinningCp}-${safeSettings.maxWinningCp}cp`,
+    currentEval: best.cp,
+    bandPosition,
+    marginReduction: Math.max(0, best.cp - selected.cp),
+    bestCp: best.cp,
+    selectedCp: selected.cp,
+    cpLoss: best.cp - selected.cp,
+    trapScore: Math.max(1, Math.round(100 - Math.min(90, selected.marginDistance / 5)))
+  }
+}
+
+
+async function selectHumanTrapMove ({ engineInstance, fen, variant, is960, bestmove, rootLines, settings, sideToMove = true, controlledSettings = null }) {
   const safeSettings = normalizeTrapSettings(settings)
   if (!safeSettings.enabled || !engineInstance || !fen || !bestmove) return null
-  const candidates = normalizeTrapRootCandidates(rootLines, bestmove).slice(0, safeSettings.maxCandidates)
+  const combinedMode = !!(controlledSettings && controlledSettings.enabled)
+  const candidates = normalizeTrapRootCandidates(rootLines, bestmove, sideToMove).slice(0, safeSettings.maxCandidates)
   if (!candidates.length) return null
   const bestLine = candidates.find(item => item.ucimove === bestmove) || candidates[0]
   if (!bestLine || typeof bestLine.cp !== 'number') return null
   const bestCp = bestLine.cp
+  const tolerance = adaptiveTrapTolerance(bestCp, safeSettings, combinedMode)
+  const activeMaxCpLoss = tolerance.maxCpLoss
+  const activePreferredCpLoss = tolerance.preferredCpLoss
+  const activeMinCandidateCp = combinedMode ? Math.max(safeSettings.minCandidateCp, controlledSettings.hardFloorCp) : safeSettings.minCandidateCp
   const trapCandidates = []
   for (const candidate of candidates) {
     const candidateCp = candidate.cp
     const cpLoss = bestCp - candidateCp
-    if (cpLoss < 0 || cpLoss > safeSettings.maxCpLoss || candidateCp < safeSettings.minCandidateCp) continue
-    const safety = clampNumber(1 - (cpLoss / safeSettings.maxCpLoss), 0, 1)
-    const preferredWindow = Math.max(1, safeSettings.maxCpLoss - safeSettings.preferredCpLoss)
-    const preferredSafety = cpLoss <= safeSettings.preferredCpLoss
+    if (cpLoss < 0 || cpLoss > activeMaxCpLoss || candidateCp < activeMinCandidateCp) continue
+    if (combinedMode && controlledSettings && candidateCp > controlledSettings.maxWinningCp + 60) continue
+    const safety = clampNumber(1 - (cpLoss / activeMaxCpLoss), 0, 1)
+    const preferredWindow = Math.max(1, activeMaxCpLoss - activePreferredCpLoss)
+    const preferredSafety = cpLoss <= activePreferredCpLoss
       ? 1
-      : clampNumber(1 - ((cpLoss - safeSettings.preferredCpLoss) / preferredWindow) * 0.35, 0.65, 1)
+      : clampNumber(1 - ((cpLoss - activePreferredCpLoss) / preferredWindow) * 0.35, 0.65, 1)
     const replies = detectPoisonedCaptureReplies({ variant, is960, fen, candidateUci: candidate.ucimove, settings: safeSettings })
     for (const reply of replies) {
       const evaluated = await engineInstance.evaluate(reply.fenAfterReply, safeSettings.probeDepth)
-      const postCaptureCp = parseEngineScoreToCp(evaluated)
-      if (postCaptureCp === null) continue
+      const postCaptureRawCp = parseEngineScoreToCp(evaluated)
+      if (postCaptureRawCp === null) continue
+      const postCaptureCp = calcForSide(postCaptureRawCp, sideToMove)
       const punishmentCp = postCaptureCp - candidateCp
       if (punishmentCp < safeSettings.minPunishmentCp) continue
       const punishment = clampNumber(punishmentCp / 180, 0, 1.5)
@@ -480,7 +642,8 @@ async function selectHumanTrapMove ({ engineInstance, fen, variant, is960, bestm
         bestCp,
         captured: reply.captured,
         capturedValue: reply.capturedValue,
-        depth: safeSettings.probeDepth
+        depth: safeSettings.probeDepth,
+        adaptiveTolerance: tolerance
       })
     }
     let afterCandidateFen = ''
@@ -490,7 +653,7 @@ async function selectHumanTrapMove ({ engineInstance, fen, variant, is960, bestm
       afterCandidateFen = board.fen()
     } catch (err) {}
     if (afterCandidateFen) {
-      const overload = await evaluateReplySpace({ engineInstance, fen: afterCandidateFen, variant, is960, candidateCp, settings: safeSettings })
+      const overload = await evaluateReplySpace({ engineInstance, fen: afterCandidateFen, variant, is960, candidateCp, settings: safeSettings, sideToMove })
       if (overload) {
         trapCandidates.push({
           ...overload,
@@ -498,7 +661,32 @@ async function selectHumanTrapMove ({ engineInstance, fen, variant, is960, bestm
           cpLoss,
           bestCp,
           candidateCp,
-          trapScore: Math.round(overload.trapScore * safety * preferredSafety)
+          trapScore: Math.round(overload.trapScore * safety * preferredSafety),
+          adaptiveTolerance: tolerance
+        })
+      }
+      const overreaction = await evaluateOverreactionTrap({ engineInstance, fen: afterCandidateFen, variant, is960, candidateCp, settings: safeSettings, sideToMove })
+      if (overreaction) {
+        trapCandidates.push({
+          ...overreaction,
+          move: candidate.ucimove,
+          cpLoss,
+          bestCp,
+          candidateCp,
+          trapScore: Math.round(overreaction.trapScore * safety * preferredSafety),
+          adaptiveTolerance: tolerance
+        })
+      }
+      const pressure = await evaluatePracticalPressure({ engineInstance, fen: afterCandidateFen, variant, is960, candidateCp, settings: safeSettings, sideToMove })
+      if (pressure) {
+        trapCandidates.push({
+          ...pressure,
+          move: candidate.ucimove,
+          cpLoss,
+          bestCp,
+          candidateCp,
+          trapScore: Math.round(pressure.trapScore * safety * preferredSafety),
+          adaptiveTolerance: tolerance
         })
       }
     }
@@ -514,11 +702,21 @@ async function selectHumanTrapMove ({ engineInstance, fen, variant, is960, bestm
 }
 
 
-async function selectPersonalityMove ({ engineInstance, fen, variant, is960, bestmove, rootLines, humanTrapSettings, closeWinSettings }) {
-  const trap = await selectHumanTrapMove({ engineInstance, fen, variant, is960, bestmove, rootLines, settings: humanTrapSettings })
+async function selectPersonalityMove ({ engineInstance, fen, variant, is960, bestmove, rootLines, humanTrapSettings, closeWinSettings, sideToMove = true }) {
+  const trapSettings = normalizeTrapSettings(humanTrapSettings)
+  const marginSettings = normalizeCloseWinSettings(closeWinSettings)
+  const combinedMode = trapSettings.enabled && marginSettings.enabled
+  if (combinedMode) {
+    const trap = await selectHumanTrapMove({ engineInstance, fen, variant, is960, bestmove, rootLines, settings: trapSettings, sideToMove, controlledSettings: marginSettings })
+    if (trap && trap.move) return { ...trap, mode: 'Combined Personality', governingConstraint: 'Controlled Margin' }
+    const closeWin = selectCloseWinMove({ rootLines, settings: marginSettings, sideToMove })
+    if (closeWin && closeWin.move) return { ...closeWin, mode: 'Combined Personality', governingConstraint: 'Controlled Margin' }
+    return null
+  }
+  const closeWin = selectCloseWinMove({ rootLines, settings: marginSettings, sideToMove })
+  if (closeWin && closeWin.move) return { ...closeWin, mode: 'Controlled Margin Mode' }
+  const trap = await selectHumanTrapMove({ engineInstance, fen, variant, is960, bestmove, rootLines, settings: trapSettings, sideToMove })
   if (trap && trap.move) return { ...trap, mode: 'Human Trap Mode' }
-  const closeWin = selectCloseWinMove({ rootLines, settings: closeWinSettings })
-  if (closeWin && closeWin.move) return { ...closeWin, mode: 'Close Win Mode' }
   return null
 }
 
@@ -1023,6 +1221,9 @@ export const store = new Vuex.Store({
       trapSelections: 0,
       closeWinSelections: 0,
       trapAttempts: 0,
+      categorySelections: {},
+      replacementSelections: 0,
+      combinedSelections: 0,
       humanTrapSettings: {},
       closeWinSettings: {}
     },
@@ -1395,8 +1596,14 @@ export const store = new Vuex.Store({
       state.humanTrapDiagnostics = diag
       if (diag) {
         const debug = { ...(state.enginePersonalityDebug || {}) }
-        if (diag.type === 'Close Win') debug.closeWinSelections = (debug.closeWinSelections || 0) + 1
+        if (diag.type === 'Controlled Margin') debug.closeWinSelections = (debug.closeWinSelections || 0) + 1
         else debug.trapSelections = (debug.trapSelections || 0) + 1
+        debug.replacementSelections = (debug.replacementSelections || 0) + 1
+        if (diag.mode === 'Combined Personality') debug.combinedSelections = (debug.combinedSelections || 0) + 1
+        const categorySelections = { ...(debug.categorySelections || {}) }
+        const key = diag.type || 'Unknown'
+        categorySelections[key] = (categorySelections[key] || 0) + 1
+        debug.categorySelections = categorySelections
         state.enginePersonalityDebug = debug
       }
     },
@@ -1562,14 +1769,14 @@ export const store = new Vuex.Store({
     },
     multipv (state, payload) {
       let nextPayload = Array.isArray(payload) ? payload.slice() : []
-      const closeWin = selectCloseWinMove({ rootLines: nextPayload.filter(Boolean), settings: { enabled: !!(state.startGameModal && state.startGameModal.closeWinMode) } })
+      const closeWin = selectCloseWinMove({ rootLines: nextPayload.filter(Boolean), settings: { enabled: !!(state.startGameModal && state.startGameModal.closeWinMode) }, sideToMove: state.turn })
       if (closeWin && closeWin.move) {
         nextPayload = nextPayload.slice().sort((a, b) => {
           if (a && a.ucimove === closeWin.move) return -1
           if (b && b.ucimove === closeWin.move) return 1
           return 0
         })
-        state.humanTrapDiagnostics = { ...closeWin, mode: 'Close Win Mode', selectedAt: Date.now(), analysisOnly: true }
+        state.humanTrapDiagnostics = { ...closeWin, mode: 'Controlled Margin Mode', selectedAt: Date.now(), analysisOnly: true }
       }
       for (const pvline of nextPayload) {
         if (pvline) {
@@ -2271,7 +2478,7 @@ export const store = new Vuex.Store({
     },
     resetEngineData (context) {
       context.commit('humanTrapDiagnostics', null)
-      context.commit('enginePersonalityDebug', { trapAttempts: 0 })
+      context.commit('enginePersonalityDebug', { trapAttempts: 0, trapSelections: 0, closeWinSelections: 0, replacementSelections: 0, combinedSelections: 0, categorySelections: {} })
       context.commit('resetMultiPV')
       context.commit('resetEngineStats')
       context.commit('resetWdlCache')
@@ -2432,7 +2639,8 @@ export const store = new Vuex.Store({
             bestmove,
             rootLines: rootLines.filter(Boolean),
             humanTrapSettings: personality.humanTrapSettings,
-            closeWinSettings: personality.closeWinSettings
+            closeWinSettings: personality.closeWinSettings,
+            sideToMove: context.getters.turn
           })
           if (selected && selected.move && context.state.board.legalMoves().includes(selected.move) && normalizeFen(context.getters.fen) === normalizeFen(rootFen)) {
             bestmove = selected.move
@@ -2654,7 +2862,8 @@ export const store = new Vuex.Store({
                 bestmove: move,
                 rootLines: humanTrapRootLines.filter(Boolean),
                 humanTrapSettings,
-                closeWinSettings
+                closeWinSettings,
+                sideToMove: turnIsWhite
               })
               const stillEngineToMove = ((context.getters.turn && engineIsWhite) || (!context.getters.turn && !engineIsWhite))
               if (!context.state.PvE || !stillEngineToMove || normalizeFen(context.getters.fen) !== normalizeFen(currentFen)) return

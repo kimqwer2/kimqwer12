@@ -91,7 +91,13 @@
       <span v-if="humanTrapDiagnostics.temptingReply">reply {{ humanTrapDiagnostics.temptingReply }} ·</span>
       <span v-if="typeof humanTrapDiagnostics.cpLoss === 'number'">loss {{ humanTrapDiagnostics.cpLoss }}cp ·</span>
       <span v-if="typeof humanTrapDiagnostics.expectedPunishment === 'number'">punish +{{ humanTrapDiagnostics.expectedPunishment }}cp ·</span>
-      <span v-if="typeof humanTrapDiagnostics.choicePressure === 'number'">pressure {{ humanTrapDiagnostics.choicePressure }} ·</span>
+      <span v-if="typeof humanTrapDiagnostics.choicePressure === 'number'">choice {{ humanTrapDiagnostics.choicePressure }} ·</span>
+      <span v-if="typeof humanTrapDiagnostics.overreactionPressure === 'number'">overreact {{ humanTrapDiagnostics.overreactionPressure }} ·</span>
+      <span v-if="typeof humanTrapDiagnostics.practicalPressure === 'number'">pressure {{ humanTrapDiagnostics.practicalPressure }} ·</span>
+      <span v-if="humanTrapDiagnostics.targetBand">band {{ humanTrapDiagnostics.targetBand }} ·</span>
+      <span v-if="humanTrapDiagnostics.bandPosition">{{ humanTrapDiagnostics.bandPosition }} ·</span>
+      <span v-if="typeof humanTrapDiagnostics.marginReduction === 'number'">reduce {{ humanTrapDiagnostics.marginReduction }}cp ·</span>
+      <span v-if="humanTrapDiagnostics.adaptiveTolerance && humanTrapDiagnostics.adaptiveTolerance.adaptiveBonus">adaptive +{{ humanTrapDiagnostics.adaptiveTolerance.adaptiveBonus }}cp ·</span>
       <span v-if="humanTrapDiagnostics.reason">{{ humanTrapDiagnostics.reason }} ·</span>
       score {{ humanTrapDiagnostics.trapScore }}
     </div>
