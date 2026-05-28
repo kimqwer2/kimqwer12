@@ -253,6 +253,7 @@ function evalPos (fen, depth) {
   msg.debug(`Evaluating "${fen}" with depth ${depth}`)
   if (engine) {
     let result = ''
+    engine.exec('setoption name MultiPV value 1')
     engine.exec(`position fen ${fen}`)
     const listener = info => {
       if ('cp' in info) {
