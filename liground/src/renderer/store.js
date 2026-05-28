@@ -6,7 +6,7 @@ import allEngines from './store/engines'
 import { createReviewRequest, emptyReviewState, emptyReviewSequenceState, REVIEW_MARKER_MODES, REVIEW_MODES } from '../shared/review/schema'
 import { analyzeReviewRequest } from '../shared/review/reviewService'
 import { buildMainlineFromMove } from '../shared/gameSequence'
-import { addSequenceToOpeningGraph, chooseWeightedCandidate, createOpeningGraph, mergeOpeningGraphs, normalizeOpeningGraph, openingCandidatesForFen, refreshTransitionMeta } from '../shared/openingGraph'
+import { addSequenceToOpeningGraph, applyOpeningExplorationBias, chooseWeightedCandidate, createOpeningGraph, mergeOpeningGraphs, normalizeOpeningGraph, openingCandidatesForFen, refreshTransitionMeta } from '../shared/openingGraph'
 import { fenToEpd } from '../shared/openingLookup'
 
 import moveAudio from './assets/audio/Move.mp3'
@@ -2953,15 +2953,52 @@ export const store = new Vuex.Store({
             accepted: acceptedAnalyzed.map(c => ({ uci: c.uci, score: c.score }))
           })
           const liveGraph = normalizeOpeningGraph(context.state.openingGraph || createOpeningGraph())
-          const candidates = (acceptedAnalyzed.length ? acceptedAnalyzed : openingCandidatesForFen(liveGraph, board.fen(), Math.max(1, Number(cfg.autoGenerateTopK) || 3), { policy: cfg.moveSelectionPolicy || 'practical' }))
+          const graphCandidates = openingCandidatesForFen(liveGraph, board.fen(), Math.max(1, Number(cfg.autoGenerateTopK) || 3), {
+            policy: cfg.moveSelectionPolicy || 'practical',
+            explorationStrength: 0.45
+          })
+          const candidates = (acceptedAnalyzed.length ? acceptedAnalyzed : graphCandidates)
+            .map(c => {
+              if (!acceptedAnalyzed.length) return c
+              const known = graphCandidates.find(item => item && item.uci === c.uci)
+              return known
+                ? { ...known, ...c, meta: { ...(known.meta || {}), effectiveCp: c.score }, count: known.count, trustedCount: Math.max(known.trustedCount || 0, minTrustedCount), exploratoryCount: known.exploratoryCount }
+                : { ...c, count: 0, trustedCount: minTrustedCount, exploratoryCount: 0, meta: { effectiveCp: c.score, cpSamples: 0, confidence: 0.25, cpStdDev: 0 } }
+            })
             .filter(c => (c.trustedCount || 0) >= minTrustedCount)
+          const bestCandidateCp = candidates.reduce((best, c) => {
+            const cp = Number(c && (c.score !== undefined ? c.score : (c.effectiveCp !== undefined ? c.effectiveCp : c.meta && c.meta.effectiveCp)))
+            return Number.isFinite(cp) ? (best === null ? cp : Math.max(best, cp)) : best
+          }, null)
           const inExploration = cfg.earlyRandomEnabled !== false && ply < earlyPlies
+          const explorationCandidates = applyOpeningExplorationBias(candidates, {
+            bestEffectiveCp: bestCandidateCp,
+            maxCpDelta: cpThreshold,
+            strength: inExploration ? 1 : 0.45,
+            maxBonus: 0.65
+          })
+          console.log('[opening-gen] exploration candidates', {
+            gameIndex: g + 1,
+            ply: ply + 1,
+            mode: inExploration ? 'frontier' : 'reinforce',
+            candidates: explorationCandidates.map(c => ({
+              uci: c.uci,
+              score: c.score,
+              explorationScore: c.explorationScore,
+              explorationBonus: c.exploration && c.exploration.bonus,
+              samples: c.exploration && c.exploration.samples,
+              confidence: c.exploration && c.exploration.confidence,
+              cpDelta: c.exploration && c.exploration.cpDelta,
+              reason: c.exploration && c.exploration.reason
+            }))
+          })
           let picked = null
-          if (candidates.length) {
-            picked = chooseWeightedCandidate(candidates, {
-              topK: inExploration ? (cfg.autoGenerateTopK || 3) : 1,
+          if (explorationCandidates.length) {
+            picked = chooseWeightedCandidate(explorationCandidates, {
+              topK: inExploration ? (cfg.autoGenerateTopK || 3) : Math.min(2, cfg.autoGenerateTopK || 2),
               temperature: inExploration ? (cfg.autoGenerateTemperature || 1) : 0.6,
-              policy: cfg.moveSelectionPolicy || 'practical'
+              policy: cfg.moveSelectionPolicy || 'practical',
+              explorationBias: true
             })
           }
           if (!picked || !picked.uci) break

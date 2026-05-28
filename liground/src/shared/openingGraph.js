@@ -151,6 +151,90 @@ export function refreshTransitionMeta (meta) {
   return meta
 }
 
+
+function candidateSampleCount (candidate) {
+  const meta = candidate && candidate.meta ? candidate.meta : {}
+  const samples = Math.max(0, finiteNumber(meta.cpSamples))
+  return samples > 0 ? samples : Math.max(0, finiteNumber(candidate && candidate.count))
+}
+
+function candidateEffectiveCp (candidate) {
+  const meta = candidate && candidate.meta ? candidate.meta : {}
+  const cp = Number(meta.effectiveCp)
+  return Number.isFinite(cp) ? cp : null
+}
+
+function explorationProfile (candidate, bestEffectiveCp, options = {}) {
+  const meta = candidate && candidate.meta ? candidate.meta : {}
+  const effectiveCp = candidateEffectiveCp(candidate)
+  const maxCpDelta = Math.max(10, Number(options.maxCpDelta) || 60)
+  const strength = clamp(Number(options.strength) || 1, 0, 1.5)
+  const maxBonus = Math.max(0, Number(options.maxBonus) || 0.65)
+  const confidenceTarget = Math.max(0.2, Number(options.confidenceTarget) || 0.7)
+  const confidence = clamp(finiteNumber(meta.confidence, 0.35), 0.05, 1.2)
+  const samples = candidateSampleCount(candidate)
+  const visits = Math.max(0, finiteNumber(candidate && candidate.count))
+  const cpStdDev = Math.max(0, finiteNumber(meta.cpStdDev))
+  const cpDelta = effectiveCp !== null && typeof bestEffectiveCp === 'number' ? Math.max(0, bestEffectiveCp - effectiveCp) : 0
+
+  // Exploration is deliberately best-relative: only moves that remain close to
+  // the current engine/book leader receive a bonus. Clearly bad outliers keep
+  // their normal practical score, preventing tree explosion into junk moves.
+  const closeEnough = effectiveCp === null || typeof bestEffectiveCp !== 'number' || cpDelta <= maxCpDelta
+  if (!closeEnough || strength <= 0) {
+    return {
+      factor: 1,
+      bonus: 0,
+      samples,
+      confidence,
+      cpDelta,
+      reason: closeEnough ? 'exploration-disabled' : 'outside-cp-window'
+    }
+  }
+
+  const closeness = typeof bestEffectiveCp === 'number' && effectiveCp !== null
+    ? clamp(1 - (cpDelta / maxCpDelta), 0, 1)
+    : 0.65
+  const lowSample = 1 / Math.sqrt(samples + 1)
+  const lowVisit = 1 / Math.sqrt(visits + 1)
+  const lowConfidence = clamp((confidenceTarget - confidence) / confidenceTarget, 0, 1)
+  const uncertainty = clamp(cpStdDev / 140, 0, 1)
+
+  // Bounded, explainable UCB-like pressure without any global scheduling: a
+  // close move gets a temporary lift if it has few samples, few visits, low
+  // confidence, or high variance. Repeated validation naturally shrinks it.
+  const pressure = (lowSample * 0.38) + (lowVisit * 0.22) + (lowConfidence * 0.28) + (uncertainty * 0.12)
+  const bonus = Math.min(maxBonus, Math.max(0, pressure * closeness * strength))
+  return {
+    factor: 1 + bonus,
+    bonus,
+    samples,
+    confidence,
+    cpDelta,
+    reason: bonus > 0.001 ? 'close-underexplored' : 'already-validated'
+  }
+}
+
+export function applyOpeningExplorationBias (candidates, options = {}) {
+  const list = Array.isArray(candidates) ? candidates : []
+  const explicitBest = Number(options.bestEffectiveCp)
+  const bestEffectiveCp = Number.isFinite(explicitBest)
+    ? explicitBest
+    : list.reduce((best, item) => {
+      const cp = candidateEffectiveCp(item)
+      return cp === null ? best : (best === null ? cp : Math.max(best, cp))
+    }, null)
+  return list.map(item => {
+    const exploration = explorationProfile(item, bestEffectiveCp, options)
+    const baseScore = Math.max(0.0001, Number(item && (item.share || item.weight || item.score)) || 0.0001)
+    return {
+      ...item,
+      exploration,
+      explorationScore: baseScore * exploration.factor
+    }
+  })
+}
+
 function scoreCandidate (candidate, policy = 'practical') {
   const count = Math.max(0, finiteNumber(candidate.count))
   const trustedCount = Math.max(0, finiteNumber(candidate.trustedCount))
@@ -360,12 +444,20 @@ export function openingCandidatesForFen (graph, fen, limit = 6, options = {}) {
     item.manualBoost = meta.manualBoost
     return item
   })
-  const scoreTotal = items.reduce((sum, cur) => sum + cur.score, 0) || 1
   const bestEffectiveCp = items.reduce((best, item) => {
     const cp = Number.isFinite(Number(item.effectiveCp)) ? Number(item.effectiveCp) : null
     return cp === null ? best : (best === null ? cp : Math.max(best, cp))
   }, null)
-  return items
+  const displayItems = policy === 'practical'
+    ? applyOpeningExplorationBias(items, {
+      bestEffectiveCp,
+      maxCpDelta: Number(options.explorationCpDelta) || 60,
+      strength: Number(options.explorationStrength) || 0.35,
+      maxBonus: Number(options.explorationMaxBonus) || 0.22
+    }).map(item => ({ ...item, score: item.explorationScore, weight: item.explorationScore }))
+    : items
+  const scoreTotal = displayItems.reduce((sum, cur) => sum + cur.score, 0) || 1
+  return displayItems
     .map(item => {
       const withShare = {
         ...item,
@@ -428,7 +520,7 @@ export function mergeOpeningGraphs (baseGraph, incomingGraph) {
   return normalizeOpeningGraph(base)
 }
 
-export function chooseWeightedCandidate (candidates, { topK = 3, temperature = 1, policy = 'practical' } = {}) {
+export function chooseWeightedCandidate (candidates, { topK = 3, temperature = 1, policy = 'practical', explorationBias = false } = {}) {
   const list = Array.isArray(candidates) ? candidates.slice(0, Math.max(1, topK)) : []
   if (!list.length) return null
   const safeTemp = Math.max(0.2, Number(temperature) || 1)
@@ -436,7 +528,8 @@ export function chooseWeightedCandidate (candidates, { topK = 3, temperature = 1
     const trustedBias = 1 + Math.max(0, Number(c.trustedCount || 0)) * 0.15
     const manualBias = policy === 'user-priority' ? (1 + Math.min(0.8, Number(c.manualBoost || (c.meta && c.meta.manualBoost) || 0))) : 1
     const depthBias = policy === 'deep-priority' ? (1 + Math.min(0.35, Number(c.avgDepth || (c.meta && c.meta.avgDepth) || 0) / 60)) : 1
-    const base = Math.max(0.0001, Number(c.share || c.weight || c.score || 0.0001))
+    const explorationScore = explorationBias && Number.isFinite(Number(c.explorationScore)) ? Number(c.explorationScore) : null
+    const base = Math.max(0.0001, explorationScore !== null ? explorationScore : Number(c.share || c.weight || c.score || 0.0001))
     return Math.pow(base * trustedBias * manualBias * depthBias, 1 / safeTemp)
   })
   const total = weights.reduce((a, b) => a + b, 0)
