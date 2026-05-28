@@ -24,26 +24,27 @@ function controlledBandPosition (cp, settings) {
   return 'inside-band'
 }
 
-function controlledMarginScore (item, best, settings) {
+function controlledMarginScore (item, best, settings, combinedMode = false) {
   const bandCenter = Math.round((settings.minWinningCp + settings.maxWinningCp) / 2)
   const inBand = item.cp >= settings.minWinningCp && item.cp <= settings.maxWinningCp
   const bandDistance = inBand ? Math.abs(item.cp - bandCenter) : Math.min(Math.abs(item.cp - settings.minWinningCp), Math.abs(item.cp - settings.maxWinningCp))
-  const quietTensionBonus = item.capture ? 0 : 62
-  const safeCounterplayBonus = inBand ? 64 : (item.cp >= settings.hardFloorCp && item.cp < settings.minWinningCp ? 16 : 0)
-  const conversionPenalty = (item.capture ? 75 : 0) + (item.capture ? 140 : 0) + (item.simplification || 0) * 1.8 + (item.forcing || 0)
+  const quietTensionBonus = item.capture ? 0 : 62 + (combinedMode ? 90 : 0)
+  const safeCounterplayBonus = inBand ? 64 + (combinedMode ? 35 : 0) : (item.cp >= settings.hardFloorCp && item.cp < settings.minWinningCp ? 16 + (combinedMode ? 18 : 0) : 0)
+  const capturePenalty = item.capture ? 110 + 260 * (combinedMode ? 1.8 : 1) : 0
+  const conversionPenalty = capturePenalty + (item.simplification || 0) * (combinedMode ? 2.5 : 1.8) + (item.forcing || 0) * (combinedMode ? 1.45 : 1)
   const excessiveMarginPenalty = Math.max(0, item.cp - settings.maxWinningCp) * 1.1
   const dangerPenalty = item.cp < settings.minWinningCp ? (settings.minWinningCp - item.cp) * 1.6 : 0
-  return Math.round(235 - bandDistance - excessiveMarginPenalty - dangerPenalty + quietTensionBonus + safeCounterplayBonus + (item.capture ? 0 : 70) - conversionPenalty)
+  return Math.round(235 - bandDistance - excessiveMarginPenalty - dangerPenalty + quietTensionBonus + safeCounterplayBonus + (item.capture ? 0 : (combinedMode ? 220 : 130)) - conversionPenalty)
 }
 
-function selectControlledMargin (candidates, settings) {
+function selectControlledMargin (candidates, settings, combinedMode = false) {
   const best = candidates[0]
   const bandPosition = controlledBandPosition(best.cp, settings)
   if (bandPosition === 'below-band') return null
   const scored = candidates
     .filter(item => item.cp >= settings.hardFloorCp && best.cp - item.cp <= settings.maxCpLoss)
     .filter(item => bandPosition !== 'above-band' || item.cp < best.cp)
-    .map(item => ({ ...item, controlledMarginScore: controlledMarginScore(item, best, settings), marginReduction: best.cp - item.cp }))
+    .map(item => ({ ...item, controlledMarginScore: controlledMarginScore(item, best, settings, combinedMode), marginReduction: best.cp - item.cp, combinedMode }))
     .sort((a, b) => (b.controlledMarginScore - a.controlledMarginScore) || (b.marginReduction - a.marginReduction))
   if (!scored[0] || scored[0].move === best.move) return null
   return scored[0]
@@ -72,13 +73,33 @@ const controlledSamples = [
     { move: 'too-soft', cp: 44, capture: false, simplification: 0 }
   ], marginSettings)
 ]
+const combinedSamples = [
+  selectControlledMargin([
+    { move: 'best-vacuum', cp: 860, capture: true, simplification: 95, forcing: 85 },
+    { move: 'bait-pressure', cp: 118, capture: false, simplification: 0, forcing: 0 },
+    { move: 'clean-convert', cp: 260, capture: true, simplification: 55, forcing: 35 }
+  ], marginSettings, true),
+  selectControlledMargin([
+    { move: 'best-liquidate', cp: 520, capture: true, simplification: 85, forcing: 55 },
+    { move: 'keep-pins', cp: 126, capture: false, simplification: 5, forcing: 0 },
+    { move: 'simple-plus', cp: 190, capture: false, simplification: 40, forcing: 20 }
+  ], marginSettings, true)
+]
 const controlledReductions = controlledSamples.filter(Boolean).filter(item => item.marginReduction > 0)
+const combinedReductions = combinedSamples.filter(Boolean).filter(item => item.marginReduction > 0)
 const behaviorExamples = controlledSamples.filter(Boolean).map(item => ({
   selectedMove: item.move,
   selectedCp: item.cp,
   refusedImmediateCapture: !item.capture && item.marginReduction > 300,
   marginReduction: item.marginReduction,
   gameplayEffect: item.capture ? 'conversion accepted' : 'tension preserved over immediate conversion'
+}))
+const combinedBehaviorExamples = combinedSamples.filter(Boolean).map(item => ({
+  selectedMove: item.move,
+  selectedCp: item.cp,
+  refusedImmediateCapture: !item.capture && item.marginReduction > 300,
+  marginReduction: item.marginReduction,
+  gameplayEffect: 'combined controlled temptation: refuses cash-out and keeps bait alive'
 }))
 const avg = values => Math.round(values.reduce((sum, value) => sum + value, 0) / Math.max(1, values.length))
 
@@ -106,7 +127,8 @@ const scenarios = [
   { name: 'winning trap tolerance widens', result: adaptiveTrapTolerance(500, trapSettings, false) },
   { name: 'combined mode trap tolerance is more adventurous', result: adaptiveTrapTolerance(500, trapSettings, true) },
   { name: 'controlled margin chooses quiet small edge over kill line', result: controlledSamples[0] },
-  { name: 'controlled margin refuses equal/lost territory', result: controlledSamples[2] }
+  { name: 'controlled margin refuses equal/lost territory', result: controlledSamples[2] },
+  { name: 'combined mode refuses vacuuming material to keep bait', result: combinedSamples[0] }
 ]
 
 const categoryCounts = {
@@ -115,20 +137,21 @@ const categoryCounts = {
   'Choice Overload': 1,
   'Overreaction Trap': 1,
   'Practical Pressure': 1,
-  'Controlled Margin': controlledReductions.length
+  'Controlled Margin': controlledReductions.length + combinedReductions.length
 }
 
 console.log(JSON.stringify({
   generatedAt: new Date().toISOString(),
   scenarios,
   metrics: {
-    syntheticPositions: scenarios.length,
+    behaviorSuites: scenarios.length,
     controlledMarginReductionFrequency: `${controlledReductions.length}/${controlledSamples.length}`,
     averageControlledBestCp: avg([720, 410, 90]),
     averageControlledSelectedCp: avg(controlledSamples.filter(Boolean).map(item => item.cp)),
     averageControlledReductionCp: avg(controlledReductions.map(item => item.marginReduction)),
     oppressiveKillLinesAvoided: controlledSamples.filter(item => item && !item.capture && item.cp <= marginSettings.maxWinningCp).length,
     freeMaterialRefusals: controlledSamples.filter(item => item && !item.capture && item.marginReduction > 300).length,
+    combinedFreeMaterialRefusals: combinedSamples.filter(item => item && !item.capture && item.marginReduction > 300).length,
     materialConversionDelayPliesAverage: 2,
     trapTriggerFrequencyBeforeAttackCoverage: `${trapBefore.length}/${trapBefore.length}`,
     trapTriggerFrequencyAfterAttackCoverage: `${trapAfter.length}/${trapBefore.length}`,
@@ -136,6 +159,7 @@ console.log(JSON.stringify({
     attackableExamples: trapAfter.map(item => item.name),
     humanTemptationPriorityExamples: ['looks-free capture bait', 'natural recapture lure', 'reflex defense overreaction'],
     controlledMarginBehaviorExamples: behaviorExamples,
+    combinedModeBehaviorExamples: combinedBehaviorExamples,
     categoryCounts,
     displayEvalStableAgainstProbeSwings: displayStable,
     displayEvalSourcePolicy: 'root_multipv_1_only',
