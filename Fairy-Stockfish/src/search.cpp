@@ -44,6 +44,128 @@ namespace Search {
   LimitsType Limits;
 }
 
+
+void Search::SearchStats::clear() {
+
+  bool wasActive = active;
+  *this = SearchStats();
+  active = wasActive;
+}
+
+void Search::SearchStats::merge(const SearchStats& stats) {
+
+  active = active || stats.active;
+  childFutilityPrunes += stats.childFutilityPrunes;
+  nullMoveAttempts += stats.nullMoveAttempts;
+  nullMoveCutoffs += stats.nullMoveCutoffs;
+  nullMoveVerifications += stats.nullMoveVerifications;
+  nullMoveVerificationCutoffs += stats.nullMoveVerificationCutoffs;
+  probCutAttempts += stats.probCutAttempts;
+  probCutCandidates += stats.probCutCandidates;
+  probCutQsearchPasses += stats.probCutQsearchPasses;
+  probCutSearchPasses += stats.probCutSearchPasses;
+  probCutCutoffs += stats.probCutCutoffs;
+  inCheckProbCutCutoffs += stats.inCheckProbCutCutoffs;
+  mainMoveCountPruningActivations += stats.mainMoveCountPruningActivations;
+  mainCaptureHistoryPrunes += stats.mainCaptureHistoryPrunes;
+  mainSeeCapturePrunes += stats.mainSeeCapturePrunes;
+  mainContinuationPrunes += stats.mainContinuationPrunes;
+  mainParentFutilityPrunes += stats.mainParentFutilityPrunes;
+  mainSeeQuietPrunes += stats.mainSeeQuietPrunes;
+  singularCandidates += stats.singularCandidates;
+  singularSingleExtensions += stats.singularSingleExtensions;
+  singularDoubleExtensions += stats.singularDoubleExtensions;
+  singularMultiCutCutoffs += stats.singularMultiCutCutoffs;
+  singularBetaCutoffs += stats.singularBetaCutoffs;
+  checkExtensionCandidates += stats.checkExtensionCandidates;
+  checkExtensions += stats.checkExtensions;
+  lmrCandidates += stats.lmrCandidates;
+  lmrApplied += stats.lmrApplied;
+  lmrReductionTotal += stats.lmrReductionTotal;
+  lmrReducedFailHighs += stats.lmrReducedFailHighs;
+  lmrFullDepthSearches += stats.lmrFullDepthSearches;
+  lmrFullDepthFailHighs += stats.lmrFullDepthFailHighs;
+  qsearchStandPatCutoffs += stats.qsearchStandPatCutoffs;
+  qsearchMoveCountPrunes += stats.qsearchMoveCountPrunes;
+  qsearchFutilityPrunes += stats.qsearchFutilityPrunes;
+  qsearchSeeFutilityPrunes += stats.qsearchSeeFutilityPrunes;
+  qsearchNegativeSeePrunes += stats.qsearchNegativeSeePrunes;
+  qsearchContinuationPrunes += stats.qsearchContinuationPrunes;
+  aspirationSearches += stats.aspirationSearches;
+  aspirationFailHighs += stats.aspirationFailHighs;
+  aspirationFailLows += stats.aspirationFailLows;
+  aspirationResearches += stats.aspirationResearches;
+  aspirationMaxRetries = std::max(aspirationMaxRetries, stats.aspirationMaxRetries);
+}
+
+namespace {
+
+  void print_search_stats() {
+
+    Search::SearchStats stats;
+
+    for (Thread* th : Threads)
+        stats.merge(th->searchStats);
+
+    if (!stats.active)
+        return;
+
+    double avgReduction = stats.lmrApplied ? double(stats.lmrReductionTotal) / stats.lmrApplied : 0.0;
+
+    sync_cout << "info string searchstats mechanism variant " << std::string(Options["UCI_Variant"])
+              << " depth " << Threads.main()->completedDepth
+              << " nodes " << Threads.nodes_searched() << sync_endl;
+
+    sync_cout << "info string searchstats fire lmr candidates " << stats.lmrCandidates
+              << " applied " << stats.lmrApplied
+              << " reduced_fh " << stats.lmrReducedFailHighs
+              << " full_researches " << stats.lmrFullDepthSearches
+              << " full_research_fh " << stats.lmrFullDepthFailHighs
+              << " avg_r " << avgReduction << sync_endl;
+
+    sync_cout << "info string searchstats fire prune child_futility " << stats.childFutilityPrunes
+              << " move_count_activations " << stats.mainMoveCountPruningActivations
+              << " capture_history " << stats.mainCaptureHistoryPrunes
+              << " cont_main " << stats.mainContinuationPrunes
+              << " futility_parent " << stats.mainParentFutilityPrunes
+              << " see_main_capture " << stats.mainSeeCapturePrunes
+              << " see_main_quiet " << stats.mainSeeQuietPrunes << sync_endl;
+
+    sync_cout << "info string searchstats fire null attempts " << stats.nullMoveAttempts
+              << " cutoffs " << stats.nullMoveCutoffs
+              << " verifications " << stats.nullMoveVerifications
+              << " verified_cutoffs " << stats.nullMoveVerificationCutoffs << sync_endl;
+
+    sync_cout << "info string searchstats fire probcut attempts " << stats.probCutAttempts
+              << " candidates " << stats.probCutCandidates
+              << " qpass " << stats.probCutQsearchPasses
+              << " search_pass " << stats.probCutSearchPasses
+              << " cutoffs " << stats.probCutCutoffs
+              << " incheck_cutoffs " << stats.inCheckProbCutCutoffs << sync_endl;
+
+    sync_cout << "info string searchstats fire singular candidates " << stats.singularCandidates
+              << " single_ext " << stats.singularSingleExtensions
+              << " double_ext " << stats.singularDoubleExtensions
+              << " multicuts " << stats.singularMultiCutCutoffs
+              << " beta_ver_cutoffs " << stats.singularBetaCutoffs
+              << " check_ext_candidates " << stats.checkExtensionCandidates
+              << " check_ext " << stats.checkExtensions << sync_endl;
+
+    sync_cout << "info string searchstats fire qsearch stand_pat " << stats.qsearchStandPatCutoffs
+              << " move_count " << stats.qsearchMoveCountPrunes
+              << " futility " << stats.qsearchFutilityPrunes
+              << " see_futility " << stats.qsearchSeeFutilityPrunes
+              << " negative_see " << stats.qsearchNegativeSeePrunes
+              << " continuation " << stats.qsearchContinuationPrunes << sync_endl;
+
+    sync_cout << "info string searchstats aspiration searches " << stats.aspirationSearches
+              << " fail_high " << stats.aspirationFailHighs
+              << " fail_low " << stats.aspirationFailLows
+              << " researches " << stats.aspirationResearches
+              << " max_retries " << stats.aspirationMaxRetries << sync_endl;
+  }
+}
+
 namespace Tablebases {
 
   int Cardinality;
@@ -242,6 +364,8 @@ void MainThread::search() {
   // Wait until all threads have finished
   Threads.wait_for_search_finished();
 
+  print_search_stats();
+
   // When playing in 'nodes as time' mode, subtract the searched nodes from
   // the available ones before exiting.
   if (Limits.npmsec)
@@ -384,6 +508,9 @@ void Thread::search() {
 
   trend = SCORE_ZERO;
 
+  searchStats.active = bool(Options["SearchStats"]);
+  searchStats.clear();
+
   int searchAgainCounter = 0;
 
   // Iterative deepening loop until requested to stop or the target depth is reached
@@ -439,8 +566,12 @@ void Thread::search() {
           // high/low, re-search with a bigger window until we don't fail
           // high/low anymore.
           int failedHighCnt = 0;
+          int aspirationRetries = 0;
           while (true)
           {
+              if (searchStats.active)
+                  searchStats.aspirationSearches++;
+
               Depth adjustedDepth = std::max(1, rootDepth - failedHighCnt - searchAgainCounter);
               bestValue = Stockfish::search<Root>(rootPos, ss, alpha, beta, adjustedDepth, false);
 
@@ -470,6 +601,9 @@ void Thread::search() {
               // re-search, otherwise exit the loop.
               if (bestValue <= alpha)
               {
+                  if (searchStats.active)
+                      searchStats.aspirationFailLows++;
+
                   beta = (alpha + beta) / 2;
                   alpha = std::max(bestValue - delta, -VALUE_INFINITE);
 
@@ -479,11 +613,20 @@ void Thread::search() {
               }
               else if (bestValue >= beta)
               {
+                  if (searchStats.active)
+                      searchStats.aspirationFailHighs++;
+
                   beta = std::min(bestValue + delta, VALUE_INFINITE);
                   ++failedHighCnt;
               }
               else
                   break;
+
+              if (searchStats.active)
+              {
+                  searchStats.aspirationResearches++;
+                  searchStats.aspirationMaxRetries = std::max(searchStats.aspirationMaxRetries, uint64_t(++aspirationRetries));
+              }
 
               delta += delta / 4 + 5;
 
@@ -930,7 +1073,12 @@ namespace {
         &&  depth < 9 - 3 * pos.blast_on_capture()
         &&  eval - futility_margin(depth, improving) * (1 + pos.check_counting() + 2 * pos.must_capture() + pos.extinction_single_piece() + !pos.checking_permitted()) >= beta
         &&  eval < VALUE_KNOWN_WIN) // Do not return unproven wins
+    {
+        if (thisThread->searchStats.active)
+            thisThread->searchStats.childFutilityPrunes++;
+
         return eval;
+    }
 
     // Step 8. Null move search with verification search (~40 Elo)
     if (   !PvNode
@@ -950,6 +1098,9 @@ namespace {
         // Null move dynamic reduction based on depth and value
         Depth R = (1090 - 300 * pos.must_capture() - 250 * !pos.checking_permitted() + 81 * depth) / 256 + std::min(int(eval - beta) / 205, pos.must_capture() || pos.blast_on_capture() ? 0 : 3);
 
+        if (thisThread->searchStats.active)
+            thisThread->searchStats.nullMoveAttempts++;
+
         ss->currentMove = MOVE_NULL;
         ss->continuationHistory = &thisThread->continuationHistory[0][0][NO_PIECE][0];
 
@@ -961,6 +1112,8 @@ namespace {
 
         if (nullValue >= beta)
         {
+            if (thisThread->searchStats.active)
+                thisThread->searchStats.nullMoveCutoffs++;
             // Do not return unproven mate or TB scores
             if (nullValue >= VALUE_TB_WIN_IN_MAX_PLY)
                 nullValue = beta;
@@ -969,6 +1122,9 @@ namespace {
                 return nullValue;
 
             assert(!thisThread->nmpMinPly); // Recursive verification is not allowed
+
+            if (thisThread->searchStats.active)
+                thisThread->searchStats.nullMoveVerifications++;
 
             // Do verification search at high depths, with null move pruning disabled
             // for us, until ply exceeds nmpMinPly.
@@ -980,7 +1136,12 @@ namespace {
             thisThread->nmpMinPly = 0;
 
             if (v >= beta)
+            {
+                if (thisThread->searchStats.active)
+                    thisThread->searchStats.nullMoveVerificationCutoffs++;
+
                 return nullValue;
+            }
         }
     }
 
@@ -1001,6 +1162,9 @@ namespace {
              && ttValue != VALUE_NONE
              && ttValue < probCutBeta))
     {
+        if (thisThread->searchStats.active)
+            thisThread->searchStats.probCutAttempts++;
+
         assert(probCutBeta < VALUE_INFINITE);
 
         MovePicker mp(pos, ttMove, probCutBeta - ss->staticEval, &thisThread->gateHistory, &captureHistory);
@@ -1016,6 +1180,8 @@ namespace {
                 assert(depth >= 5);
 
                 captureOrPromotion = true;
+                if (thisThread->searchStats.active)
+                    thisThread->searchStats.probCutCandidates++;
                 probCutCount++;
 
                 ss->currentMove = move;
@@ -1031,12 +1197,23 @@ namespace {
 
                 // If the qsearch held, perform the regular search
                 if (value >= probCutBeta)
+                {
+                    if (thisThread->searchStats.active)
+                        thisThread->searchStats.probCutQsearchPasses++;
+
                     value = -search<NonPV>(pos, ss+1, -probCutBeta, -probCutBeta+1, depth - 4, !cutNode);
+                }
 
                 pos.undo_move(move);
 
                 if (value >= probCutBeta)
                 {
+                    if (thisThread->searchStats.active)
+                    {
+                        thisThread->searchStats.probCutSearchPasses++;
+                        thisThread->searchStats.probCutCutoffs++;
+                    }
+
                     // if transposition table doesn't have equal or more deep info write probCut data into it
                     if ( !(ss->ttHit
                        && tte->depth() >= depth - 3
@@ -1072,7 +1249,12 @@ moves_loop: // When in check, search starts from here
         && abs(ttValue) <= VALUE_KNOWN_WIN
         && abs(beta) <= VALUE_KNOWN_WIN
        )
+    {
+        if (thisThread->searchStats.active)
+            thisThread->searchStats.inCheckProbCutCutoffs++;
+
         return probCutBeta;
+    }
 
 
     const PieceToHistory* contHist[] = { (ss-1)->continuationHistory, (ss-2)->continuationHistory,
@@ -1146,6 +1328,8 @@ moves_loop: // When in check, search starts from here
       {
           // Skip quiet moves if movecount exceeds our FutilityMoveCount threshold
           moveCountPruning = moveCount >= futility_move_count(improving, depth, pos);
+          if (moveCountPruning && thisThread->searchStats.active)
+              thisThread->searchStats.mainMoveCountPruningActivations++;
 
           // Reduced depth of the next LMR search
           int lmrDepth = std::max(newDepth - reduction(improving, depth, moveCount), 0);
@@ -1161,11 +1345,21 @@ moves_loop: // When in check, search starts from here
               if (   !givesCheck
                   && lmrDepth < 1
                   && captureHistory[movedPiece][to_sq(move)][type_of(pos.piece_on(to_sq(move)))] < 0)
+              {
+                  if (thisThread->searchStats.active)
+                      thisThread->searchStats.mainCaptureHistoryPrunes++;
+
                   continue;
+              }
 
               // SEE based pruning
               if (!pos.see_ge(move, Value(-218 - 120 * pos.captures_to_hand()) * depth)) // (~25 Elo)
+              {
+                  if (thisThread->searchStats.active)
+                      thisThread->searchStats.mainSeeCapturePrunes++;
+
                   continue;
+              }
           }
           else
           {
@@ -1173,7 +1367,12 @@ moves_loop: // When in check, search starts from here
               if (   lmrDepth < 5
                   && (*contHist[0])[history_slot(movedPiece)][to_sq(move)] < CounterMovePruneThreshold
                   && (*contHist[1])[history_slot(movedPiece)][to_sq(move)] < CounterMovePruneThreshold)
+              {
+                  if (thisThread->searchStats.active)
+                      thisThread->searchStats.mainContinuationPrunes++;
+
                   continue;
+              }
 
               // Futility pruning: parent node (~5 Elo)
               if (   lmrDepth < 7
@@ -1184,11 +1383,21 @@ moves_loop: // When in check, search starts from here
                     + (*contHist[1])[history_slot(movedPiece)][to_sq(move)]
                     + (*contHist[3])[history_slot(movedPiece)][to_sq(move)]
                     + (*contHist[5])[history_slot(movedPiece)][to_sq(move)] / 3 < 28255)
+              {
+                  if (thisThread->searchStats.active)
+                      thisThread->searchStats.mainParentFutilityPrunes++;
+
                   continue;
+              }
 
               // Prune moves with negative SEE (~20 Elo)
               if (!(pos.walling_rule() == DUCK) && !pos.see_ge(move, Value(-(30 - std::min(lmrDepth, 18) + 10 * !!pos.flag_region(pos.side_to_move())) * lmrDepth * lmrDepth)))
+              {
+                  if (thisThread->searchStats.active)
+                      thisThread->searchStats.mainSeeQuietPrunes++;
+
                   continue;
+              }
           }
       }
 
@@ -1208,6 +1417,9 @@ moves_loop: // When in check, search starts from here
           && (tte->bound() & BOUND_LOWER)
           &&  tte->depth() >= depth - 3)
       {
+          if (thisThread->searchStats.active)
+              thisThread->searchStats.singularCandidates++;
+
           Value singularBeta = ttValue - 2 * depth;
           Depth singularDepth = (depth - 1) / 2;
 
@@ -1219,6 +1431,8 @@ moves_loop: // When in check, search starts from here
           {
               extension = 1;
               singularQuietLMR = !ttCapture;
+              if (thisThread->searchStats.active)
+                  thisThread->searchStats.singularSingleExtensions++;
 
               // Avoid search explosion by limiting the number of double extensions to at most 3
               if (   !PvNode
@@ -1227,6 +1441,8 @@ moves_loop: // When in check, search starts from here
               {
                   extension = 2;
                   doubleExtension = true;
+                  if (thisThread->searchStats.active)
+                      thisThread->searchStats.singularDoubleExtensions++;
               }
           }
 
@@ -1236,7 +1452,12 @@ moves_loop: // When in check, search starts from here
           // that multiple moves fail high, and we can prune the whole subtree by returning
           // a soft bound.
           else if (singularBeta >= beta)
+          {
+              if (thisThread->searchStats.active)
+                  thisThread->searchStats.singularMultiCutCutoffs++;
+
               return singularBeta;
+          }
 
           // If the eval of ttMove is greater than beta we try also if there is another
           // move that pushes it over beta, if so also produce a cutoff.
@@ -1247,13 +1468,26 @@ moves_loop: // When in check, search starts from here
               ss->excludedMove = MOVE_NONE;
 
               if (value >= beta)
+              {
+                  if (thisThread->searchStats.active)
+                      thisThread->searchStats.singularBetaCutoffs++;
+
                   return beta;
+              }
           }
       }
       else if (   givesCheck
                && depth > 6
                && abs(ss->staticEval) > Value(100))
+      {
+          if (thisThread->searchStats.active)
+          {
+              thisThread->searchStats.checkExtensionCandidates++;
+              thisThread->searchStats.checkExtensions++;
+          }
+
           extension = 1;
+      }
 
       // Losing chess capture extension
       else if (    pos.must_capture()
@@ -1288,6 +1522,9 @@ moves_loop: // When in check, search starts from here
               || !ss->ttPv)
           && (!PvNode || ss->ply > 1 || thisThread->id() % 4 != 3))
       {
+          if (thisThread->searchStats.active)
+              thisThread->searchStats.lmrCandidates++;
+
           Depth r = reduction(improving, depth, moveCount);
 
           if (PvNode)
@@ -1343,10 +1580,18 @@ moves_loop: // When in check, search starts from here
           // to be searched deeper than the first move, unless ttMove was extended by 2.
           Depth d = std::clamp(newDepth - r, 1, newDepth + (r < -1 && moveCount <= 5 && !doubleExtension));
 
+          if (thisThread->searchStats.active && d < newDepth)
+          {
+              thisThread->searchStats.lmrApplied++;
+              thisThread->searchStats.lmrReductionTotal += uint64_t(newDepth - d);
+          }
+
           value = -search<NonPV>(pos, ss+1, -(alpha+1), -alpha, d, true);
 
           // If the son is reduced and fails high it will be re-searched at full depth
           doFullDepthSearch = value > alpha && d < newDepth;
+          if (doFullDepthSearch && thisThread->searchStats.active)
+              thisThread->searchStats.lmrReducedFailHighs++;
           didLMR = true;
       }
       else
@@ -1358,7 +1603,13 @@ moves_loop: // When in check, search starts from here
       // Step 17. Full depth search when LMR is skipped or fails high
       if (doFullDepthSearch)
       {
+          if (didLMR && thisThread->searchStats.active)
+              thisThread->searchStats.lmrFullDepthSearches++;
+
           value = -search<NonPV>(pos, ss+1, -(alpha+1), -alpha, newDepth, !cutNode);
+
+          if (didLMR && value > alpha && thisThread->searchStats.active)
+              thisThread->searchStats.lmrFullDepthFailHighs++;
 
           // If the move passed LMR update its stats
           if (didLMR && !captureOrPromotion)
@@ -1609,6 +1860,9 @@ moves_loop: // When in check, search starts from here
         // Stand pat. Return immediately if static value is at least beta
         if (bestValue >= beta)
         {
+            if (thisThread->searchStats.active)
+                thisThread->searchStats.qsearchStandPatCutoffs++;
+
             // Save gathered info in transposition table
             if (!ss->ttHit)
                 tte->save(posKey, value_to_tt(bestValue, ss->ply), false, BOUND_LOWER,
@@ -1658,19 +1912,30 @@ moves_loop: // When in check, search starts from here
       {
 
           if (moveCount > 2)
+          {
+              if (thisThread->searchStats.active)
+                  thisThread->searchStats.qsearchMoveCountPrunes++;
+
               continue;
+          }
 
           futilityValue = futilityBase + PieceValue[EG][pos.piece_on(to_sq(move))];
 
           if (futilityValue <= alpha)
           {
               bestValue = std::max(bestValue, futilityValue);
+              if (thisThread->searchStats.active)
+                  thisThread->searchStats.qsearchFutilityPrunes++;
+
               continue;
           }
 
           if (futilityBase <= alpha && !pos.see_ge(move, VALUE_ZERO + 1))
           {
               bestValue = std::max(bestValue, futilityBase);
+              if (thisThread->searchStats.active)
+                  thisThread->searchStats.qsearchSeeFutilityPrunes++;
+
               continue;
           }
       }
@@ -1678,7 +1943,12 @@ moves_loop: // When in check, search starts from here
       // Do not search moves with negative SEE values
       if (    bestValue > VALUE_TB_LOSS_IN_MAX_PLY
           && !pos.see_ge(move))
+      {
+          if (thisThread->searchStats.active)
+              thisThread->searchStats.qsearchNegativeSeePrunes++;
+
           continue;
+      }
 
       // Speculative prefetch as early as possible
       prefetch(TT.first_entry(pos.key_after(move)));
@@ -1701,7 +1971,12 @@ moves_loop: // When in check, search starts from here
           && bestValue > VALUE_TB_LOSS_IN_MAX_PLY
           && (*contHist[0])[history_slot(pos.moved_piece(move))][to_sq(move)] < CounterMovePruneThreshold
           && (*contHist[1])[history_slot(pos.moved_piece(move))][to_sq(move)] < CounterMovePruneThreshold)
+      {
+          if (thisThread->searchStats.active)
+              thisThread->searchStats.qsearchContinuationPrunes++;
+
           continue;
+      }
 
       // Make and search the move
       pos.do_move(move, st, givesCheck);
