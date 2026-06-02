@@ -107,6 +107,76 @@ extern LimitsType Limits;
 struct SearchStats {
   bool active = false;
 
+  enum OrderingPieceCategory {
+    ORDERING_CANNON,
+    ORDERING_ROOK,
+    ORDERING_HORSE,
+    ORDERING_ELEPHANT,
+    ORDERING_PAWN,
+    ORDERING_KING_ADVISOR,
+    ORDERING_OTHER,
+    ORDERING_PIECE_NB
+  };
+
+  enum OrderingFailHighBucket {
+    ORDERING_FH_1,
+    ORDERING_FH_2,
+    ORDERING_FH_3_4,
+    ORDERING_FH_5_8,
+    ORDERING_FH_9_16,
+    ORDERING_FH_17_PLUS,
+    ORDERING_FH_BUCKET_NB
+  };
+
+  enum OrderingCheckCategory {
+    ORDERING_CHECK_CANNON,
+    ORDERING_CHECK_ROOK,
+    ORDERING_CHECK_HORSE,
+    ORDERING_CHECK_OTHER,
+    ORDERING_CHECK_NB
+  };
+
+  struct OrderingPieceStats {
+    uint64_t searched = 0;
+    uint64_t moveIndexTotal = 0;
+    uint64_t failHighs = 0;
+    uint64_t alphaRaises = 0;
+    int64_t alphaGainTotal = 0;
+    uint64_t pvHeadAppearances = 0;
+    uint64_t rootPvAppearances = 0;
+    uint64_t ttMoveSearches = 0;
+  };
+
+  struct OrderingCheckStats {
+    uint64_t seen = 0;
+    uint64_t searched = 0;
+    uint64_t failHighs = 0;
+    uint64_t alphaRaises = 0;
+    int64_t alphaGainTotal = 0;
+    uint64_t pvAppearances = 0;
+  };
+
+  struct OrderingMoveKindStats {
+    uint64_t searched = 0;
+    uint64_t failHighs = 0;
+    uint64_t pvAppearances = 0;
+  };
+
+  uint64_t orderingSearched = 0;
+  uint64_t orderingFailHighs = 0;
+  uint64_t orderingFirstMoveFailHighs = 0;
+  uint64_t orderingFailHighIndexTotal = 0;
+  uint64_t orderingFailHighBuckets[ORDERING_FH_BUCKET_NB] = {};
+  uint64_t orderingTtMovePresent = 0;
+  uint64_t orderingTtMoveSearched = 0;
+  uint64_t orderingTtMoveFailHighs = 0;
+  uint64_t orderingTtMoveAlphaRaises = 0;
+  OrderingPieceStats orderingPieces[ORDERING_PIECE_NB];
+  OrderingCheckStats orderingChecks;
+  OrderingCheckStats orderingChecksByPiece[ORDERING_CHECK_NB];
+  OrderingMoveKindStats orderingCaptures;
+  OrderingMoveKindStats orderingQuiets;
+
   uint64_t childFutilityPrunes = 0;
   uint64_t nullMoveAttempts = 0;
   uint64_t nullMoveCutoffs = 0;

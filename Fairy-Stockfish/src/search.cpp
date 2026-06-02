@@ -55,6 +55,48 @@ void Search::SearchStats::clear() {
 void Search::SearchStats::merge(const SearchStats& stats) {
 
   active = active || stats.active;
+  orderingSearched += stats.orderingSearched;
+  orderingFailHighs += stats.orderingFailHighs;
+  orderingFirstMoveFailHighs += stats.orderingFirstMoveFailHighs;
+  orderingFailHighIndexTotal += stats.orderingFailHighIndexTotal;
+  orderingTtMovePresent += stats.orderingTtMovePresent;
+  orderingTtMoveSearched += stats.orderingTtMoveSearched;
+  orderingTtMoveFailHighs += stats.orderingTtMoveFailHighs;
+  orderingTtMoveAlphaRaises += stats.orderingTtMoveAlphaRaises;
+  for (int i = 0; i < ORDERING_FH_BUCKET_NB; ++i)
+      orderingFailHighBuckets[i] += stats.orderingFailHighBuckets[i];
+  for (int i = 0; i < ORDERING_PIECE_NB; ++i)
+  {
+      orderingPieces[i].searched += stats.orderingPieces[i].searched;
+      orderingPieces[i].moveIndexTotal += stats.orderingPieces[i].moveIndexTotal;
+      orderingPieces[i].failHighs += stats.orderingPieces[i].failHighs;
+      orderingPieces[i].alphaRaises += stats.orderingPieces[i].alphaRaises;
+      orderingPieces[i].alphaGainTotal += stats.orderingPieces[i].alphaGainTotal;
+      orderingPieces[i].pvHeadAppearances += stats.orderingPieces[i].pvHeadAppearances;
+      orderingPieces[i].rootPvAppearances += stats.orderingPieces[i].rootPvAppearances;
+      orderingPieces[i].ttMoveSearches += stats.orderingPieces[i].ttMoveSearches;
+  }
+  orderingChecks.seen += stats.orderingChecks.seen;
+  orderingChecks.searched += stats.orderingChecks.searched;
+  orderingChecks.failHighs += stats.orderingChecks.failHighs;
+  orderingChecks.alphaRaises += stats.orderingChecks.alphaRaises;
+  orderingChecks.alphaGainTotal += stats.orderingChecks.alphaGainTotal;
+  orderingChecks.pvAppearances += stats.orderingChecks.pvAppearances;
+  for (int i = 0; i < ORDERING_CHECK_NB; ++i)
+  {
+      orderingChecksByPiece[i].seen += stats.orderingChecksByPiece[i].seen;
+      orderingChecksByPiece[i].searched += stats.orderingChecksByPiece[i].searched;
+      orderingChecksByPiece[i].failHighs += stats.orderingChecksByPiece[i].failHighs;
+      orderingChecksByPiece[i].alphaRaises += stats.orderingChecksByPiece[i].alphaRaises;
+      orderingChecksByPiece[i].alphaGainTotal += stats.orderingChecksByPiece[i].alphaGainTotal;
+      orderingChecksByPiece[i].pvAppearances += stats.orderingChecksByPiece[i].pvAppearances;
+  }
+  orderingCaptures.searched += stats.orderingCaptures.searched;
+  orderingCaptures.failHighs += stats.orderingCaptures.failHighs;
+  orderingCaptures.pvAppearances += stats.orderingCaptures.pvAppearances;
+  orderingQuiets.searched += stats.orderingQuiets.searched;
+  orderingQuiets.failHighs += stats.orderingQuiets.failHighs;
+  orderingQuiets.pvAppearances += stats.orderingQuiets.pvAppearances;
   childFutilityPrunes += stats.childFutilityPrunes;
   nullMoveAttempts += stats.nullMoveAttempts;
   nullMoveCutoffs += stats.nullMoveCutoffs;
@@ -99,6 +141,13 @@ void Search::SearchStats::merge(const SearchStats& stats) {
 }
 
 namespace {
+
+  Search::SearchStats::OrderingPieceCategory ordering_piece_category(Piece pc);
+  Search::SearchStats::OrderingCheckCategory ordering_check_category(Piece pc);
+  int ordering_fail_high_bucket(int moveIndex);
+  double ratio(uint64_t numerator, uint64_t denominator);
+  double average(int64_t total, uint64_t count);
+  double average(uint64_t total, uint64_t count);
 
   void print_search_stats() {
 
@@ -163,6 +212,90 @@ namespace {
               << " fail_low " << stats.aspirationFailLows
               << " researches " << stats.aspirationResearches
               << " max_retries " << stats.aspirationMaxRetries << sync_endl;
+
+    uint64_t orderingAlphaRaises = 0;
+    for (int i = 0; i < Search::SearchStats::ORDERING_PIECE_NB; ++i)
+        orderingAlphaRaises += stats.orderingPieces[i].alphaRaises;
+
+    sync_cout << "info string searchstats ordering all searched " << stats.orderingSearched
+              << " fail_highs " << stats.orderingFailHighs
+              << " alpha_raises " << orderingAlphaRaises << sync_endl;
+
+    sync_cout << "info string searchstats ordering first_move_fail_high_rate total " << stats.orderingFailHighs
+              << " first " << stats.orderingFirstMoveFailHighs
+              << " pct " << ratio(stats.orderingFirstMoveFailHighs, stats.orderingFailHighs) << sync_endl;
+
+    sync_cout << "info string searchstats ordering avg_fail_high_index avg " << average(stats.orderingFailHighIndexTotal, stats.orderingFailHighs)
+              << " bucket_1 " << stats.orderingFailHighBuckets[Search::SearchStats::ORDERING_FH_1]
+              << " bucket_2 " << stats.orderingFailHighBuckets[Search::SearchStats::ORDERING_FH_2]
+              << " bucket_3_4 " << stats.orderingFailHighBuckets[Search::SearchStats::ORDERING_FH_3_4]
+              << " bucket_5_8 " << stats.orderingFailHighBuckets[Search::SearchStats::ORDERING_FH_5_8]
+              << " bucket_9_16 " << stats.orderingFailHighBuckets[Search::SearchStats::ORDERING_FH_9_16]
+              << " bucket_17_plus " << stats.orderingFailHighBuckets[Search::SearchStats::ORDERING_FH_17_PLUS] << sync_endl;
+
+    sync_cout << "info string searchstats ordering tt present " << stats.orderingTtMovePresent
+              << " searched " << stats.orderingTtMoveSearched
+              << " fail_high " << stats.orderingTtMoveFailHighs
+              << " alpha_raise " << stats.orderingTtMoveAlphaRaises
+              << " fail_high_rate " << ratio(stats.orderingTtMoveFailHighs, stats.orderingTtMoveSearched) << sync_endl;
+
+    const char* pieceNames[Search::SearchStats::ORDERING_PIECE_NB] = {"cannon", "rook", "horse", "elephant", "pawn", "king_advisor", "other"};
+    for (int i = 0; i < Search::SearchStats::ORDERING_PIECE_NB; ++i)
+    {
+        const auto& ps = stats.orderingPieces[i];
+        sync_cout << "info string searchstats ordering piece " << pieceNames[i]
+                  << " searched " << ps.searched
+                  << " avg_index " << average(ps.moveIndexTotal, ps.searched)
+                  << " fail_high " << ps.failHighs
+                  << " fail_high_rate " << ratio(ps.failHighs, ps.searched)
+                  << " alpha_raise " << ps.alphaRaises
+                  << " avg_alpha_gain " << average(ps.alphaGainTotal, ps.alphaRaises)
+                  << " pv_head " << ps.pvHeadAppearances
+                  << " root_pv " << ps.rootPvAppearances
+                  << " tt_move " << ps.ttMoveSearches << sync_endl;
+    }
+
+    const auto& cs = stats.orderingChecks;
+    sync_cout << "info string searchstats ordering checks seen " << cs.seen
+              << " searched " << cs.searched
+              << " fail_high " << cs.failHighs
+              << " fail_high_rate " << ratio(cs.failHighs, cs.searched)
+              << " alpha_raise " << cs.alphaRaises
+              << " avg_alpha_gain " << average(cs.alphaGainTotal, cs.alphaRaises)
+              << " pv_appearance_rate " << ratio(cs.pvAppearances, cs.searched) << sync_endl;
+
+    const char* checkNames[Search::SearchStats::ORDERING_CHECK_NB] = {"cannon", "rook", "horse", "other"};
+    for (int i = 0; i < Search::SearchStats::ORDERING_CHECK_NB; ++i)
+    {
+        const auto& cps = stats.orderingChecksByPiece[i];
+        sync_cout << "info string searchstats ordering checks " << checkNames[i]
+                  << " seen " << cps.seen
+                  << " searched " << cps.searched
+                  << " fail_high " << cps.failHighs
+                  << " fail_high_rate " << ratio(cps.failHighs, cps.searched)
+                  << " alpha_raise " << cps.alphaRaises
+                  << " avg_alpha_gain " << average(cps.alphaGainTotal, cps.alphaRaises)
+                  << " pv_appearance_rate " << ratio(cps.pvAppearances, cps.searched) << sync_endl;
+    }
+
+    sync_cout << "info string searchstats ordering captures searched " << stats.orderingCaptures.searched
+              << " fail_high " << stats.orderingCaptures.failHighs
+              << " fail_high_rate " << ratio(stats.orderingCaptures.failHighs, stats.orderingCaptures.searched)
+              << " pv " << stats.orderingCaptures.pvAppearances
+              << " pv_rate " << ratio(stats.orderingCaptures.pvAppearances, stats.orderingCaptures.searched) << sync_endl;
+
+    sync_cout << "info string searchstats ordering quiets searched " << stats.orderingQuiets.searched
+              << " fail_high " << stats.orderingQuiets.failHighs
+              << " fail_high_rate " << ratio(stats.orderingQuiets.failHighs, stats.orderingQuiets.searched)
+              << " pv " << stats.orderingQuiets.pvAppearances
+              << " pv_rate " << ratio(stats.orderingQuiets.pvAppearances, stats.orderingQuiets.searched) << sync_endl;
+
+    const auto& cannon = stats.orderingPieces[Search::SearchStats::ORDERING_CANNON];
+    sync_cout << "info string searchstats ordering cannon_audit avg_index " << average(cannon.moveIndexTotal, cannon.searched)
+              << " fail_high_rate " << ratio(cannon.failHighs, cannon.searched)
+              << " pv_rate " << ratio(cannon.pvHeadAppearances + cannon.rootPvAppearances, cannon.searched)
+              << " avg_alpha_gain " << average(cannon.alphaGainTotal, cannon.alphaRaises)
+              << " tt_move_frequency " << ratio(cannon.ttMoveSearches, cannon.searched) << sync_endl;
   }
 }
 
@@ -203,6 +336,67 @@ namespace {
 
   int futility_move_count(bool improving, Depth depth, const Position& pos) {
     return (3 + depth * depth * (1 + pos.walling()) + 2 * pos.blast_on_capture()) / (2 - improving + pos.blast_on_capture());
+  }
+
+  Search::SearchStats::OrderingPieceCategory ordering_piece_category(Piece pc) {
+    switch (type_of(pc))
+    {
+    case CANNON:
+    case JANGGI_CANNON:
+        return Search::SearchStats::ORDERING_CANNON;
+    case ROOK:
+        return Search::SearchStats::ORDERING_ROOK;
+    case HORSE:
+    case KNIGHT:
+        return Search::SearchStats::ORDERING_HORSE;
+    case JANGGI_ELEPHANT:
+    case ELEPHANT:
+        return Search::SearchStats::ORDERING_ELEPHANT;
+    case PAWN:
+    case SOLDIER:
+        return Search::SearchStats::ORDERING_PAWN;
+    case KING:
+    case WAZIR:
+    case FERS:
+        return Search::SearchStats::ORDERING_KING_ADVISOR;
+    default:
+        return Search::SearchStats::ORDERING_OTHER;
+    }
+  }
+
+  Search::SearchStats::OrderingCheckCategory ordering_check_category(Piece pc) {
+    switch (ordering_piece_category(pc))
+    {
+    case Search::SearchStats::ORDERING_CANNON:
+        return Search::SearchStats::ORDERING_CHECK_CANNON;
+    case Search::SearchStats::ORDERING_ROOK:
+        return Search::SearchStats::ORDERING_CHECK_ROOK;
+    case Search::SearchStats::ORDERING_HORSE:
+        return Search::SearchStats::ORDERING_CHECK_HORSE;
+    default:
+        return Search::SearchStats::ORDERING_CHECK_OTHER;
+    }
+  }
+
+  int ordering_fail_high_bucket(int moveIndex) {
+    return moveIndex == 1 ? Search::SearchStats::ORDERING_FH_1
+         : moveIndex == 2 ? Search::SearchStats::ORDERING_FH_2
+         : moveIndex <= 4 ? Search::SearchStats::ORDERING_FH_3_4
+         : moveIndex <= 8 ? Search::SearchStats::ORDERING_FH_5_8
+         : moveIndex <= 16 ? Search::SearchStats::ORDERING_FH_9_16
+                           : Search::SearchStats::ORDERING_FH_17_PLUS;
+  }
+
+  double ratio(uint64_t numerator, uint64_t denominator) {
+    return denominator ? 100.0 * double(numerator) / double(denominator) : 0.0;
+  }
+
+  double average(int64_t total, uint64_t count) {
+    return count ? double(total) / double(count) : 0.0;
+  }
+
+  double average(uint64_t total, uint64_t count) {
+    return count ? double(total) / double(count) : 0.0;
   }
 
   // History and stats update bonus, based on depth
@@ -1283,6 +1477,9 @@ moves_loop: // When in check, search starts from here
                          && (tte->bound() & BOUND_UPPER)
                          && tte->depth() >= depth;
 
+    if (thisThread->searchStats.active && ttMove)
+        thisThread->searchStats.orderingTtMovePresent++;
+
     // Step 12. Loop through all pseudo-legal moves until no moves remain
     // or a beta cutoff occurs.
     while ((move = mp.next_move(moveCountPruning)) != MOVE_NONE)
@@ -1317,6 +1514,18 @@ moves_loop: // When in check, search starts from here
       captureOrPromotion = pos.capture_or_promotion(move);
       movedPiece = pos.moved_piece(move);
       givesCheck = pos.gives_check(move);
+
+      const bool statsActive = thisThread->searchStats.active;
+      const auto orderingPiece = ordering_piece_category(movedPiece);
+      const auto orderingCheckPiece = ordering_check_category(movedPiece);
+      if (statsActive)
+      {
+          if (givesCheck)
+          {
+              thisThread->searchStats.orderingChecks.seen++;
+              thisThread->searchStats.orderingChecksByPiece[orderingCheckPiece].seen++;
+          }
+      }
 
       // Calculate new depth for this move
       newDepth = depth - 1;
@@ -1495,6 +1704,31 @@ moves_loop: // When in check, search starts from here
                &&  (ss->inCheck || MoveList<CAPTURES>(pos).size() == 1))
           extension = 1;
 
+      if (statsActive)
+      {
+          thisThread->searchStats.orderingSearched++;
+          auto& ps = thisThread->searchStats.orderingPieces[orderingPiece];
+          ps.searched++;
+          ps.moveIndexTotal += moveCount;
+          if (PvNode && moveCount == 1)
+              ps.pvHeadAppearances++;
+          if (move == ttMove)
+          {
+              thisThread->searchStats.orderingTtMoveSearched++;
+              ps.ttMoveSearches++;
+          }
+          auto& kindStats = captureOrPromotion ? thisThread->searchStats.orderingCaptures
+                                                : thisThread->searchStats.orderingQuiets;
+          kindStats.searched++;
+          if (givesCheck)
+          {
+              thisThread->searchStats.orderingChecks.searched++;
+              thisThread->searchStats.orderingChecksByPiece[orderingCheckPiece].searched++;
+          }
+      }
+
+      const Value alphaBeforeMove = alpha;
+
       // Add extension to new depth
       newDepth += extension;
       ss->doubleExtensions = (ss-1)->doubleExtensions + (extension == 2);
@@ -1644,6 +1878,63 @@ moves_loop: // When in check, search starts from here
       // updating best move, PV and TT.
       if (Threads.stop.load(std::memory_order_relaxed))
           return VALUE_ZERO;
+
+      if (statsActive)
+      {
+          const bool failHigh = value >= beta;
+          const bool alphaRaise = value > alphaBeforeMove;
+          const int64_t alphaGain = alphaRaise && alphaBeforeMove > -VALUE_KNOWN_WIN
+                                  ? int64_t(value) - int64_t(alphaBeforeMove) : 0;
+          auto& ps = thisThread->searchStats.orderingPieces[orderingPiece];
+          auto& kindStats = captureOrPromotion ? thisThread->searchStats.orderingCaptures
+                                                : thisThread->searchStats.orderingQuiets;
+
+          if (failHigh)
+          {
+              thisThread->searchStats.orderingFailHighs++;
+              thisThread->searchStats.orderingFailHighIndexTotal += moveCount;
+              thisThread->searchStats.orderingFailHighBuckets[ordering_fail_high_bucket(moveCount)]++;
+              if (moveCount == 1)
+                  thisThread->searchStats.orderingFirstMoveFailHighs++;
+              ps.failHighs++;
+              kindStats.failHighs++;
+              if (move == ttMove)
+                  thisThread->searchStats.orderingTtMoveFailHighs++;
+              if (givesCheck)
+              {
+                  thisThread->searchStats.orderingChecks.failHighs++;
+                  thisThread->searchStats.orderingChecksByPiece[orderingCheckPiece].failHighs++;
+              }
+          }
+
+          if (alphaRaise)
+          {
+              ps.alphaRaises++;
+              ps.alphaGainTotal += alphaGain;
+              if (move == ttMove)
+                  thisThread->searchStats.orderingTtMoveAlphaRaises++;
+              if (givesCheck)
+              {
+                  thisThread->searchStats.orderingChecks.alphaRaises++;
+                  thisThread->searchStats.orderingChecks.alphaGainTotal += alphaGain;
+                  thisThread->searchStats.orderingChecksByPiece[orderingCheckPiece].alphaRaises++;
+                  thisThread->searchStats.orderingChecksByPiece[orderingCheckPiece].alphaGainTotal += alphaGain;
+              }
+          }
+
+          if (PvNode && alphaRaise)
+          {
+              kindStats.pvAppearances++;
+              if (givesCheck)
+              {
+                  thisThread->searchStats.orderingChecks.pvAppearances++;
+                  thisThread->searchStats.orderingChecksByPiece[orderingCheckPiece].pvAppearances++;
+              }
+          }
+
+          if (rootNode && (moveCount == 1 || alphaRaise))
+              ps.rootPvAppearances++;
+      }
 
       if (rootNode)
       {
