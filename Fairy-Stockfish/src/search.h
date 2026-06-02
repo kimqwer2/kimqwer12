@@ -104,6 +104,55 @@ struct LimitsType {
 
 extern LimitsType Limits;
 
+struct SearchStats {
+  bool active = false;
+
+  uint64_t childFutilityPrunes = 0;
+  uint64_t nullMoveAttempts = 0;
+  uint64_t nullMoveCutoffs = 0;
+  uint64_t nullMoveVerifications = 0;
+  uint64_t nullMoveVerificationCutoffs = 0;
+  uint64_t probCutAttempts = 0;
+  uint64_t probCutCandidates = 0;
+  uint64_t probCutQsearchPasses = 0;
+  uint64_t probCutSearchPasses = 0;
+  uint64_t probCutCutoffs = 0;
+  uint64_t inCheckProbCutCutoffs = 0;
+  uint64_t mainMoveCountPruningActivations = 0;
+  uint64_t mainCaptureHistoryPrunes = 0;
+  uint64_t mainSeeCapturePrunes = 0;
+  uint64_t mainContinuationPrunes = 0;
+  uint64_t mainParentFutilityPrunes = 0;
+  uint64_t mainSeeQuietPrunes = 0;
+  uint64_t singularCandidates = 0;
+  uint64_t singularSingleExtensions = 0;
+  uint64_t singularDoubleExtensions = 0;
+  uint64_t singularMultiCutCutoffs = 0;
+  uint64_t singularBetaCutoffs = 0;
+  uint64_t checkExtensionCandidates = 0;
+  uint64_t checkExtensions = 0;
+  uint64_t lmrCandidates = 0;
+  uint64_t lmrApplied = 0;
+  uint64_t lmrReductionTotal = 0;
+  uint64_t lmrReducedFailHighs = 0;
+  uint64_t lmrFullDepthSearches = 0;
+  uint64_t lmrFullDepthFailHighs = 0;
+  uint64_t qsearchStandPatCutoffs = 0;
+  uint64_t qsearchMoveCountPrunes = 0;
+  uint64_t qsearchFutilityPrunes = 0;
+  uint64_t qsearchSeeFutilityPrunes = 0;
+  uint64_t qsearchNegativeSeePrunes = 0;
+  uint64_t qsearchContinuationPrunes = 0;
+  uint64_t aspirationSearches = 0;
+  uint64_t aspirationFailHighs = 0;
+  uint64_t aspirationFailLows = 0;
+  uint64_t aspirationResearches = 0;
+  uint64_t aspirationMaxRetries = 0;
+
+  void clear();
+  void merge(const SearchStats& stats);
+};
+
 void init();
 void clear();
 
