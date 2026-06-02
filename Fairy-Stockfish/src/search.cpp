@@ -537,6 +537,18 @@ namespace {
     return (3 + depth * depth * (1 + pos.walling()) + 2 * pos.blast_on_capture()) / (2 - improving + pos.blast_on_capture());
   }
 
+  bool is_janggi_modern(const Position& pos) {
+    const Variant* v = pos.variant();
+    return    v->variantTemplate == "janggi"
+           && v->materialCounting == JANGGI_MATERIAL
+           && !v->bikjangRule
+           && v->moveRepetitionIllegal;
+  }
+
+  bool is_janggi_elephant(Piece pc) {
+    return type_of(pc) == JANGGI_ELEPHANT;
+  }
+
   Search::SearchStats::OrderingPieceCategory ordering_piece_category(Piece pc) {
     switch (type_of(pc))
     {
@@ -1262,6 +1274,7 @@ namespace {
     ss->inCheck        = pos.checkers();
     priorCapture       = pos.captured_piece();
     Color us           = pos.side_to_move();
+    const bool janggiModern = is_janggi_modern(pos);
     moveCount          = captureCount = quietCount = ss->moveCount = 0;
     bestValue          = -VALUE_INFINITE;
     maxValue           = VALUE_INFINITE;
@@ -1997,6 +2010,11 @@ moves_loop: // When in check, search starts from here
           Depth r = reduction(improving, depth, moveCount);
 
           if (PvNode)
+              r--;
+
+          // Elephant checks were highly productive in JanggiModern searchstats,
+          // so spend one ply before late-move reductions discard tactical checks.
+          if (janggiModern && givesCheck && is_janggi_elephant(movedPiece))
               r--;
 
           // Decrease reduction if the ttHit running average is large (~0 Elo)
