@@ -136,6 +136,92 @@ struct SearchStats {
     ORDERING_CHECK_NB
   };
 
+  enum AlphaGainBucket {
+    ALPHA_GAIN_1_25,
+    ALPHA_GAIN_26_50,
+    ALPHA_GAIN_51_100,
+    ALPHA_GAIN_101_200,
+    ALPHA_GAIN_201_400,
+    ALPHA_GAIN_401_PLUS,
+    ALPHA_GAIN_BUCKET_NB
+  };
+
+  enum MoveSourceCategory {
+    EVALSOURCE_QUIET,
+    EVALSOURCE_CAPTURE,
+    EVALSOURCE_CHECK,
+    EVALSOURCE_CAPTURE_CHECK,
+    EVALSOURCE_NB
+  };
+
+  static constexpr int VALUE_HIST_LIMIT = 4096;
+
+  struct ValueStats {
+    uint64_t count = 0;
+    int64_t total = 0;
+    int max = 0;
+    uint64_t hist[VALUE_HIST_LIMIT + 1] = {};
+
+    void add(int v);
+    void merge(const ValueStats& stats);
+    double average() const;
+    int median() const;
+  };
+
+  struct AlphaPieceStats {
+    ValueStats gain;
+  };
+
+  struct FailHighPieceStats {
+    uint64_t failHighs = 0;
+    ValueStats betaMargin;
+  };
+
+  struct PvHeadPieceStats {
+    uint64_t appearances = 0;
+    ValueStats scoreGain;
+  };
+
+  struct RootPvPieceStats {
+    uint64_t appearances = 0;
+    int64_t scoreTotal = 0;
+    uint64_t depthTotal = 0;
+    uint64_t nodeCountTotal = 0;
+  };
+
+  struct TtPieceStats {
+    uint64_t ttSearched = 0;
+    uint64_t ttFailHighs = 0;
+    uint64_t ttAlphaRaises = 0;
+    uint64_t nonTtSearched = 0;
+    uint64_t nonTtFailHighs = 0;
+    uint64_t nonTtAlphaRaises = 0;
+  };
+
+  struct CheckPieceQualityStats {
+    uint64_t searched = 0;
+    uint64_t moveIndexTotal = 0;
+    uint64_t failHighs = 0;
+    ValueStats alphaGain;
+    ValueStats betaMargin;
+    uint64_t pvAppearances = 0;
+  };
+
+  struct ProductivityStats {
+    uint64_t searched = 0;
+    uint64_t failHighs = 0;
+    ValueStats alphaGain;
+    ValueStats betaMargin;
+    uint64_t pvCreations = 0;
+  };
+
+  struct EvalSourceStats {
+    uint64_t searched = 0;
+    uint64_t failHighs = 0;
+    ValueStats alphaGain;
+    uint64_t pvCreations = 0;
+  };
+
   struct OrderingPieceStats {
     uint64_t searched = 0;
     uint64_t moveIndexTotal = 0;
@@ -163,6 +249,17 @@ struct SearchStats {
   };
 
   uint64_t orderingSearched = 0;
+  ValueStats alphaGainStats;
+  uint64_t alphaGainBuckets[ALPHA_GAIN_BUCKET_NB] = {};
+  AlphaPieceStats alphaPieces[ORDERING_PIECE_NB];
+  FailHighPieceStats failHighPieces[ORDERING_PIECE_NB];
+  PvHeadPieceStats pvHeadPieces[ORDERING_PIECE_NB];
+  RootPvPieceStats rootPvPieces[ORDERING_PIECE_NB];
+  TtPieceStats ttPieces[ORDERING_PIECE_NB];
+  CheckPieceQualityStats checkPieces[ORDERING_PIECE_NB];
+  ProductivityStats moveIndexStats[ORDERING_FH_BUCKET_NB];
+  ProductivityStats depthStats[ORDERING_FH_BUCKET_NB];
+  EvalSourceStats evalSources[EVALSOURCE_NB];
   uint64_t orderingFailHighs = 0;
   uint64_t orderingFirstMoveFailHighs = 0;
   uint64_t orderingFailHighIndexTotal = 0;
