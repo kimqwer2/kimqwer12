@@ -15,6 +15,7 @@
       @move-to-end="$emit('move-to-end', 0)"
     />
     <ReviewPanel />
+    <MistakeNotebook />
     <GameAnalysisPanel />
     <div class="b">
       <button
@@ -38,6 +39,7 @@ import AnalysisHead from './AnalysisHead'
 import AnalysisContainer from './AnalysisContainer.vue'
 import ReviewPanel from './ReviewPanel.vue'
 import GameAnalysisPanel from './GameAnalysisPanel.vue'
+import MistakeNotebook from './MistakeNotebook.vue'
 
 export default {
   name: 'AnalysisView',
@@ -45,6 +47,7 @@ export default {
     AnalysisHead,
     AnalysisContainer,
     ReviewPanel,
+    MistakeNotebook,
     GameAnalysisPanel
   },
   data () {
