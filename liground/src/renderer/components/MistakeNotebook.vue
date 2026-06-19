@@ -31,6 +31,16 @@
         </select>
       </label>
       <label v-if="settings.opponentTraining"><input :checked="settings.chaosTraining" type="checkbox" @change="update({ chaosTraining: $event.target.checked })"> Chaos Training</label>
+      <template v-if="settings.opponentTraining && settings.chaosTraining">
+        <label>Chaos validation
+          <select :value="chaosValidation.preset" @change="updateChaosPreset($event.target.value)">
+            <option v-for="preset in chaosValidationPresets" :key="preset.name" :value="preset.name">{{ preset.name }} · {{ preset.stage1Depth }}/{{ preset.stage2Depth }}</option>
+          </select>
+        </label>
+        <label>Stage 1 depth <input class="small-input" :value="chaosValidation.stage1Depth" min="1" max="20" type="number" @change="updateChaosValidation({ stage1Depth: Number($event.target.value) })"></label>
+        <label>Stage 2 depth <input class="small-input" :value="chaosValidation.stage2Depth" min="1" max="24" type="number" @change="updateChaosValidation({ stage2Depth: Number($event.target.value) })"></label>
+        <label>Max attempts <input class="small-input" :value="chaosValidation.maxAttempts" min="1" max="80" type="number" @change="updateChaosValidation({ maxAttempts: Number($event.target.value) })"></label>
+      </template>
       <span v-if="pending" class="pending">Coach is checking the move…</span>
     </div>
     <div v-if="latest" class="lesson" :class="latest.moveQualityColor" @mouseenter="previewEntry(latest)" @mouseleave="clearPreview">
@@ -70,8 +80,9 @@ export default {
     this.clearPreview()
   },
   computed: {
-    ...mapGetters(['mistakePrevention', 'mistakePreventionLevels', 'mistakeNotebook', 'mistakeStatistics', 'mistakePreventionPending']),
+    ...mapGetters(['mistakePrevention', 'mistakePreventionLevels', 'chaosValidationPresets', 'mistakeNotebook', 'mistakeStatistics', 'mistakePreventionPending']),
     settings () { return this.mistakePrevention || {} },
+    chaosValidation () { return this.settings.chaosValidation || { preset: 'Normal', stage1Depth: 4, stage2Depth: 10, maxAttempts: 24 } },
     levels () { return this.mistakePreventionLevels || [] },
     notebook () { return this.mistakeNotebook || [] },
     stats () { return this.mistakeStatistics || {} },
@@ -84,6 +95,11 @@ export default {
   },
   methods: {
     update (payload) { this.$store.dispatch('setMistakePreventionSettings', payload) },
+    updateChaosValidation (payload) { this.update({ chaosValidation: { ...this.chaosValidation, ...payload } }) },
+    updateChaosPreset (name) {
+      const preset = (this.chaosValidationPresets || []).find(p => p.name === name)
+      this.updateChaosValidation(preset ? { preset: preset.name, stage1Depth: preset.stage1Depth, stage2Depth: preset.stage2Depth } : { preset: name })
+    },
     clearNotebook () { if (confirm('Clear the mistake notebook?')) this.$store.dispatch('clearMistakeNotebook') },
     previewEntry (entry) {
       if (entry && entry.reviewMove && entry.reviewMove.previewFen) this.$store.dispatch('previewReviewMove', entry.reviewMove)
@@ -108,6 +124,7 @@ export default {
 .mistake-header { justify-content: space-between; }
 h3 { margin: 0; }
 select { margin-left: 6px; }
+.small-input { width: 58px; margin-left: 6px; }
 .pending { color: #c28500; font-weight: bold; }
 .lesson, .entry { border-left: 5px solid #888; margin: 8px 0; padding: 8px; background: rgba(0,0,0,.06); }
 .review-move:hover, .lesson:hover { outline: 2px solid rgba(114, 137, 218, .55); cursor: pointer; }
