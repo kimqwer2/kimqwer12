@@ -883,11 +883,15 @@ export default {
       }
       this.lastMoveSan = this.$store.getters.sanMove(this.promotionMove)
       const prevMov = this.currentMove
-      this.$store.dispatch('push', { move: this.promotionMove, prev: prevMov }).then(() => {
+      this.$store.dispatch('push', { move: this.promotionMove, prev: prevMov }).then((accepted) => {
+        if (accepted === false) {
+          this.updateBoard()
+          return
+        }
+        this.updateHand()
+        this.afterMove()
         this.$store.dispatch('onHumanMoveComplete')
       })
-      this.updateHand()
-      this.afterMove()
     },
     updatePieceCSS (pieceStyle) {
       const node = this.pieceStyleEl
@@ -1084,10 +1088,14 @@ export default {
         const move = pieces[role] + '@' + key
         const prevMov = this.currentMove
         if (this.$store.getters.legalMoves.includes(move)) {
-          this.$store.dispatch('push', { move: move, prev: prevMov }).then(() => {
+          this.$store.dispatch('push', { move: move, prev: prevMov }).then((accepted) => {
+            if (accepted === false) {
+              this.updateBoard()
+              return
+            }
+            this.updateHand()
             this.$store.dispatch('onHumanMoveComplete')
           })
-          this.updateHand()
         } else {
           this.updateBoard()
         }
@@ -1116,7 +1124,11 @@ export default {
           if (this.variant === 'makruk') {
             const move = uciMove + 'm'
             const prevMov = this.currentMove
-            this.$store.dispatch('push', { move: move, prev: prevMov }).then(() => {
+            this.$store.dispatch('push', { move: move, prev: prevMov }).then((accepted) => {
+              if (accepted === false) {
+                this.updateBoard()
+                return
+              }
               this.$store.dispatch('onHumanMoveComplete')
             })
           } else {
@@ -1127,11 +1139,15 @@ export default {
         } else {
           this.lastMoveSan = this.$store.getters.sanMove(uciMove)
           const prevMov = this.currentMove
-          this.$store.dispatch('push', { move: uciMove, prev: prevMov }).then(() => {
+          this.$store.dispatch('push', { move: uciMove, prev: prevMov }).then((accepted) => {
+            if (accepted === false) {
+              this.updateBoard()
+              return
+            }
+            this.updateHand()
+            this.afterMove()
             this.$store.dispatch('onHumanMoveComplete')
           })
-          this.updateHand()
-          this.afterMove()
         }
       }
     },

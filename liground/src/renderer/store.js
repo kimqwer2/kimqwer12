@@ -162,6 +162,158 @@ const HUMAN_TRAP_DEFAULTS = {
   earlyTrapScore: 85
 }
 
+
+const MISTAKE_PREVENTION_LEVELS = [
+  { name: '입문', thresholdCp: 500 },
+  { name: '초급', thresholdCp: 400 },
+  { name: '중급', thresholdCp: 300 },
+  { name: '고급', thresholdCp: 250 },
+  { name: '준고수', thresholdCp: 200 },
+  { name: '고수', thresholdCp: 175 },
+  { name: '9단', thresholdCp: 150 },
+  { name: '국수', thresholdCp: 125 },
+  { name: '명인', thresholdCp: 100 },
+  { name: '천하제일', thresholdCp: 75 },
+  { name: 'Neural', thresholdCp: 50 },
+  { name: 'NNUE', thresholdCp: 25 },
+  { name: 'Oracle', thresholdCp: 10 }
+]
+
+
+function sampleHumanLikeLoss (maxLoss) {
+  const r = Math.random()
+  const shaped = Math.pow(r, 2.15)
+  return Math.round(shaped * Math.max(0, maxLoss))
+}
+
+function scoreTrainingCandidate (candidate, targetLoss, chaos = false) {
+  const lossDistance = Math.abs(candidate.cpLoss - targetLoss)
+  const smallMistakeBonus = !chaos && candidate.cpLoss <= 30 ? 30 : (candidate.cpLoss <= 100 ? 18 : 0)
+  const rareLargePenalty = !chaos && candidate.cpLoss > targetLoss * 1.35 ? 45 : (candidate.cpLoss > targetLoss * 1.35 ? 25 : 0)
+  return lossDistance - smallMistakeBonus + rareLargePenalty + Math.random() * (chaos ? 18 : 8)
+}
+
+function fenPlyNumber (fen) {
+  const parts = String(fen || '').trim().split(/\s+/)
+  const whiteToMove = parts[1] !== 'b'
+  const fullmove = Math.max(1, Number(parts[5]) || 1)
+  return Math.max(1, (fullmove - 1) * 2 + (whiteToMove ? 1 : 2))
+}
+
+function phaseAdjustedMaxLoss (maxLoss, fen, chaos = false) {
+  if (chaos) return maxLoss
+  const ply = fenPlyNumber(fen)
+  if (ply <= 20) return Math.min(maxLoss, Math.max(15, Math.round(maxLoss * 0.30)))
+  if (ply <= 36) return Math.min(maxLoss, Math.max(25, Math.round(maxLoss * 0.55)))
+  return maxLoss
+}
+
+function humanLikeTargetLoss (maxLoss, chaos = false) {
+  if (chaos) return sampleHumanLikeLoss(maxLoss)
+  const r = Math.random()
+  const shaped = Math.pow(r, 3.4)
+  return Math.round(shaped * Math.max(0, maxLoss))
+}
+
+function practicalCpLoss ({ rawCpLoss, beforeCp, userCp }) {
+  if (beforeCp === null || userCp === null) return rawCpLoss
+  if (userCp >= beforeCp) return 0
+  if (userCp >= 300) return Math.max(0, rawCpLoss - 250)
+  if (beforeCp > 0 && userCp >= 100) return Math.max(0, rawCpLoss - 150)
+  if (beforeCp >= 0 && userCp >= 0) return Math.max(0, rawCpLoss - 75)
+  return rawCpLoss
+}
+
+async function selectTrainingOpponentMove ({ engineInstance, fen, variant, is960, level, chaos = false }) {
+  const configuredMaxLoss = Math.max(0, Number(level && level.thresholdCp) || 300)
+  const maxLoss = phaseAdjustedMaxLoss(configuredMaxLoss, fen, chaos)
+  let board
+  try { board = boardFromFen(variant, fen, is960) } catch (err) { return null }
+  const legal = board.legalMoves()
+  const moves = (Array.isArray(legal) ? legal : String(legal || '').split(/\s+/)).filter(Boolean)
+  if (!moves.length) return null
+  const bestRaw = await engineInstance.evaluate(fen, 6)
+  const bestCp = parseEngineScoreToCp(bestRaw)
+  if (bestCp === null) return null
+  const sampleSize = Math.min(moves.length, Math.max(8, Math.ceil(Math.sqrt(moves.length) * 3)))
+  const shuffled = moves.slice().sort(() => Math.random() - 0.5)
+  const candidates = []
+  for (const move of shuffled.slice(0, sampleSize)) {
+    try {
+      const b = boardFromFen(variant, fen, is960)
+      b.push(move)
+      const afterRaw = await engineInstance.evaluate(b.fen(), 3)
+      const afterCp = parseEngineScoreToCp(afterRaw)
+      if (afterCp === null) continue
+      const estimatedForMover = -afterCp
+      const cpLoss = Math.max(0, bestCp - estimatedForMover)
+      if (cpLoss <= maxLoss) candidates.push({ move, cpLoss, estimatedForMover, afterCp })
+    } catch (err) {}
+  }
+  if (!candidates.length) return null
+  const targetLoss = humanLikeTargetLoss(maxLoss, chaos)
+  candidates.sort((a, b) => scoreTrainingCandidate(a, targetLoss, chaos) - scoreTrainingCandidate(b, targetLoss, chaos))
+  return { ...candidates[0], targetLoss, maxLoss, configuredMaxLoss, openingProtected: maxLoss < configuredMaxLoss, sampled: candidates.length }
+}
+
+function pointLossString (cp) {
+  return (Math.max(0, Number(cp) || 0) / 100).toFixed(1)
+}
+
+function moveQualityColor (cpLoss) {
+  if (cpLoss <= 25) return 'green'
+  if (cpLoss <= 75) return 'blue'
+  if (cpLoss <= 150) return 'yellow'
+  if (cpLoss <= 300) return 'orange'
+  return 'red'
+}
+
+function mistakePieceFromFen (fen, move) {
+  const parsed = parseUciFromTo(move)
+  if (!parsed) return 'drop'
+  const piece = parseFenPieceMap(fen)[parsed.from]
+  return piece ? piece.replace('+', '').toUpperCase() : 'unknown'
+}
+
+function mistakeStatsFromNotebook (notebook) {
+  const list = Array.isArray(notebook) ? notebook : []
+  const total = list.length
+  const byPiece = {}
+  const byPattern = {}
+  let cpTotal = 0
+  let largest = 0
+  for (const item of list) {
+    const cp = Math.max(0, Number(item.cpLoss) || 0)
+    cpTotal += cp
+    largest = Math.max(largest, cp)
+    const piece = item.pieceType || 'unknown'
+    byPiece[piece] = (byPiece[piece] || 0) + 1
+    const pattern = item.pattern || 'evaluation drop'
+    byPattern[pattern] = (byPattern[pattern] || 0) + 1
+  }
+  const first = list[0] && list[0].timestamp
+  const last = list[list.length - 1] && list[list.length - 1].timestamp
+  return {
+    totalMistakes: total,
+    averageCpLoss: total ? Math.round(cpTotal / total) : 0,
+    largestMistake: largest,
+    mistakesByPieceType: byPiece,
+    repeatedPatterns: byPattern,
+    mistakeFrequency: first && last && first !== last ? total / Math.max(1, (new Date(last) - new Date(first)) / 86400000) : total,
+    improvementOverTime: total >= 4 ? Math.round(list.slice(-Math.ceil(total / 2)).reduce((a, b) => a + (Number(b.cpLoss) || 0), 0) / Math.ceil(total / 2) - list.slice(0, Math.floor(total / 2)).reduce((a, b) => a + (Number(b.cpLoss) || 0), 0) / Math.floor(total / 2)) : 0
+  }
+}
+
+function classifyMistakePattern ({ fen, move, bestMove, cpLoss }) {
+  const info = moveCaptureInfo(fen, move)
+  const bestInfo = moveCaptureInfo(fen, bestMove)
+  if (bestInfo.isCapture && (!info.isCapture || bestInfo.capturedValue > info.capturedValue)) return 'missed capture'
+  if (info.isCapture && cpLoss >= 250) return 'poisoned capture'
+  if (cpLoss >= 300) return 'tactical oversight'
+  if (cpLoss >= 150) return 'material loss'
+  return 'evaluation drop'
+}
+
 const CONTROLLED_MARGIN_DEFAULTS = {
   enabled: false,
   minWinningCp: 70,
@@ -201,6 +353,13 @@ const HUMAN_TRAP_PIECE_VALUES = {
 
 function clampNumber (value, min, max) {
   return Math.max(min, Math.min(max, value))
+}
+
+function scoreToCpForStore (info) {
+  if (!info) return null
+  if (typeof info.cp === 'number') return info.cp
+  if (typeof info.mate === 'number') return info.mate > 0 ? 100000 - info.mate : -100000 - info.mate
+  return null
 }
 
 function parseEngineScoreToCp (score) {
@@ -1589,6 +1748,9 @@ export const store = new Vuex.Store({
     PvELimiter: null, // stores the limiter config for the PvE engine
     PvEEngineInstance: null,
     humanTrapDiagnostics: null,
+    mistakePrevention: { enabled: false, levelName: '중급', thresholdCp: 300, opponentTraining: false, opponentLevelName: '중급', evaluationMode: 'practical', verificationDepth: 14, chaosTraining: false },
+    mistakeNotebook: [],
+    mistakePreventionPending: false,
     enginePersonalityDebug: {
       trapSelections: 0,
       closeWinSelections: 0,
@@ -1969,6 +2131,30 @@ export const store = new Vuex.Store({
     },
     humanTrapDiagnostics (state, payload) {
       state.humanTrapDiagnostics = payload || null
+    },
+    mistakePreventionSettings (state, payload = {}) {
+      const current = state.mistakePrevention || {}
+      const next = { ...current, ...payload }
+      const level = MISTAKE_PREVENTION_LEVELS.find(l => l.name === next.levelName) || MISTAKE_PREVENTION_LEVELS.find(l => l.thresholdCp === Number(next.thresholdCp)) || MISTAKE_PREVENTION_LEVELS[2]
+      next.levelName = level.name
+      next.thresholdCp = level.thresholdCp
+      next.evaluationMode = next.evaluationMode === 'perfect' ? 'perfect' : 'practical'
+      next.verificationDepth = Math.max(10, Math.min(20, Number(next.verificationDepth) || 14))
+      next.chaosTraining = !!next.chaosTraining
+      if (!next.opponentLevelName) next.opponentLevelName = next.levelName
+      state.mistakePrevention = next
+      try { localStorage.setItem('mistakePreventionSettings', JSON.stringify(next)) } catch (err) {}
+    },
+    mistakePreventionPending (state, payload) {
+      state.mistakePreventionPending = !!payload
+    },
+    addMistakeNotebookEntry (state, payload) {
+      state.mistakeNotebook = [payload].concat(state.mistakeNotebook || []).slice(0, 500)
+      try { localStorage.setItem('mistakeNotebook', JSON.stringify(state.mistakeNotebook)) } catch (err) {}
+    },
+    clearMistakeNotebook (state) {
+      state.mistakeNotebook = []
+      try { localStorage.removeItem('mistakeNotebook') } catch (err) {}
     },
     personalityDiagnostics (state, payload) {
       const diag = payload || null
@@ -2844,6 +3030,13 @@ export const store = new Vuex.Store({
           localStorage.removeItem('engines')
         }
       }
+      try {
+        if (localStorage.mistakePreventionSettings) context.commit('mistakePreventionSettings', JSON.parse(localStorage.mistakePreventionSettings))
+        if (localStorage.mistakeNotebook) context.state.mistakeNotebook = JSON.parse(localStorage.mistakeNotebook)
+      } catch (err) {
+        localStorage.removeItem('mistakePreventionSettings')
+        localStorage.removeItem('mistakeNotebook')
+      }
       context.dispatch('loadOpeningBookFromStorage')
       context.commit('newBoard')
       context.dispatch('updateBoard')
@@ -2857,7 +3050,104 @@ export const store = new Vuex.Store({
       context.commit('legalMoves', board.legalMoves())
       context.commit('syncGameStateFromStore')
     },
-    push (context, payload) {
+    async analyzeMistakePreventionMove (context, payload) {
+      const fen = payload.fen
+      const move = payload.move
+      const settings = context.state.mistakePrevention || {}
+      const depth = Math.max(10, Math.min(20, Number(payload.depth || settings.verificationDepth) || 14))
+      const root = await engine.reviewAnalysis({ fen, line: [move], variant: context.state.variant, depth, multiPv: 3, maxReviewMoves: 0 })
+      const best = root && root.root && root.root.candidates && root.root.candidates[0]
+      const user = root && root.user && root.user.candidates && root.user.candidates[0]
+      const after = root && root.after && root.after.candidates && root.after.candidates[0]
+      const beforeCp = scoreToCpForStore(best)
+      const userCp = scoreToCpForStore(user)
+      const rawCpLoss = beforeCp === null || userCp === null ? 0 : Math.max(0, beforeCp - userCp)
+      const cpLoss = settings.evaluationMode === 'perfect' ? rawCpLoss : practicalCpLoss({ rawCpLoss, beforeCp, userCp })
+      return { root, best, user, after, beforeCp, userCp, cpLoss, rawCpLoss, evaluationMode: settings.evaluationMode === 'perfect' ? 'perfect' : 'practical', verificationDepth: depth }
+    },
+    async recordRejectedMistake (context, { fen, move, analysis }) {
+      const bestMove = (analysis.best && analysis.best.ucimove) || (analysis.root && analysis.root.root && analysis.root.root.bestmove) || ''
+      let previewFen = ''
+      let responsePreviewFen = ''
+      try {
+        const board = boardFromFen(context.state.variant, fen, context.getters.is960)
+        board.push(move)
+        previewFen = board.fen()
+        if (analysis.after && analysis.after.ucimove) {
+          board.push(analysis.after.ucimove)
+          responsePreviewFen = board.fen()
+        }
+      } catch (err) {}
+      const entry = {
+        id: `${Date.now()}-${move}`,
+        position: fen,
+        userMove: move,
+        engineBestMove: bestMove,
+        cpLoss: analysis.cpLoss,
+        rawCpLoss: analysis.rawCpLoss,
+        pointLoss: Number(pointLossString(analysis.cpLoss)),
+        evaluationBefore: analysis.beforeCp,
+        evaluationAfter: analysis.userCp,
+        moveQualityColor: moveQualityColor(analysis.cpLoss),
+        pv: (analysis.best && analysis.best.pvUCI) || '',
+        opponentBestResponse: (analysis.after && analysis.after.ucimove) || '',
+        timestamp: new Date().toISOString(),
+        evaluationMode: analysis.evaluationMode,
+        verificationDepth: analysis.verificationDepth,
+        previewFen,
+        responsePreviewFen,
+        pieceType: mistakePieceFromFen(fen, move),
+        pattern: classifyMistakePattern({ fen, move, bestMove, cpLoss: analysis.cpLoss }),
+        explanation: `내 수 ${move}는 엔진 추천 ${bestMove || '없음'}보다 ${analysis.cpLoss}cp (${pointLossString(analysis.cpLoss)} points) 손해입니다.`,
+        reviewMove: {
+          ply: context.state.moves.length + 1,
+          move,
+          side: 'user',
+          sideLabel: '내 수',
+          previewFen,
+          punishmentMove: (analysis.after && analysis.after.ucimove) || '',
+          bestMove,
+          bestPv: (analysis.best && analysis.best.pvUCI) || '',
+          classification: analysis.cpLoss >= 300 ? 'blunder' : 'mistake',
+          classificationLabel: analysis.cpLoss >= 300 ? 'Large Mistake' : 'Mistake',
+          severity: analysis.cpLoss >= 300 ? 'blunder' : 'mistake',
+          tone: 'critical',
+          loss: analysis.cpLoss,
+          rawLoss: analysis.rawCpLoss
+        },
+        responseReviewMove: responsePreviewFen ? {
+          ply: context.state.moves.length + 2,
+          move: (analysis.after && analysis.after.ucimove) || '',
+          side: 'opponent',
+          sideLabel: '상대 응수',
+          previewFen: responsePreviewFen,
+          classification: 'response',
+          classificationLabel: 'Opponent response',
+          severity: 'neutral',
+          tone: 'practical',
+          loss: 0
+        } : null
+      }
+      context.commit('addMistakeNotebookEntry', entry)
+      context.commit('humanTrapDiagnostics', { mode: '실수방지 모드', type: 'Move Rejected', reason: entry.explanation, cpLoss: entry.cpLoss, pointLoss: entry.pointLoss, move: entry.userMove, bestMove: entry.engineBestMove, pv: entry.pv, selectedAt: Date.now() })
+      return entry
+    },
+    async push (context, payload) {
+      if (context.state.mistakePrevention && context.state.mistakePrevention.enabled && payload && !payload.skipMistakePrevention) {
+        const fenBefore = context.state.fen
+        const move = String(payload.move || '').split(' ')[0]
+        context.commit('mistakePreventionPending', true)
+        try {
+          const analysis = await context.dispatch('analyzeMistakePreventionMove', { fen: fenBefore, move })
+          if (analysis.cpLoss > (context.state.mistakePrevention.thresholdCp || 300)) {
+            await context.dispatch('recordRejectedMistake', { fen: fenBefore, move, analysis })
+            context.dispatch('updateBoard')
+            return false
+          }
+        } finally {
+          context.commit('mistakePreventionPending', false)
+        }
+      }
       context.commit('appendMoves', payload)
       return context.dispatch('fen', context.state.board.fen()).then(() => {
         // Only check for game end if a game was started via the new game modal
@@ -3072,6 +3362,14 @@ export const store = new Vuex.Store({
         let bestmove = sanitizeEngineMove(await bestMovePromise)
         if (requestSeq !== context.state.singleMoveRequestSeq) return
         if (!bestmove) return
+        if (context.state.mistakePrevention && context.state.mistakePrevention.opponentTraining) {
+          const level = MISTAKE_PREVENTION_LEVELS.find(l => l.name === context.state.mistakePrevention.opponentLevelName) || MISTAKE_PREVENTION_LEVELS.find(l => l.name === context.state.mistakePrevention.levelName) || MISTAKE_PREVENTION_LEVELS[2]
+          const selectedTraining = await selectTrainingOpponentMove({ engineInstance: engine, fen: rootFen, variant: context.getters.variant, is960: context.getters.is960, level, chaos: context.state.mistakePrevention.chaosTraining })
+          if (selectedTraining && selectedTraining.move && context.state.board.legalMoves().includes(selectedTraining.move) && normalizeFen(context.getters.fen) === normalizeFen(rootFen)) {
+            bestmove = selectedTraining.move
+            context.commit('humanTrapDiagnostics', { mode: 'Opponent Training Strength', type: level.name, move: bestmove, cpLoss: selectedTraining.cpLoss, pointLoss: Number(pointLossString(selectedTraining.cpLoss)), reason: `${context.state.mistakePrevention.chaosTraining ? 'chaos' : 'human-like'} sampled legal move within ${selectedTraining.maxLoss}cp${selectedTraining.openingProtected ? ' (opening protected)' : ''}`, probeStats: { probes: selectedTraining.sampled }, selectedAt: Date.now() })
+          }
+        }
         if (personality.enabled) {
           context.commit('enginePersonalityDebug', { trapAttempts: (context.state.enginePersonalityDebug.trapAttempts || 0) + 1 })
           const selected = await selectPersonalityMove({
@@ -3092,7 +3390,7 @@ export const store = new Vuex.Store({
             context.commit('personalityDiagnostics', { ...selected, selectedAt: Date.now() })
           }
         }
-        await context.dispatch('push', { move: bestmove, prev: context.getters.currentMove[0] })
+        await context.dispatch('push', { move: bestmove, prev: context.getters.currentMove[0], skipMistakePrevention: true })
       } catch (err) {
         console.error('[playSingleEngineMove] Failed to apply single engine move:', err)
       } finally {
@@ -3179,7 +3477,7 @@ export const store = new Vuex.Store({
       const move = sanitizeEngineMove(payload)
       if (state.active && state.PvE && engineToMoveNow && move) {
         // Dispatch push and handle failure (invalid uci for current position)
-        context.dispatch('push', { move, prev: context.getters.currentMove[0] }).then(() => {
+        context.dispatch('push', { move, prev: context.getters.currentMove[0], skipMistakePrevention: true }).then(() => {
         }).catch((err) => {
           // If engine returned a move invalid for the current position, log and restart engine on the
           // current position so it recalculates for the correct state.
@@ -5614,6 +5912,12 @@ export const store = new Vuex.Store({
     saveSettings (context) {
       context.commit('saveSettings')
     },
+    setMistakePreventionSettings (context, payload) {
+      context.commit('mistakePreventionSettings', payload)
+    },
+    clearMistakeNotebook (context) {
+      context.commit('clearMistakeNotebook')
+    },
 
     // action wrapper to reset
     async resetAllSettings ({ commit, dispatch }) {
@@ -5783,6 +6087,11 @@ export const store = new Vuex.Store({
     humanTrapDiagnostics (state) {
       return state.humanTrapDiagnostics
     },
+    mistakePrevention (state) { return state.mistakePrevention },
+    mistakePreventionLevels () { return MISTAKE_PREVENTION_LEVELS },
+    mistakeNotebook (state) { return state.mistakeNotebook || [] },
+    mistakeStatistics (state) { return mistakeStatsFromNotebook(state.mistakeNotebook || []) },
+    mistakePreventionPending (state) { return !!state.mistakePreventionPending },
     personalityDiagnostics (state) {
       return state.humanTrapDiagnostics
     },
