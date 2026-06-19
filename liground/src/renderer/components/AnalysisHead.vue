@@ -333,8 +333,9 @@ export default {
           await this.$store.dispatch('stopEngine')
         } catch (e) {}
 
-        this.$store.dispatch('resetBoard', { is960: false }) // used to exit 960 Mode
+        await this.$store.dispatch('resetBoard', { is960: false }) // used to exit 960 Mode
         this.$emit('resetMultiEngine')
+        await this.$store.dispatch('playVsEngineMove')
       }
     },
     async fullResetSession () {
