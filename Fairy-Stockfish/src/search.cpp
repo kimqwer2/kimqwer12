@@ -420,100 +420,6 @@ namespace {
     Move best = MOVE_NONE;
   };
 
-  int HunterPlies = 0;
-
-  int root_human_score(Position& pos, const RootMove& rm, Value topScore, bool pressure, bool hunter, bool closer) {
-    if (rm.pv.empty() || rm.pv[0] == MOVE_NONE)
-        return 0;
-
-    Move move = rm.pv[0];
-    int cpLoss = std::max(0, int(topScore - rm.score));
-    bool givesCheck = pos.gives_check(move);
-    bool capture = pos.capture(move);
-    int score = 0;
-
-    if (pressure)
-    {
-        score += std::max(0, 90 - cpLoss);
-        score += givesCheck ? 45 : 0;
-        score += capture ? 25 : 0;
-        score += rm.pv.size() > 2 ? 10 : 0;
-    }
-
-    if (hunter)
-    {
-        score += std::max(0, 120 - 2 * cpLoss);
-        score += givesCheck ? 60 : 0;
-        score += capture ? 40 : 0;
-    }
-
-    if (closer)
-    {
-        if (topScore >= Value(650))
-        {
-            score += capture ? 80 : 0;
-            score -= givesCheck ? 10 : 0;
-            score += std::max(0, 120 - cpLoss);
-        }
-        else if (topScore >= Value(120))
-        {
-            score += givesCheck ? 35 : 0;
-            score += capture ? 20 : 0;
-            score += std::max(0, 80 - cpLoss);
-        }
-        else if (topScore > Value(-120))
-        {
-            score += givesCheck ? 50 : 0;
-            score += capture ? 25 : 0;
-        }
-        else
-        {
-            score += givesCheck ? 70 : 0;
-            score += capture ? 35 : 0;
-            score += std::max(0, 140 - cpLoss);
-        }
-    }
-
-    return score;
-  }
-
-  Move pick_human_competitive(Position& pos, RootMoves& rootMoves, size_t multiPV, PRNG& rng, bool pressure, bool hunter, bool closer) {
-    if (rootMoves.empty() || rootMoves[0].pv[0] == MOVE_NONE)
-        return MOVE_NONE;
-
-    Value topScore = rootMoves[0].score;
-    int allowedLoss = pressure ? int(Options["Pressure Cp Range"]) : 0;
-    if (hunter)
-        allowedLoss = std::min(allowedLoss ? allowedLoss : 35, 35);
-    if (closer)
-        allowedLoss = std::max(allowedLoss, topScore >= Value(650) ? 120 : topScore < Value(-120) ? 100 : 70);
-
-    size_t limit = std::min(multiPV, rootMoves.size());
-    std::vector<std::pair<Move, int>> pool;
-    int total = 0;
-
-    for (size_t i = 0; i < limit; ++i)
-    {
-        RootMove& rm = rootMoves[i];
-        int cpLoss = std::max(0, int(topScore - rm.score));
-        if (i && cpLoss > allowedLoss)
-            continue;
-
-        int weight = (i == 0 ? 800 : 220) + std::max(0, allowedLoss + 20 - cpLoss);
-        weight += root_human_score(pos, rm, topScore, pressure, hunter, closer);
-        weight = std::max(1, weight);
-        pool.emplace_back(rm.pv[0], weight);
-        total += weight;
-    }
-
-    int roll = int(rng.rand<unsigned>() % total);
-    for (auto& candidate : pool)
-        if ((roll -= candidate.second) < 0)
-            return candidate.first;
-
-    return rootMoves[0].pv[0];
-  }
-
   template <NodeType nodeType>
   Value search(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth, bool cutNode);
 
@@ -785,17 +691,11 @@ void Thread::search() {
   int intLevel = int(floatLevel) +
                  ((floatLevel - int(floatLevel)) * 1024 > rng.rand<unsigned>() % 1024  ? 1 : 0);
   Skill skill(intLevel);
-  bool pressureMode = bool(Options["Pressure Mode"]);
-  bool hunterMode = bool(Options["Hunter Mode"]);
-  bool closerMode = bool(Options["Closer Mode"]);
-  bool competitiveMode = pressureMode || hunterMode || closerMode;
 
   // When playing with strength handicap enable MultiPV search that we will
   // use behind the scenes to retrieve a set of possible moves.
   if (skill.enabled())
       multiPV = std::max(multiPV, (size_t)4);
-  if (competitiveMode)
-      multiPV = std::max(multiPV, (size_t)int(Options["Pressure MultiPV"]));
 
   multiPV = std::min(multiPV, rootMoves.size());
   ttHitAverage = TtHitAverageWindow * TtHitAverageResolution / 2;
@@ -1082,21 +982,6 @@ void Thread::search() {
   if (skill.enabled())
       std::swap(rootMoves[0], *std::find(rootMoves.begin(), rootMoves.end(),
                 skill.best ? skill.best : skill.pick_best(multiPV)));
-  else if (competitiveMode)
-  {
-      int hunterThreshold = int(Options["Player Mistake Threshold"]) * int(Options["Hunter Multiplier"]) / 100;
-      if (hunterMode && rootMoves[0].score >= Value(hunterThreshold))
-          HunterPlies = int(Options["Hunter Moves"]);
-
-      bool hunterActive = hunterMode && HunterPlies > 0;
-      Move pick = pick_human_competitive(rootPos, rootMoves, multiPV, rng, pressureMode, hunterActive, closerMode);
-
-      if (pick != MOVE_NONE)
-          std::swap(rootMoves[0], *std::find(rootMoves.begin(), rootMoves.end(), pick));
-
-      if (HunterPlies > 0)
-          --HunterPlies;
-  }
 }
 
 

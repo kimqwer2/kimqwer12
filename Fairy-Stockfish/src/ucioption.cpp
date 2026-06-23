@@ -187,14 +187,6 @@ void init(OptionsMap& o) {
   o["Ponder"]                << Option(false);
   o["MultiPV"]               << Option(1, 1, 500);
   o["Skill Level"]           << Option(20, -20, 20);
-  o["Pressure Mode"]          << Option(false);
-  o["Pressure MultiPV"]       << Option(5, 1, 20);
-  o["Pressure Cp Range"]      << Option(80, 0, 1000);
-  o["Hunter Mode"]            << Option(false);
-  o["Hunter Multiplier"]      << Option(50, 1, 100);
-  o["Hunter Moves"]           << Option(3, 1, 20);
-  o["Player Mistake Threshold"] << Option(200, 20, 2000);
-  o["Closer Mode"]            << Option(false);
   o["Move Overhead"]         << Option(10, 0, 5000);
   o["Slow Mover"]            << Option(100, 10, 1000);
   o["nodestime"]             << Option(0, 0, 10000);
