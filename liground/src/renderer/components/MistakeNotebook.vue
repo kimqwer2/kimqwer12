@@ -3,88 +3,88 @@
     <div class="mistake-header">
       <div>
         <h3>실수방지 모드</h3>
-        <small>Mistake Prevention Mode</small>
+        <small>실수 방지 학습</small>
       </div>
-      <label class="toggle"><input :checked="settings.enabled" type="checkbox" @change="update({ enabled: $event.target.checked })"> Enable</label>
+      <label class="toggle"><input :checked="settings.enabled" type="checkbox" @change="update({ enabled: $event.target.checked })"> 사용</label>
     </div>
     <div class="mistake-controls">
-      <label>Training level
+      <label>학습 난이도
         <select :value="settings.levelName" @change="update({ levelName: $event.target.value })">
-          <option v-for="level in levels" :key="level.name" :value="level.name">{{ level.name }} · {{ level.thresholdCp }}cp ({{ points(level.thresholdCp) }} points)</option>
+          <option v-for="level in levels" :key="level.name" :value="level.name">{{ level.name }} · {{ level.thresholdCp }}CP ({{ points(level.thresholdCp) }}점)</option>
         </select>
       </label>
-      <label>Prevention
+      <label>실수 판정 방식
         <select :value="settings.evaluationMode || 'practical'" @change="update({ evaluationMode: $event.target.value })">
-          <option value="perfect">Perfect Prevention</option>
-          <option value="practical">Practical Prevention</option>
-          <option value="flexible">Flexible / Human Practical</option>
+          <option value="perfect">완전 판정</option>
+          <option value="practical">실전 판정</option>
+          <option value="flexible">유연 실전 판정</option>
         </select>
       </label>
-      <label>Verification depth
+      <label>실수 검증 깊이
         <select :value="settings.verificationDepth || 14" @change="update({ verificationDepth: Number($event.target.value) })">
           <option v-for="depth in verificationDepths" :key="depth" :value="depth">{{ depth }}</option>
         </select>
       </label>
-      <label><input :checked="settings.opponentTraining" type="checkbox" @change="update({ opponentTraining: $event.target.checked })"> Opponent training strength</label>
-      <label v-if="settings.opponentTraining">Opponent level
+      <label><input :checked="settings.opponentTraining" type="checkbox" @change="update({ opponentTraining: $event.target.checked })"> 상대 난이도</label>
+      <label v-if="settings.opponentTraining">상대 수준
         <select :value="settings.opponentLevelName || settings.levelName" @change="update({ opponentLevelName: $event.target.value })">
-          <option v-for="level in levels" :key="level.name" :value="level.name">{{ level.name }} · max {{ level.thresholdCp }}cp</option>
+          <option v-for="level in levels" :key="level.name" :value="level.name">{{ level.name }} · 최대 {{ level.thresholdCp }}CP</option>
         </select>
       </label>
-      <label v-if="settings.opponentTraining">Chaos mode
+      <label v-if="settings.opponentTraining">Chaos 모드
         <select :value="settings.chaosMode || (settings.chaosTraining ? 'search' : 'off')" @change="update({ chaosMode: $event.target.value })">
           <option value="off">Off</option>
           <option value="fast">Chaos Fast</option>
           <option value="search">Chaos Search</option>
         </select>
       </label>
-      <label v-if="settings.opponentTraining"><input :checked="settings.opponentPreventionMode === 'perfect'" type="checkbox" @change="update({ opponentPreventionMode: $event.target.checked ? 'perfect' : 'off' })"> Pure engine best move</label>
-      <label v-if="settings.opponentTraining && settings.opponentPreventionMode !== 'perfect'">Opponent style (non-chaos)
+      <label v-if="settings.opponentTraining"><input :checked="settings.opponentPreventionMode === 'perfect'" type="checkbox" @change="update({ opponentPreventionMode: $event.target.checked ? 'perfect' : 'off' })"> 엔진 최선수 강제</label>
+      <label v-if="settings.opponentTraining && settings.opponentPreventionMode !== 'perfect'">상대 스타일 (일반 모드)
         <select :value="settings.opponentPreventionMode || 'off'" @change="update({ opponentPreventionMode: $event.target.value })">
-          <option value="off">Strength only · CP sampled</option>
-          <option value="practical">Practical · preserves good positions</option>
-          <option value="flexible">Flexible · wider human-practical band</option>
+          <option value="off">난이도만 적용 · CP 샘플링</option>
+          <option value="practical">실전형 · 좋은 평가 유지</option>
+          <option value="flexible">유연형 · 넓은 실전 허용폭</option>
         </select>
       </label>
-      <small v-if="settings.opponentTraining" class="mode-help">Pure engine ignores opponent level and plays the searched best move. Style modes keep the CP level but change how non-best moves are filtered.</small>
+      <small v-if="settings.opponentTraining" class="mode-help">엔진 최선수 강제는 상대 수준을 무시하고 최선수를 둡니다. 스타일은 CP 난이도는 유지하면서 비최선수 허용 방식을 조절합니다.</small>
       <template v-if="settings.opponentTraining && (settings.chaosMode || (settings.chaosTraining ? 'search' : 'off')) !== 'off'">
-        <label>Chaos validation
+        <label>카오스 검증
           <select :value="chaosValidation.preset" @change="updateChaosPreset($event.target.value)">
             <option v-for="preset in chaosValidationPresets" :key="preset.name" :value="preset.name">{{ preset.name }} · {{ preset.stage1Depth }}/{{ preset.stage2Depth }}</option>
           </select>
         </label>
-        <label>Stage 1 depth <input class="small-input" :value="chaosValidation.stage1Depth" min="1" max="20" type="number" @change="updateChaosValidation({ stage1Depth: Number($event.target.value) })"></label>
-        <label>Stage 2 depth <input class="small-input" :value="chaosValidation.stage2Depth" min="1" max="24" type="number" @change="updateChaosValidation({ stage2Depth: Number($event.target.value) })"></label>
-        <label>Max attempts <input class="small-input" :value="chaosValidation.maxAttempts" min="1" max="80" type="number" @change="updateChaosValidation({ maxAttempts: Number($event.target.value) })"></label>
+        <label>1차 검증 깊이 <input class="small-input" :value="chaosValidation.stage1Depth" min="1" max="20" type="number" @change="updateChaosValidation({ stage1Depth: Number($event.target.value) })"></label>
+        <label>2차 검증 깊이 <input class="small-input" :value="chaosValidation.stage2Depth" min="1" max="24" type="number" @change="updateChaosValidation({ stage2Depth: Number($event.target.value) })"></label>
+        <label>최대 시도 횟수 <input class="small-input" :value="chaosValidation.maxAttempts" min="1" max="80" type="number" @change="updateChaosValidation({ maxAttempts: Number($event.target.value) })"></label>
       </template>
-      <span v-if="pending" class="pending">Coach is checking the move…</span>
+      <span v-if="pending" class="pending">코치가 수를 확인 중…</span>
     </div>
     <div v-if="latest" class="lesson" :class="latest.moveQualityColor" @mouseenter="previewEntry(latest)" @mouseleave="clearPreview">
-      <strong>{{ latest.reviewMove && latest.reviewMove.classificationLabel ? latest.reviewMove.classificationLabel : 'Rejected lesson' }}</strong>
-      <div>My move: <code>{{ latest.userMove }}</code> · Engine move: <code>{{ latest.engineBestMove }}</code></div>
-      <div>Evaluation: {{ evalText(latest.evaluationBefore) }} → {{ evalText(latest.evaluationAfter) }}</div>
-      <div>Loss: <b>{{ latest.cpLoss }}cp</b> · <b>{{ latest.pointLoss.toFixed(1) }} points</b><span v-if="latest.rawCpLoss !== latest.cpLoss"> · raw {{ latest.rawCpLoss }}cp</span></div>
-      <div>Mode: {{ modeLabel(latest.evaluationMode) }} · depth {{ latest.verificationDepth || '?' }}</div>
+      <strong>{{ latest.reviewMove && latest.reviewMove.classificationLabel ? latest.reviewMove.classificationLabel : '거절된 수' }}</strong>
+      <div>내가 둔 수: <code>{{ latest.userMove }}</code> · 엔진 추천 수: <code>{{ latest.engineBestMove }}</code></div>
+      <div>평가치: {{ evalText(latest.evaluationBefore) }} → {{ evalText(latest.evaluationAfter) }}</div>
+      <div>손해: <b>{{ latest.cpLoss }}CP</b> · <b>{{ latest.pointLoss.toFixed(1) }}점</b><span v-if="latest.rawCpLoss !== latest.cpLoss"> · 원본 {{ latest.rawCpLoss }}CP</span></div>
+      <div>판정 방식: {{ modeLabel(latest.evaluationMode) }} · 깊이 {{ latest.verificationDepth || '?' }}</div>
       <div v-if="latest.pv">PV: <code>{{ latest.pv }}</code></div>
-      <button v-if="latest.responseReviewMove" class="preview-btn" @mouseenter.stop="previewResponse(latest)" @mouseleave.stop="previewEntry(latest)">Preview opponent response: {{ latest.opponentBestResponse }}</button>
+      <button v-if="latest.responseReviewMove" class="preview-btn" @mouseenter.stop="previewResponse(latest)" @mouseleave.stop="previewEntry(latest)">상대 예상 응수: {{ latest.opponentBestResponse }}</button>
     </div>
     <div class="stats">
-      <b>Statistics</b><span>Total {{ stats.totalMistakes }}</span><span>Avg {{ stats.averageCpLoss }}cp / {{ points(stats.averageCpLoss) }} points</span><span>Largest {{ stats.largestMistake }}cp / {{ points(stats.largestMistake) }} points</span><span>Trend {{ stats.improvementOverTime }}cp</span>
+      <b>통계</b><span>전체 {{ stats.totalMistakes }}</span><span>평균 {{ stats.averageCpLoss }}CP / {{ points(stats.averageCpLoss) }}점</span><span>최대 {{ stats.largestMistake }}CP / {{ points(stats.largestMistake) }}점</span><span>추세 {{ stats.improvementOverTime }}CP</span>
     </div>
     <div class="piece-stats"><span v-for="row in pieceRows" :key="row.piece">{{ row.piece }} {{ row.percent }}%</span></div>
     <details class="notebook" open>
-      <summary>실수 노트 / Mistake Notebook ({{ notebook.length }})</summary>
-      <button class="clear" @click="clearNotebook">Clear notebook</button>
-      <button class="clear" @click="toggleAllEntries">{{ allEntriesExpanded ? 'Collapse all' : 'Expand all' }}</button>
+      <summary>실수 노트 ({{ notebook.length }})</summary>
+      <button class="clear" @click="clearNotebook">노트 비우기</button>
+      <button class="clear" @click="toggleAllEntries">{{ allEntriesExpanded ? '전체 접기' : '전체 펼치기' }}</button>
       <div class="compact-list">
         <article v-for="entry in notebook.slice(0, 25)" :key="entry.id" class="entry review-move compact-entry" :class="[entry.moveQualityColor, { expanded: isEntryExpanded(entry) }]" @mouseenter="previewEntry(entry)" @mouseleave="clearPreview" @click="toggleEntry(entry)">
-          <header><span class="entry-icon">{{ entryIcon(entry) }}</span><b>{{ entry.userMove }}</b><span>{{ entry.cpLoss }}cp</span><small>{{ entry.pieceType }}</small></header>
-          <div class="compact-line">best <code>{{ entry.engineBestMove }}</code> · {{ evalText(entry.evaluationBefore) }} → {{ evalText(entry.evaluationAfter) }}</div>
+          <header><span class="entry-icon">{{ entryIcon(entry) }}</span><b>{{ entry.userMove }}</b><span>{{ entry.cpLoss }}CP</span><small>{{ entry.pieceType }}</small></header>
+          <div class="compact-line">추천 <code>{{ entry.engineBestMove }}</code> · {{ evalText(entry.evaluationBefore) }} → {{ evalText(entry.evaluationAfter) }}</div>
           <template v-if="isEntryExpanded(entry)">
             <div>{{ entry.reviewMove && entry.reviewMove.classificationLabel ? entry.reviewMove.classificationLabel : entry.pattern }} · {{ entry.timestamp }}</div>
-            <div><code>{{ entry.userMove }}</code> rejected; best <code>{{ entry.engineBestMove }}</code></div>
-            <div>{{ entry.cpLoss }}cp / {{ entry.pointLoss.toFixed(1) }} points · {{ evalText(entry.evaluationBefore) }} → {{ evalText(entry.evaluationAfter) }}</div>
-            <button v-if="entry.responseReviewMove" class="preview-btn" @click.stop @mouseenter.stop="previewResponse(entry)" @mouseleave.stop="previewEntry(entry)">응수 미리보기 {{ entry.opponentBestResponse }}</button>
+            <div><code>{{ entry.userMove }}</code> 거절 · 추천 <code>{{ entry.engineBestMove }}</code></div>
+            <div>{{ entry.cpLoss }}CP / {{ entry.pointLoss.toFixed(1) }}점 · {{ evalText(entry.evaluationBefore) }} → {{ evalText(entry.evaluationAfter) }}</div>
+            <button v-if="entry.responseReviewMove" class="preview-btn" @click.stop @mouseenter.stop="previewResponse(entry)" @mouseleave.stop="previewEntry(entry)">상대 예상 응수 {{ entry.opponentBestResponse }}</button>
             <small>{{ entry.position }}</small>
           </template>
         </article>
@@ -123,7 +123,7 @@ export default {
       const preset = (this.chaosValidationPresets || []).find(p => p.name === name)
       this.updateChaosValidation(preset ? { preset: preset.name, stage1Depth: preset.stage1Depth, stage2Depth: preset.stage2Depth } : { preset: name })
     },
-    clearNotebook () { if (confirm('Clear the mistake notebook?')) this.$store.dispatch('clearMistakeNotebook') },
+    clearNotebook () { if (confirm('실수 노트를 비울까요?')) this.$store.dispatch('clearMistakeNotebook') },
     previewEntry (entry) {
       if (entry && entry.reviewMove && entry.reviewMove.previewFen) this.$store.dispatch('previewReviewMove', entry.reviewMove)
     },
@@ -132,7 +132,7 @@ export default {
     },
     clearPreview () { this.$store.dispatch('clearReviewPreview') },
     points (cp) { return ((Number(cp) || 0) / 100).toFixed(1) },
-    modeLabel (mode) { return mode === 'perfect' ? 'Perfect Prevention' : (mode === 'flexible' ? 'Flexible / Human Practical' : 'Practical Prevention') },
+    modeLabel (mode) { return mode === 'perfect' ? '완전 판정' : (mode === 'flexible' ? '유연 실전 판정' : '실전 판정') },
     entryKey (entry) { return entry.id || `${entry.timestamp}-${entry.userMove}` },
     isEntryExpanded (entry) { return this.allEntriesExpanded || !!this.expandedEntries[this.entryKey(entry)] },
     toggleEntry (entry) { this.$set(this.expandedEntries, this.entryKey(entry), !this.isEntryExpanded(entry)) },

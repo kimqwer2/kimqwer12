@@ -1841,7 +1841,6 @@ export const store = new Vuex.Store({
     playVsEngineHumanSide: 'white',
     engineTimeControlsEnabled: false,
     engineTimeControlMode: 'depth', // depth | movesInTime | increment | perMove
-    engineThinkingDepth: 15,
     engineTimeControlConfig: {
       movesInTime: { moves: 40, minutes: 5 },
       increment: { baseMinutes: 5, incrementSeconds: 3 },
@@ -2048,7 +2047,7 @@ export const store = new Vuex.Store({
       orderNumbers: true,
       orderThickness: true,
       orderOpacity: true,
-      analysisTargetDepth: 'infinite',
+      analysisTargetDepth: '15',
       visualizationMode: 'arrow',
       analysisModeType: 'normal',
       deepCandidateCount: 3,
@@ -2321,10 +2320,6 @@ export const store = new Vuex.Store({
     },
     engineTimeControlMode (state, payload) {
       state.engineTimeControlMode = payload || 'depth'
-    },
-    engineThinkingDepth (state, payload) {
-      state.engineThinkingDepth = Math.max(1, Math.min(99, Number(payload) || 15))
-      try { localStorage.setItem('engineThinkingDepth', String(state.engineThinkingDepth)) } catch (err) {}
     },
     engineTimeControlConfig (state, payload) {
       state.engineTimeControlConfig = {
@@ -3078,9 +3073,6 @@ export const store = new Vuex.Store({
       if (localStorage.evalPlotDepth) {
         context.state.evalPlotDepth = localStorage.evalPlotDepth
       }
-      if (localStorage.engineThinkingDepth) {
-        context.commit('engineThinkingDepth', Number(localStorage.engineThinkingDepth) || 15)
-      }
       if (localStorage.darkMode) {
         if (localStorage.darkMode === 'true') {
           context.commit('switchDarkMode')
@@ -3374,19 +3366,15 @@ export const store = new Vuex.Store({
       context.commit('engineTimeControlMode', payload)
       context.commit('engineSideClockMs', null)
     },
-    setEngineThinkingDepth (context, payload) {
-      context.commit('engineThinkingDepth', payload)
-    },
     setEngineTimeControlConfig (context, payload) {
       context.commit('engineTimeControlConfig', payload)
     },
     computeEngineSearchLimits (context, payload = {}) {
       if (!context.state.engineTimeControlsEnabled || context.state.engineTimeControlMode === 'depth') {
-        const analysisSearch = payload.source === 'analysis'
-        const targetDepth = analysisSearch ? context.state.analysisVisualization.analysisTargetDepth : context.state.engineThinkingDepth
-        const goCmd = analysisSearch && targetDepth === 'infinite' && !payload.depth
-          ? 'go infinite'
-          : `go depth ${payload.depth || Math.max(1, Number(targetDepth) || 15)}`
+        const targetDepth = context.state.analysisVisualization.analysisTargetDepth
+        const goCmd = (payload.depth || (targetDepth !== 'infinite' && Number.isFinite(Number(targetDepth))))
+          ? `go depth ${payload.depth || Number(targetDepth)}`
+          : 'go infinite'
         return { goCmd }
       }
 
@@ -6195,9 +6183,6 @@ export const store = new Vuex.Store({
     },
     engineTimeControlMode (state) {
       return state.engineTimeControlMode
-    },
-    engineThinkingDepth (state) {
-      return state.engineThinkingDepth || 15
     },
     engineTimeControlConfig (state) {
       return state.engineTimeControlConfig
