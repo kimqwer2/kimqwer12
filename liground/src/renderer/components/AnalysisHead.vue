@@ -181,6 +181,7 @@
     <div class="engine-time-controls">
       <label><input v-model="engineTimeControlsEnabled" type="checkbox" @change="onEngineTimeControlsToggle"> Use Engine Time Controls</label>
       <span class="engine-time-note">Engine-only clock. Human time is unlimited.</span>
+      <label>Engine Thinking Depth <input v-model.number="engineThinkingDepth" class="engine-depth-input" min="1" max="99" type="number" @change="onEngineThinkingDepthChange"></label>
       <select v-model="engineTimeControlMode" class="engineManualBtn" @change="onEngineTimeModeChange">
         <option value="depth">Depth</option>
         <option value="movesInTime">Moves in Time</option>
@@ -269,6 +270,7 @@ export default {
       playVsEngineHumanSide: 'white',
       engineTimeControlsEnabled: false,
       engineTimeControlMode: 'depth',
+      engineThinkingDepth: 15,
       movesInTimeMoves: 40,
       movesInTimeMinutes: 5,
       incrementBaseMinutes: 5,
@@ -307,6 +309,11 @@ export default {
         gameLength: null
       }
     }
+  },
+  mounted () {
+    this.engineThinkingDepth = this.$store.getters.engineThinkingDepth || this.engineThinkingDepth
+    this.engineTimeControlsEnabled = this.$store.getters.engineTimeControlsEnabled || false
+    this.engineTimeControlMode = this.$store.getters.engineTimeControlMode || this.engineTimeControlMode
   },
   beforeDestroy () {
     if (this.autoPlayTimer) {
@@ -446,6 +453,9 @@ export default {
     },
     onEngineTimeModeChange () {
       this.$store.dispatch('setEngineTimeControlMode', this.engineTimeControlMode)
+    },
+    onEngineThinkingDepthChange () {
+      this.$store.dispatch('setEngineThinkingDepth', this.engineThinkingDepth)
     },
     syncEngineTimeConfig () {
       this.$store.dispatch('setEngineTimeControlConfig', {

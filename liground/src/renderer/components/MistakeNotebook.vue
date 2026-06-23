@@ -15,8 +15,9 @@
       </label>
       <label>Prevention
         <select :value="settings.evaluationMode || 'practical'" @change="update({ evaluationMode: $event.target.value })">
-          <option value="practical">Practical Prevention</option>
           <option value="perfect">Perfect Prevention</option>
+          <option value="practical">Practical Prevention</option>
+          <option value="flexible">Flexible / Human Practical</option>
         </select>
       </label>
       <label>Verification depth
@@ -30,7 +31,31 @@
           <option v-for="level in levels" :key="level.name" :value="level.name">{{ level.name }} · max {{ level.thresholdCp }}cp</option>
         </select>
       </label>
-      <label v-if="settings.opponentTraining"><input :checked="settings.chaosTraining" type="checkbox" @change="update({ chaosTraining: $event.target.checked })"> Chaos Training</label>
+      <label v-if="settings.opponentTraining">Chaos mode
+        <select :value="settings.chaosMode || (settings.chaosTraining ? 'search' : 'off')" @change="update({ chaosMode: $event.target.value })">
+          <option value="off">Off</option>
+          <option value="fast">Chaos Fast</option>
+          <option value="search">Chaos Search</option>
+        </select>
+      </label>
+      <label v-if="settings.opponentTraining">Engine prevention
+        <select :value="settings.opponentPreventionMode || 'off'" @change="update({ opponentPreventionMode: $event.target.value })">
+          <option value="off">Off</option>
+          <option value="perfect">Perfect Engine</option>
+          <option value="practical">Practical Engine</option>
+          <option value="flexible">Flexible Engine</option>
+        </select>
+      </label>
+      <template v-if="settings.opponentTraining && (settings.chaosMode || (settings.chaosTraining ? 'search' : 'off')) !== 'off'">
+        <label>Chaos validation
+          <select :value="chaosValidation.preset" @change="updateChaosPreset($event.target.value)">
+            <option v-for="preset in chaosValidationPresets" :key="preset.name" :value="preset.name">{{ preset.name }} · {{ preset.stage1Depth }}/{{ preset.stage2Depth }}</option>
+          </select>
+        </label>
+        <label>Stage 1 depth <input class="small-input" :value="chaosValidation.stage1Depth" min="1" max="20" type="number" @change="updateChaosValidation({ stage1Depth: Number($event.target.value) })"></label>
+        <label>Stage 2 depth <input class="small-input" :value="chaosValidation.stage2Depth" min="1" max="24" type="number" @change="updateChaosValidation({ stage2Depth: Number($event.target.value) })"></label>
+        <label>Max attempts <input class="small-input" :value="chaosValidation.maxAttempts" min="1" max="80" type="number" @change="updateChaosValidation({ maxAttempts: Number($event.target.value) })"></label>
+      </template>
       <span v-if="pending" class="pending">Coach is checking the move…</span>
     </div>
     <div v-if="latest" class="lesson" :class="latest.moveQualityColor" @mouseenter="previewEntry(latest)" @mouseleave="clearPreview">
@@ -49,13 +74,20 @@
     <details class="notebook" open>
       <summary>실수 노트 / Mistake Notebook ({{ notebook.length }})</summary>
       <button class="clear" @click="clearNotebook">Clear notebook</button>
-      <article v-for="entry in notebook.slice(0, 25)" :key="entry.id" class="entry review-move" :class="entry.moveQualityColor" @mouseenter="previewEntry(entry)" @mouseleave="clearPreview">
-        <header>{{ entry.reviewMove && entry.reviewMove.classificationLabel ? entry.reviewMove.classificationLabel : entry.pattern }} · {{ entry.pieceType }} · {{ entry.timestamp }}</header>
-        <div><code>{{ entry.userMove }}</code> rejected; best <code>{{ entry.engineBestMove }}</code></div>
-        <div>{{ entry.cpLoss }}cp / {{ entry.pointLoss.toFixed(1) }} points · {{ evalText(entry.evaluationBefore) }} → {{ evalText(entry.evaluationAfter) }}</div>
-        <button v-if="entry.responseReviewMove" class="preview-btn" @mouseenter.stop="previewResponse(entry)" @mouseleave.stop="previewEntry(entry)">응수 미리보기 {{ entry.opponentBestResponse }}</button>
-        <small>{{ entry.position }}</small>
-      </article>
+      <button class="clear" @click="toggleAllEntries">{{ allEntriesExpanded ? 'Collapse all' : 'Expand all' }}</button>
+      <div class="compact-list">
+        <article v-for="entry in notebook.slice(0, 25)" :key="entry.id" class="entry review-move compact-entry" :class="[entry.moveQualityColor, { expanded: isEntryExpanded(entry) }]" @mouseenter="previewEntry(entry)" @mouseleave="clearPreview" @click="toggleEntry(entry)">
+          <header><span class="entry-icon">{{ entryIcon(entry) }}</span><b>{{ entry.userMove }}</b><span>{{ entry.cpLoss }}cp</span><small>{{ entry.pieceType }}</small></header>
+          <div class="compact-line">best <code>{{ entry.engineBestMove }}</code> · {{ evalText(entry.evaluationBefore) }} → {{ evalText(entry.evaluationAfter) }}</div>
+          <template v-if="isEntryExpanded(entry)">
+            <div>{{ entry.reviewMove && entry.reviewMove.classificationLabel ? entry.reviewMove.classificationLabel : entry.pattern }} · {{ entry.timestamp }}</div>
+            <div><code>{{ entry.userMove }}</code> rejected; best <code>{{ entry.engineBestMove }}</code></div>
+            <div>{{ entry.cpLoss }}cp / {{ entry.pointLoss.toFixed(1) }} points · {{ evalText(entry.evaluationBefore) }} → {{ evalText(entry.evaluationAfter) }}</div>
+            <button v-if="entry.responseReviewMove" class="preview-btn" @click.stop @mouseenter.stop="previewResponse(entry)" @mouseleave.stop="previewEntry(entry)">응수 미리보기 {{ entry.opponentBestResponse }}</button>
+            <small>{{ entry.position }}</small>
+          </template>
+        </article>
+      </div>
     </details>
   </section>
 </template>
@@ -64,14 +96,15 @@ import { mapGetters } from 'vuex'
 export default {
   name: 'MistakeNotebook',
   data () {
-    return { verificationDepths: [10, 12, 14, 16, 18, 20] }
+    return { verificationDepths: [10, 12, 14, 16, 18, 20], expandedEntries: {}, allEntriesExpanded: false }
   },
   beforeDestroy () {
     this.clearPreview()
   },
   computed: {
-    ...mapGetters(['mistakePrevention', 'mistakePreventionLevels', 'mistakeNotebook', 'mistakeStatistics', 'mistakePreventionPending']),
+    ...mapGetters(['mistakePrevention', 'mistakePreventionLevels', 'chaosValidationPresets', 'mistakeNotebook', 'mistakeStatistics', 'mistakePreventionPending']),
     settings () { return this.mistakePrevention || {} },
+    chaosValidation () { return this.settings.chaosValidation || { preset: 'Normal', stage1Depth: 4, stage2Depth: 10, maxAttempts: 24 } },
     levels () { return this.mistakePreventionLevels || [] },
     notebook () { return this.mistakeNotebook || [] },
     stats () { return this.mistakeStatistics || {} },
@@ -84,6 +117,11 @@ export default {
   },
   methods: {
     update (payload) { this.$store.dispatch('setMistakePreventionSettings', payload) },
+    updateChaosValidation (payload) { this.update({ chaosValidation: { ...this.chaosValidation, ...payload } }) },
+    updateChaosPreset (name) {
+      const preset = (this.chaosValidationPresets || []).find(p => p.name === name)
+      this.updateChaosValidation(preset ? { preset: preset.name, stage1Depth: preset.stage1Depth, stage2Depth: preset.stage2Depth } : { preset: name })
+    },
     clearNotebook () { if (confirm('Clear the mistake notebook?')) this.$store.dispatch('clearMistakeNotebook') },
     previewEntry (entry) {
       if (entry && entry.reviewMove && entry.reviewMove.previewFen) this.$store.dispatch('previewReviewMove', entry.reviewMove)
@@ -93,7 +131,12 @@ export default {
     },
     clearPreview () { this.$store.dispatch('clearReviewPreview') },
     points (cp) { return ((Number(cp) || 0) / 100).toFixed(1) },
-    modeLabel (mode) { return mode === 'perfect' ? 'Perfect Prevention' : 'Practical Prevention' },
+    modeLabel (mode) { return mode === 'perfect' ? 'Perfect Prevention' : (mode === 'flexible' ? 'Flexible / Human Practical' : 'Practical Prevention') },
+    entryKey (entry) { return entry.id || `${entry.timestamp}-${entry.userMove}` },
+    isEntryExpanded (entry) { return this.allEntriesExpanded || !!this.expandedEntries[this.entryKey(entry)] },
+    toggleEntry (entry) { this.$set(this.expandedEntries, this.entryKey(entry), !this.isEntryExpanded(entry)) },
+    toggleAllEntries () { this.allEntriesExpanded = !this.allEntriesExpanded; if (!this.allEntriesExpanded) this.expandedEntries = {} },
+    entryIcon (entry) { return entry.cpLoss >= 300 ? '!!' : (entry.cpLoss >= 150 ? '!' : '•') },
     evalText (cp) {
       if (cp === null || cp === undefined) return '?'
       const v = (Number(cp) / 100).toFixed(2)
@@ -108,6 +151,7 @@ export default {
 .mistake-header { justify-content: space-between; }
 h3 { margin: 0; }
 select { margin-left: 6px; }
+.small-input { width: 58px; margin-left: 6px; }
 .pending { color: #c28500; font-weight: bold; }
 .lesson, .entry { border-left: 5px solid #888; margin: 8px 0; padding: 8px; background: rgba(0,0,0,.06); }
 .review-move:hover, .lesson:hover { outline: 2px solid rgba(114, 137, 218, .55); cursor: pointer; }
@@ -115,5 +159,11 @@ select { margin-left: 6px; }
 .stats span, .piece-stats span { padding: 3px 6px; border-radius: 10px; background: rgba(127,127,127,.16); }
 .preview-btn, .clear { margin: 6px 0; }
 .entry small { display: block; word-break: break-all; opacity: .7; }
+.compact-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 6px; }
+.compact-entry { margin: 0; padding: 6px; min-height: 44px; }
+.compact-entry header { display: flex; gap: 6px; align-items: center; justify-content: space-between; }
+.entry-icon { font-weight: bold; min-width: 18px; }
+.compact-line { font-size: 12px; opacity: .85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.compact-entry.expanded { grid-column: 1 / -1; }
 code { white-space: pre-wrap; }
 </style>

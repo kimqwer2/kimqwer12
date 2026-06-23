@@ -19,7 +19,8 @@
     <label><input v-model="local.orderNumbers" type="checkbox" @change="save"> 순번 표시</label>
     <label><input v-model="local.orderThickness" type="checkbox" @change="save"> 두께 반영</label>
     <label><input v-model="local.orderOpacity" type="checkbox" @change="save"> 투명도 반영</label>
-    <label>일반 분석 목표 깊이
+    <label>Analysis Mode Depth (Ctrl+A)
+      <input v-if="targetDepth !== 'infinite'" v-model="targetDepth" min="1" max="99" type="number" @change="saveTarget">
       <select v-model="targetDepth" @change="saveTarget"><option value="infinite">무제한</option><option value="10">10</option><option value="15">15</option><option value="20">20</option><option value="25">25</option></select>
     </label>
 
