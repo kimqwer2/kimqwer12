@@ -19,8 +19,9 @@
     <label><input v-model="local.orderNumbers" type="checkbox" @change="save"> 순번 표시</label>
     <label><input v-model="local.orderThickness" type="checkbox" @change="save"> 두께 반영</label>
     <label><input v-model="local.orderOpacity" type="checkbox" @change="save"> 투명도 반영</label>
-    <label>일반 분석 목표 깊이
-      <select v-model="targetDepth" @change="saveTarget"><option value="infinite">무제한</option><option value="10">10</option><option value="15">15</option><option value="20">20</option><option value="25">25</option></select>
+
+    <label>분석 목표 깊이
+      <select v-model="targetDepth" @change="saveTarget"><option value="infinite">무제한</option><option value="10">10</option><option value="15">15</option><option value="20">20</option><option value="25">25</option><option value="30">30</option><option value="35">35</option><option value="40">40</option></select>
     </label>
 
     <details class="deep-advanced">
@@ -214,7 +215,7 @@ import { copyTextReliable } from '../../shared/clipboard'
 
 export default {
   name: 'AnalysisVisualizationSettings',
-  data: () => ({ local: {}, depthMode: '12', targetDepth: 'infinite', openingBookLocal: {}, poolBulkText: '', cleanupMinDepth: 12, pendingImportMode: 'replace' }),
+  data: () => ({ local: {}, depthMode: '12', targetDepth: '15', openingBookLocal: {}, poolBulkText: '', cleanupMinDepth: 12, pendingImportMode: 'replace' }),
   computed: {
     cfg () { return this.$store.getters.analysisVisualization },
     deepAnalysis () { return this.$store.getters.deepAnalysis },
@@ -239,7 +240,7 @@ export default {
       handler () {
         this.local = { ...this.cfg }
         this.depthMode = this.cfg.trajectoryUnlimited ? 'unlimited' : String(this.cfg.trajectoryDepth)
-        this.targetDepth = this.cfg.analysisTargetDepth || 'infinite'
+        this.targetDepth = this.cfg.analysisTargetDepth || '15'
       }
     },
     openingBook: {

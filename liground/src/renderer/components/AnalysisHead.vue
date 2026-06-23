@@ -308,6 +308,10 @@ export default {
       }
     }
   },
+  mounted () {
+    this.engineTimeControlsEnabled = this.$store.getters.engineTimeControlsEnabled || false
+    this.engineTimeControlMode = this.$store.getters.engineTimeControlMode || this.engineTimeControlMode
+  },
   beforeDestroy () {
     if (this.autoPlayTimer) {
       clearInterval(this.autoPlayTimer)

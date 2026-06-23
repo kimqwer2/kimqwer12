@@ -170,6 +170,8 @@ const CHAOS_VALIDATION_PRESETS = [
 ]
 
 const DEFAULT_CHAOS_VALIDATION = { preset: 'Normal', stage1Depth: 4, stage2Depth: 10, maxAttempts: 24 }
+const CHAOS_MODES = ['off', 'fast', 'search']
+const PREVENTION_MODES = ['perfect', 'practical', 'flexible']
 
 function normalizeChaosValidationSettings (settings = {}) {
   const preset = CHAOS_VALIDATION_PRESETS.find(p => p.name === settings.preset) || CHAOS_VALIDATION_PRESETS[1]
@@ -243,16 +245,18 @@ function humanLikeTargetLoss (maxLoss, chaos = false) {
   return Math.round(shaped * Math.max(0, maxLoss))
 }
 
-function practicalCpLoss ({ rawCpLoss, beforeCp, userCp }) {
+function practicalCpLoss ({ rawCpLoss, beforeCp, userCp, mode = 'practical' }) {
+  if (mode === 'perfect') return rawCpLoss
   if (beforeCp === null || userCp === null) return rawCpLoss
   if (userCp >= beforeCp) return 0
-  if (userCp >= 300) return Math.max(0, rawCpLoss - 250)
-  if (beforeCp > 0 && userCp >= 100) return Math.max(0, rawCpLoss - 150)
-  if (beforeCp >= 0 && userCp >= 0) return Math.max(0, rawCpLoss - 75)
+  const flexible = mode === 'flexible'
+  if (userCp >= 300) return Math.max(0, rawCpLoss - (flexible ? 350 : 250))
+  if (beforeCp > 0 && userCp >= 100) return Math.max(0, rawCpLoss - (flexible ? 225 : 150))
+  if (beforeCp >= 0 && userCp >= 0) return Math.max(0, rawCpLoss - (flexible ? 125 : 75))
   return rawCpLoss
 }
 
-async function selectTrainingOpponentMove ({ engineInstance, fen, variant, is960, level, chaos = false, chaosValidation }) {
+async function selectTrainingOpponentMove ({ engineInstance, fen, variant, is960, level, chaos = false, chaosMode = 'off', chaosValidation, preventionMode = 'off' }) {
   const configuredMaxLoss = Math.max(0, Number(level && level.thresholdCp) || 300)
   const maxLoss = phaseAdjustedMaxLoss(configuredMaxLoss, fen, chaos)
   let board
@@ -264,8 +268,10 @@ async function selectTrainingOpponentMove ({ engineInstance, fen, variant, is960
   const bestRaw = await engineInstance.evaluate(fen, chaos ? validation.stage2Depth : 6)
   const bestCp = parseEngineScoreToCp(bestRaw)
   if (bestCp === null) return null
+  if (!chaos && preventionMode === 'perfect') return null
 
   if (chaos) {
+    const searchChaos = chaosMode !== 'fast'
     const targetLoss = humanLikeTargetLoss(maxLoss, true)
     const attempts = validation.maxAttempts
     const candidates = []
@@ -276,12 +282,16 @@ async function selectTrainingOpponentMove ({ engineInstance, fen, variant, is960
         const stage1 = await evaluateTrainingCandidate({ engineInstance, fen, variant, is960, move, bestCp, depth: validation.stage1Depth })
         if (!stage1 || stage1.cpLoss > maxLoss) continue
         const stage2 = await evaluateTrainingCandidate({ engineInstance, fen, variant, is960, move, bestCp, depth: validation.stage2Depth })
-        if (stage2 && stage2.cpLoss <= maxLoss) candidates.push({ ...stage2, stage1CpLoss: stage1.cpLoss })
+        if (stage2 && stage2.cpLoss <= maxLoss) {
+          const accepted = { ...stage2, stage1CpLoss: stage1.cpLoss }
+          if (!searchChaos) return { ...accepted, targetLoss, maxLoss, configuredMaxLoss, openingProtected: false, sampled: i + 1, validation, chaosMode }
+          candidates.push(accepted)
+        }
       } catch (err) {}
     }
     if (candidates.length) {
       candidates.sort((a, b) => scoreTrainingCandidate(a, targetLoss, true) - scoreTrainingCandidate(b, targetLoss, true))
-      return { ...candidates[0], targetLoss, maxLoss, configuredMaxLoss, openingProtected: false, sampled: attempts, validation }
+      return { ...candidates[0], targetLoss, maxLoss, configuredMaxLoss, openingProtected: false, sampled: attempts, validation, chaosMode }
     }
 
     const fallback = []
@@ -294,7 +304,7 @@ async function selectTrainingOpponentMove ({ engineInstance, fen, variant, is960
     }
     if (!fallback.length) return null
     fallback.sort((a, b) => scoreTrainingCandidate(a, targetLoss, true) - scoreTrainingCandidate(b, targetLoss, true))
-    return { ...fallback[0], targetLoss, maxLoss, configuredMaxLoss, openingProtected: false, sampled: attempts, validation, fallback: true }
+    return { ...fallback[0], targetLoss, maxLoss, configuredMaxLoss, openingProtected: false, sampled: attempts, validation, chaosMode, fallback: true }
   }
 
   const sampleSize = Math.min(moves.length, Math.max(8, Math.ceil(Math.sqrt(moves.length) * 3)))
@@ -303,12 +313,15 @@ async function selectTrainingOpponentMove ({ engineInstance, fen, variant, is960
   for (const move of shuffled.slice(0, sampleSize)) {
     try {
       const candidate = await evaluateTrainingCandidate({ engineInstance, fen, variant, is960, move, bestCp, depth: 3 })
-      if (candidate && candidate.cpLoss <= maxLoss) candidates.push(candidate)
+      if (candidate) {
+        const effectiveLoss = preventionMode === 'off' ? candidate.cpLoss : practicalCpLoss({ rawCpLoss: candidate.cpLoss, beforeCp: bestCp, userCp: candidate.estimatedForMover, mode: preventionMode })
+        if (effectiveLoss <= maxLoss) candidates.push({ ...candidate, effectiveLoss })
+      }
     } catch (err) {}
   }
   if (!candidates.length) return null
   const targetLoss = humanLikeTargetLoss(maxLoss, chaos)
-  candidates.sort((a, b) => scoreTrainingCandidate(a, targetLoss, chaos) - scoreTrainingCandidate(b, targetLoss, chaos))
+  candidates.sort((a, b) => scoreTrainingCandidate({ ...a, cpLoss: a.effectiveLoss === undefined ? a.cpLoss : a.effectiveLoss }, targetLoss, chaos) - scoreTrainingCandidate({ ...b, cpLoss: b.effectiveLoss === undefined ? b.cpLoss : b.effectiveLoss }, targetLoss, chaos))
   return { ...candidates[0], targetLoss, maxLoss, configuredMaxLoss, openingProtected: maxLoss < configuredMaxLoss, sampled: candidates.length }
 }
 
@@ -1804,7 +1817,7 @@ export const store = new Vuex.Store({
     PvELimiter: null, // stores the limiter config for the PvE engine
     PvEEngineInstance: null,
     humanTrapDiagnostics: null,
-    mistakePrevention: { enabled: false, levelName: '중급', thresholdCp: 300, opponentTraining: false, opponentLevelName: '중급', evaluationMode: 'practical', verificationDepth: 14, chaosTraining: false, chaosValidation: DEFAULT_CHAOS_VALIDATION },
+    mistakePrevention: { enabled: false, levelName: '중급', thresholdCp: 300, opponentTraining: false, opponentLevelName: '중급', evaluationMode: 'practical', verificationDepth: 14, chaosTraining: false, chaosMode: 'off', chaosValidation: DEFAULT_CHAOS_VALIDATION, opponentPreventionMode: 'off' },
     mistakeNotebook: [],
     mistakePreventionPending: false,
     enginePersonalityDebug: {
@@ -2034,7 +2047,7 @@ export const store = new Vuex.Store({
       orderNumbers: true,
       orderThickness: true,
       orderOpacity: true,
-      analysisTargetDepth: 'infinite',
+      analysisTargetDepth: '15',
       visualizationMode: 'arrow',
       analysisModeType: 'normal',
       deepCandidateCount: 3,
@@ -2194,9 +2207,11 @@ export const store = new Vuex.Store({
       const level = MISTAKE_PREVENTION_LEVELS.find(l => l.name === next.levelName) || MISTAKE_PREVENTION_LEVELS.find(l => l.thresholdCp === Number(next.thresholdCp)) || MISTAKE_PREVENTION_LEVELS[2]
       next.levelName = level.name
       next.thresholdCp = level.thresholdCp
-      next.evaluationMode = next.evaluationMode === 'perfect' ? 'perfect' : 'practical'
+      next.evaluationMode = PREVENTION_MODES.includes(next.evaluationMode) ? next.evaluationMode : 'practical'
       next.verificationDepth = Math.max(10, Math.min(20, Number(next.verificationDepth) || 14))
-      next.chaosTraining = !!next.chaosTraining
+      next.chaosMode = CHAOS_MODES.includes(next.chaosMode) ? next.chaosMode : (next.chaosTraining ? 'search' : 'off')
+      next.chaosTraining = next.chaosMode !== 'off'
+      next.opponentPreventionMode = ['off'].concat(PREVENTION_MODES).includes(next.opponentPreventionMode) ? next.opponentPreventionMode : 'off'
       next.chaosValidation = normalizeChaosValidationSettings(next.chaosValidation || DEFAULT_CHAOS_VALIDATION)
       if (!next.opponentLevelName) next.opponentLevelName = next.levelName
       state.mistakePrevention = next
@@ -3119,8 +3134,9 @@ export const store = new Vuex.Store({
       const beforeCp = scoreToCpForStore(best)
       const userCp = scoreToCpForStore(user)
       const rawCpLoss = beforeCp === null || userCp === null ? 0 : Math.max(0, beforeCp - userCp)
-      const cpLoss = settings.evaluationMode === 'perfect' ? rawCpLoss : practicalCpLoss({ rawCpLoss, beforeCp, userCp })
-      return { root, best, user, after, beforeCp, userCp, cpLoss, rawCpLoss, evaluationMode: settings.evaluationMode === 'perfect' ? 'perfect' : 'practical', verificationDepth: depth }
+      const mode = PREVENTION_MODES.includes(settings.evaluationMode) ? settings.evaluationMode : 'practical'
+      const cpLoss = practicalCpLoss({ rawCpLoss, beforeCp, userCp, mode })
+      return { root, best, user, after, beforeCp, userCp, cpLoss, rawCpLoss, evaluationMode: mode, verificationDepth: depth }
     },
     async recordRejectedMistake (context, { fen, move, analysis }) {
       const bestMove = (analysis.best && analysis.best.ucimove) || (analysis.root && analysis.root.root && analysis.root.root.bestmove) || ''
@@ -3389,7 +3405,7 @@ export const store = new Vuex.Store({
       // Manual analysis action: think on the exact current board state without playing a move.
       context.dispatch('position')
       context.dispatch('stopEngine')
-      context.dispatch('goEngine', payload)
+      context.dispatch('goEngine', { ...payload, source: 'analysis' })
     },
     async playSingleEngineMove (context, payload = {}) {
       // Manual single-action engine move:
@@ -3421,10 +3437,10 @@ export const store = new Vuex.Store({
         if (!bestmove) return
         if (context.state.mistakePrevention && context.state.mistakePrevention.opponentTraining) {
           const level = MISTAKE_PREVENTION_LEVELS.find(l => l.name === context.state.mistakePrevention.opponentLevelName) || MISTAKE_PREVENTION_LEVELS.find(l => l.name === context.state.mistakePrevention.levelName) || MISTAKE_PREVENTION_LEVELS[2]
-          const selectedTraining = await selectTrainingOpponentMove({ engineInstance: engine, fen: rootFen, variant: context.getters.variant, is960: context.getters.is960, level, chaos: context.state.mistakePrevention.chaosTraining, chaosValidation: context.state.mistakePrevention.chaosValidation })
+          const selectedTraining = await selectTrainingOpponentMove({ engineInstance: engine, fen: rootFen, variant: context.getters.variant, is960: context.getters.is960, level, chaos: context.state.mistakePrevention.chaosMode !== 'off', chaosMode: context.state.mistakePrevention.chaosMode, chaosValidation: context.state.mistakePrevention.chaosValidation, preventionMode: context.state.mistakePrevention.opponentPreventionMode })
           if (selectedTraining && selectedTraining.move && context.state.board.legalMoves().includes(selectedTraining.move) && normalizeFen(context.getters.fen) === normalizeFen(rootFen)) {
             bestmove = selectedTraining.move
-            context.commit('humanTrapDiagnostics', { mode: 'Opponent Training Strength', type: level.name, move: bestmove, cpLoss: selectedTraining.cpLoss, pointLoss: Number(pointLossString(selectedTraining.cpLoss)), reason: `${context.state.mistakePrevention.chaosTraining ? 'chaos' : 'human-like'} sampled legal move within ${selectedTraining.maxLoss}cp${selectedTraining.openingProtected ? ' (opening protected)' : ''}${selectedTraining.fallback ? ' (fallback closest target)' : ''}`, probeStats: { probes: selectedTraining.sampled }, selectedAt: Date.now() })
+            context.commit('humanTrapDiagnostics', { mode: 'Opponent Training Strength', type: level.name, move: bestmove, cpLoss: selectedTraining.cpLoss, pointLoss: Number(pointLossString(selectedTraining.cpLoss)), reason: `${context.state.mistakePrevention.chaosMode !== 'off' ? context.state.mistakePrevention.chaosMode : 'human-like'} sampled legal move within ${selectedTraining.maxLoss}cp${selectedTraining.openingProtected ? ' (opening protected)' : ''}${selectedTraining.fallback ? ' (fallback closest target)' : ''}`, probeStats: { probes: selectedTraining.sampled }, selectedAt: Date.now() })
           }
         }
         if (personality.enabled) {
