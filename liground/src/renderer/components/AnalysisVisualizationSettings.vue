@@ -19,10 +19,19 @@
     <label><input v-model="local.orderNumbers" type="checkbox" @change="save"> 순번 표시</label>
     <label><input v-model="local.orderThickness" type="checkbox" @change="save"> 두께 반영</label>
     <label><input v-model="local.orderOpacity" type="checkbox" @change="save"> 투명도 반영</label>
-    <label>Analysis Mode Depth (Ctrl+A)
-      <input v-if="targetDepth !== 'infinite'" v-model="targetDepth" min="1" max="99" type="number" @change="saveTarget">
-      <select v-model="targetDepth" @change="saveTarget"><option value="infinite">무제한</option><option value="10">10</option><option value="15">15</option><option value="20">20</option><option value="25">25</option></select>
-    </label>
+
+    <div class="depth-settings">
+      <h4>Engine / Analysis Depths</h4>
+      <label>Engine Thinking Depth
+        <input v-model.number="engineThinkingDepthLocal" min="1" max="99" type="number" @change="saveEngineThinkingDepth">
+      </label>
+      <small>Used only when the engine is making a move. Default is 15 and it is independent from Ctrl+A analysis.</small>
+      <label>Analysis Mode Depth (Ctrl+A)
+        <select v-model="analysisDepthMode" @change="saveAnalysisDepthMode"><option value="infinite">무제한</option><option value="depth">Depth</option></select>
+        <input v-if="analysisDepthMode === 'depth'" v-model.number="analysisDepthValue" min="1" max="99" type="number" @change="saveAnalysisDepthValue">
+      </label>
+      <small>Used only for manual Ctrl+A analysis. It may remain unlimited and never changes engine move depth.</small>
+    </div>
 
     <details class="deep-advanced">
       <summary>수순 리뷰 깊이</summary>
@@ -215,7 +224,7 @@ import { copyTextReliable } from '../../shared/clipboard'
 
 export default {
   name: 'AnalysisVisualizationSettings',
-  data: () => ({ local: {}, depthMode: '12', targetDepth: 'infinite', openingBookLocal: {}, poolBulkText: '', cleanupMinDepth: 12, pendingImportMode: 'replace' }),
+  data: () => ({ local: {}, depthMode: '12', targetDepth: 'infinite', analysisDepthMode: 'infinite', analysisDepthValue: 15, engineThinkingDepthLocal: 15, openingBookLocal: {}, poolBulkText: '', cleanupMinDepth: 12, pendingImportMode: 'replace' }),
   computed: {
     cfg () { return this.$store.getters.analysisVisualization },
     deepAnalysis () { return this.$store.getters.deepAnalysis },
@@ -241,6 +250,9 @@ export default {
         this.local = { ...this.cfg }
         this.depthMode = this.cfg.trajectoryUnlimited ? 'unlimited' : String(this.cfg.trajectoryDepth)
         this.targetDepth = this.cfg.analysisTargetDepth || 'infinite'
+        this.analysisDepthMode = this.targetDepth === 'infinite' ? 'infinite' : 'depth'
+        this.analysisDepthValue = Math.max(1, Number(this.targetDepth) || 15)
+        this.engineThinkingDepthLocal = this.$store.getters.engineThinkingDepth || 15
       }
     },
     openingBook: {
@@ -260,6 +272,16 @@ export default {
     },
     saveDepth () { this.local.trajectoryUnlimited = this.depthMode === 'unlimited'; if (!this.local.trajectoryUnlimited) this.local.trajectoryDepth = Number(this.depthMode); this.save() },
     saveTarget () { this.$store.dispatch('analysisVisualization', { analysisTargetDepth: this.targetDepth }) },
+    saveEngineThinkingDepth () { this.$store.dispatch('setEngineThinkingDepth', this.engineThinkingDepthLocal) },
+    saveAnalysisDepthMode () {
+      this.targetDepth = this.analysisDepthMode === 'infinite' ? 'infinite' : String(Math.max(1, Number(this.analysisDepthValue) || 15))
+      this.saveTarget()
+    },
+    saveAnalysisDepthValue () {
+      this.analysisDepthValue = Math.max(1, Number(this.analysisDepthValue) || 15)
+      this.targetDepth = String(this.analysisDepthValue)
+      this.saveTarget()
+    },
     applyReviewPreset () {
       const presets = {
         fast: { reviewDepth: 8, reviewTacticalDepth: 6, reviewStrategicHorizon: 8, reviewPunishmentLineLength: 4, reviewDetailLevel: 'compact' },
@@ -447,6 +469,10 @@ h4 { margin: 0 0 4px 0; }
 button { border: none; border-radius: 4px; padding: 6px 8px; background: #7289da; color: white; cursor: pointer; }
 button:disabled { cursor: default; opacity: 0.6; }
 small { color: var(--second-text-color, #9aa0a6); overflow-wrap: anywhere; }
+.depth-settings { margin: 10px 0; padding: 8px; border-radius: 6px; background: rgba(127,127,127,.10); display: grid; gap: 6px; }
+.depth-settings h4 { margin: 0; }
+.depth-settings input { width: 72px; margin-left: 6px; }
+.depth-settings select { margin-left: 6px; }
 .deep-box { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--main-border-color); }
 .radio-row { justify-content: flex-start; }
 .deep-error { padding: 6px; border-left: 4px solid #d7263d; background: rgba(215, 38, 61, 0.18); }

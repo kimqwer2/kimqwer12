@@ -38,14 +38,15 @@
           <option value="search">Chaos Search</option>
         </select>
       </label>
-      <label v-if="settings.opponentTraining">Engine prevention
+      <label v-if="settings.opponentTraining"><input :checked="settings.opponentPreventionMode === 'perfect'" type="checkbox" @change="update({ opponentPreventionMode: $event.target.checked ? 'perfect' : 'off' })"> Pure engine best move</label>
+      <label v-if="settings.opponentTraining && settings.opponentPreventionMode !== 'perfect'">Opponent style (non-chaos)
         <select :value="settings.opponentPreventionMode || 'off'" @change="update({ opponentPreventionMode: $event.target.value })">
-          <option value="off">Off</option>
-          <option value="perfect">Perfect Engine</option>
-          <option value="practical">Practical Engine</option>
-          <option value="flexible">Flexible Engine</option>
+          <option value="off">Strength only · CP sampled</option>
+          <option value="practical">Practical · preserves good positions</option>
+          <option value="flexible">Flexible · wider human-practical band</option>
         </select>
       </label>
+      <small v-if="settings.opponentTraining" class="mode-help">Pure engine ignores opponent level and plays the searched best move. Style modes keep the CP level but change how non-best moves are filtered.</small>
       <template v-if="settings.opponentTraining && (settings.chaosMode || (settings.chaosTraining ? 'search' : 'off')) !== 'off'">
         <label>Chaos validation
           <select :value="chaosValidation.preset" @change="updateChaosPreset($event.target.value)">
@@ -152,6 +153,7 @@ export default {
 h3 { margin: 0; }
 select { margin-left: 6px; }
 .small-input { width: 58px; margin-left: 6px; }
+.mode-help { flex-basis: 100%; opacity: .75; }
 .pending { color: #c28500; font-weight: bold; }
 .lesson, .entry { border-left: 5px solid #888; margin: 8px 0; padding: 8px; background: rgba(0,0,0,.06); }
 .review-move:hover, .lesson:hover { outline: 2px solid rgba(114, 137, 218, .55); cursor: pointer; }

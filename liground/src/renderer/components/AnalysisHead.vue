@@ -760,4 +760,5 @@ export default {
 .engine-time-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
 .engine-time-note { font-size: 12px; opacity: 0.8; }
 .engine-time-fields { display: inline-flex; gap: 4px; align-items: center; }
+.engine-depth-input { width: 64px; margin-left: 4px; }
 </style>

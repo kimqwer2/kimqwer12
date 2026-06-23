@@ -2324,6 +2324,7 @@ export const store = new Vuex.Store({
     },
     engineThinkingDepth (state, payload) {
       state.engineThinkingDepth = Math.max(1, Math.min(99, Number(payload) || 15))
+      try { localStorage.setItem('engineThinkingDepth', String(state.engineThinkingDepth)) } catch (err) {}
     },
     engineTimeControlConfig (state, payload) {
       state.engineTimeControlConfig = {
@@ -3076,6 +3077,9 @@ export const store = new Vuex.Store({
     initialize (context) {
       if (localStorage.evalPlotDepth) {
         context.state.evalPlotDepth = localStorage.evalPlotDepth
+      }
+      if (localStorage.engineThinkingDepth) {
+        context.commit('engineThinkingDepth', Number(localStorage.engineThinkingDepth) || 15)
       }
       if (localStorage.darkMode) {
         if (localStorage.darkMode === 'true') {
