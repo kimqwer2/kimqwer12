@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 """FJACE Advanced Statistical Analyzer for Janggi.
-[ 단일/다중 기보 하이브리드 AI 유사도 프로파일링 도구 - v4.3 ]
+[ 단일/다중 기보 하이브리드 AI 유사도 프로파일링 도구 - v5.2 ]
 - 기존 v3.0 코어 로직 및 UI (가이드라인, 합의 패널, 스파이크 감지, 핑거프린팅 등) 100% 보존
 - DB 연동: SQLite 기반 유저 프로파일링 및 환경(Depth/Nodes) 격리형 저장
 - 서술형 플레이 성향 리포트 제공 (공격적/수비적/기복 분석)
-- [고도화] 4단계 피드백 라벨링(AI확신~사람확신) 전면 수학적 반영 (K-NN 다중 군집 분석)
+- [B] 난이도 가중 일치율(Difficulty Weighting) 시스템 반영
+- [A/F/피드백 반영] 4중 윈도우 스캔(W=4,6,8,12) 및 그리디 비중복 억제 국지 의심도 탐색 엔진 탑재
+- [피드백 반영] 단기 윈도우 프로기사 오탐지 방지용 윈도우 크기 가중치 수학적 반영
+- [피드백 반영] "AI 확신" 등 단정적 용어 전면 제거 및 통계적/권고형 용어로 순화
+- [E] 터미널 ASCII 평가 곡선 시각화 엔진 탑재
+- [D] DB 캐싱 및 무엔진 Move Range 지정 분석 지원 (--range START:END)
 """
 
 from __future__ import annotations
@@ -15,6 +20,7 @@ import re
 import subprocess
 import sys
 import csv
+import json
 import time
 import sqlite3
 import datetime
@@ -24,7 +30,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 # ==============================================================================
-# DB 연동 및 성향 분석 / 라벨링 모듈 (Depth/Node 격리형)
+# DB 연동 및 성향 분석 / 라벨링 모듈 (Depth/Node 격리형 및 Move 보존형)
 # ==============================================================================
 DB_FILE = "janggi_profiles.db"
 
@@ -60,6 +66,26 @@ def init_db():
             avg_top1 REAL DEFAULT 0.0,
             avg_std_dev REAL DEFAULT 0.0,
             PRIMARY KEY (label_id, search_config)
+        )
+    ''')
+    # 상세 수순 캐싱용 테이블 구축 (재분석 및 멀티게임 누적용)
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS moves_v3 (
+            game_hash TEXT,
+            player_name TEXT,
+            search_config TEXT,
+            ply INTEGER,
+            san TEXT,
+            uci TEXT,
+            best_move TEXT,
+            is_top_1 INTEGER,
+            is_top_3 INTEGER,
+            eval_loss INTEGER,
+            current_eval INTEGER,
+            is_critical INTEGER,
+            is_forced INTEGER,
+            eval_gap INTEGER,
+            PRIMARY KEY (game_hash, player_name, search_config, ply)
         )
     ''')
     conn.commit()
@@ -193,8 +219,8 @@ def calibrate_with_db(nickname: str, base_prob: float, base_part_prob: float, st
         db_influence = math.sqrt(data_weight * dist_weight)
 
         target_probs = {
-            1: 95.0,  # AI 확신
-            2: 75.0,  # AI 의심
+            1: 95.0,  # 기계적 의심 높음
+            2: 75.0,  # 기계적 의심 보통
             3: 30.0,  # 사람 추정
             4:  5.0   # 사람 확신
         }
@@ -307,7 +333,23 @@ class HistoryEntry:
     start_fen: Optional[str] = None
     uci_history: List[str] = None
     game_id: int = 0
+    stability: float = 0.0
 
+    def to_dict(self) -> dict:
+        return {
+            "ply": self.ply,
+            "san": self.san,
+            "uci": self.uci,
+            "best_move": self.best_move,
+            "is_top_1": self.is_top_1,
+            "is_top_3": self.is_top_3,
+            "eval_loss": self.eval_loss,
+            "current_eval": self.current_eval,
+            "is_critical": self.is_critical,
+            "is_forced": self.is_forced,
+            "eval_gap": self.eval_gap,
+            "stability": self.stability
+        }
 @dataclass
 class TacticalBurstResult:
     score: float
@@ -366,6 +408,30 @@ class JanggiBoard:
                     self.board[(file_idx, rank)] = Piece("w" if char.isupper() else "b", char.upper())
                     file_idx += 1
         if len(parts) > 1: self._initial_color = parts[1]
+
+    def get_fen(self, ply_index: int) -> str:
+        """현재 보드 기물 배치와 차례 정보를 담은 FEN 문자열을 동적 생성합니다."""
+        fen_rows = []
+        for rank in range(9, -1, -1):
+            empty_count = 0
+            row_str = ""
+            for file in range(9):
+                piece = self.piece_at((file, rank))
+                if piece is None:
+                    empty_count += 1
+                else:
+                    if empty_count > 0:
+                        row_str += str(empty_count)
+                        empty_count = 0
+                    char = piece.kind.upper() if piece.color == "w" else piece.kind.lower()
+                    row_str += char
+            if empty_count > 0:
+                row_str += str(empty_count)
+            fen_rows.append(row_str)
+        
+        fen_board = "/".join(fen_rows)
+        active_color = self.side_to_move(ply_index)
+        return f"{fen_board} {active_color} - - 0 1"
 
     @staticmethod
     def parse_square(text: str) -> Tuple[int, int]: return FILES.index(text[0].lower()), int(text[1:])
@@ -628,16 +694,10 @@ class EngineSession:
             if time.time() - start_time > timeout:
                 raise TimeoutError(f"엔진 응답 지연 (Timeout): '{needle}'를 찾을 수 없습니다.")
 
-    def get_top_moves(self, fen: Optional[str], moves: Sequence[str], timeout: float = 60.0) -> Tuple[List[EngineMoveInfo], int]:
-        fs_moves = [to_fs_uci(m) for m in moves]
-        joined = " ".join(fs_moves)
-        
-        if fen:
-            parts = fen.split()
-            norm_fen = f"{parts[0]} {parts[1]} - - 0 1" if len(parts) >= 2 else fen
-            cmd = f"position fen {norm_fen} moves {joined}" if joined else f"position fen {norm_fen}"
-        else:
-            cmd = f"position startpos moves {joined}" if joined else "position startpos"
+    def get_top_moves(self, fen: str, timeout: float = 60.0) -> Tuple[List[EngineMoveInfo], int]:
+        parts = fen.split()
+        norm_fen = f"{parts[0]} {parts[1]} - - 0 1" if len(parts) >= 2 else fen
+        cmd = f"position fen {norm_fen}"
             
         self.send(cmd)
         
@@ -682,17 +742,14 @@ class EngineSession:
                 best_score = top_3[0].score if top_3 else 0
                 return top_3, best_score
 
-    def evaluate_specific_move(self, fen: Optional[str], moves: Sequence[str], target_move: str, timeout: float = 60.0) -> int:
-        fs_moves = [to_fs_uci(m) for m in moves]
+    def evaluate_specific_move(self, fen: str, target_move: str, timeout: float = 60.0) -> int:
+        if target_move == "0000":
+            return 0
+            
         fs_target = to_fs_uci(target_move)
-        joined = " ".join(fs_moves)
-        
-        if fen:
-            parts = fen.split()
-            norm_fen = f"{parts[0]} {parts[1]} - - 0 1" if len(parts) >= 2 else fen
-            cmd = f"position fen {norm_fen} moves {joined}" if joined else f"position fen {norm_fen}"
-        else:
-            cmd = f"position startpos moves {joined}" if joined else "position startpos"
+        parts = fen.split()
+        norm_fen = f"{parts[0]} {parts[1]} - - 0 1" if len(parts) >= 2 else fen
+        cmd = f"position fen {norm_fen}"
             
         self.send(cmd)
         if self.nodes:
@@ -736,109 +793,260 @@ def tokenize_pgn_moves(text: str) -> List[str]:
         if clean: tokens.append(clean)
     return tokens
 
-def analyze_game(engine_path: Path, pgn_text: str, depth: Optional[int], nodes: Optional[int], nnue_path: Optional[str], aux_nnues: List[str], use_nnue: bool, threads: int, log_prefix: str = "", game_id: int = 0) -> List[HistoryEntry]:
-    board = JanggiBoard()
-    engine = EngineSession(engine_path, depth, nodes, nnue_path, use_nnue, threads)
+# ==============================================================================
+# [B] 난이도 가중 일치율 매칭 도구
+# ==============================================================================
+def get_difficulty_weight(eval_gap: int) -> float:
+    """엔진 1순위와 2순위 후보수 간 격차를 기반으로 해당 선택의 통계적 난이도 산출"""
+    if eval_gap <= 30:
+        return 1.5  # 미세한 격차: 정밀한 최선의 한 수 필요 (고난이도)
+    if eval_gap <= 50:
+        return 1.3  # 타이트한 국면
+    if eval_gap >= 150:
+        return 0.3  # 외길 수순 또는 상대 실수 응징: 누구나 발견하기 쉬운 한 수 (저난이도)
+    return 1.0
+
+# ==============================================================================
+# [C/D] Move Cache / Save & Multi-game Aggregation
+# ==============================================================================
+def compute_game_hash(pgn_text: str) -> str:
+    import hashlib
+    clean = re.sub(r'\s+', '', pgn_text)
+    return hashlib.md5(clean.encode('utf-8')).hexdigest()[:16]
+
+def save_moves_to_db(game_hash: str, player_name: str, search_config: str, history: List[HistoryEntry]):
+    if not player_name:
+        return
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    for h in history:
+        c.execute('''
+            INSERT OR REPLACE INTO moves_v3 (
+                game_hash, player_name, search_config, ply, san, uci,
+                best_move, is_top_1, is_top_3, eval_loss, current_eval,
+                is_critical, is_forced, eval_gap
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            game_hash, player_name, search_config, h.ply, h.san, h.uci,
+            h.best_move, 1 if h.is_top_1 else 0, 1 if h.is_top_3 else 0,
+            h.eval_loss, h.current_eval, 1 if h.is_critical else 0,
+            1 if h.is_forced else 0, h.eval_gap
+        ))
+    conn.commit()
+    conn.close()
+
+def get_cached_game_moves(game_hash: str, player_name: str, search_config: str) -> Optional[List[HistoryEntry]]:
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('''
+        SELECT ply, san, uci, best_move, is_top_1, is_top_3, eval_loss, 
+               current_eval, is_critical, is_forced, eval_gap 
+        FROM moves_v3 
+        WHERE game_hash=? AND player_name=? AND search_config=?
+        ORDER BY ply ASC
+    ''', (game_hash, player_name, search_config))
+    rows = c.fetchall()
+    conn.close()
+    if not rows:
+        return None
     
-    aux_sessions = []
-    if use_nnue and aux_nnues:
-        print(f"{log_prefix}➔ AI 다각도 합의(Consensus) 패널 엔진 {len(aux_nnues)}개 추가 로드 중...")
-        for aux_path in aux_nnues[:2]: 
-            aux_sessions.append(EngineSession(engine_path, depth, nodes, aux_path, True, max(1, threads // 2)))
-
-    fen_match = re.search(r'\[FEN\s+"([^"]+)"\]', pgn_text)
-    start_fen = fen_match.group(1) if fen_match else None
-    if start_fen: board.load_fen(start_fen)
-
-    tokens = tokenize_pgn_moves(pgn_text)
-    uci_moves = []
     history = []
+    for r in rows:
+        history.append(HistoryEntry(
+            ply=r[0], san=r[1], uci=r[2], best_move=r[3],
+            top_3_moves=[r[3]], 
+            is_top_1=bool(r[4]), is_top_3=bool(r[5]),
+            eval_loss=r[6], current_eval=r[7],
+            is_critical=bool(r[8]), is_forced=bool(r[9]), eval_gap=r[10]
+        ))
+    return history
+
+def analyze_game(engine_path: Path, pgn_text: str, depth: Optional[int], nodes: Optional[int], nnue_path: Optional[str], aux_nnues: List[str], use_nnue: bool, threads: int, log_prefix: str = "", game_id: int = 0, force_reanalyze: bool = False, repeat: int = 1) -> List[HistoryEntry]:
+    search_config = get_search_config(depth, nodes)
+    game_hash = compute_game_hash(pgn_text)
+    white_name, black_name = extract_player_names(pgn_text)
     
-    search_type = f"{nodes} Nodes" if nodes else f"Depth {depth}"
-    print(f"{log_prefix}총 {len(tokens)}수 정밀 분석({search_type}, 강제수 필터링, 합의 패널 가동)을 시작합니다...")
-    
-    try:
-        for ply, san in enumerate(tokens):
-            try:
-                actual_uci = board.move_to_uci(san, ply)
-            except ValueError as e:
-                print(f"\n\n[Warning] 기보 인식 오류 발생 ({san}) (Ply {ply+1}, {'백' if ply % 2 == 0 else '흑'} 차례)")
-                print(f"상세 원인: {e}\n==> 해당 수 이후의 좌표를 명확히 인식할 수 없어 이전 수순(총 {ply}수)까지만을 기준으로 정상 분석합니다.\n")
-                break
-                
-            try:
-                top_moves, best_score = engine.get_top_moves(start_fen, uci_moves)
-                top_ucis = [m.uci for m in top_moves]
-                best_uci = top_ucis[0] if top_ucis else ""
-                
-                actual_score = None
-                for m in top_moves:
-                    if m.uci == actual_uci:
-                        actual_score = m.score
-                        break
-                        
-                if actual_score is None:
-                    actual_score = engine.evaluate_specific_move(start_fen, uci_moves, actual_uci)
-            except (RuntimeError, TimeoutError) as e:
-                print(f"\n\n[Error] AI 엔진 치명적 오류 발생: {e}")
-                print(f"==> 프로세스 보호를 위해 해당 수순(Ply {ply+1})까지만 분석을 기록하고 안전하게 중단합니다.\n")
-                break
-            
-            loss = max(0, cap_score(best_score) - cap_score(actual_score))
-            loss = min(loss, 300)
-            
-            if loss >= 15 and actual_uci != best_uci and aux_sessions:
-                for aux_eng in aux_sessions:
-                    aux_top, aux_best_score = aux_eng.get_top_moves(start_fen, uci_moves)
-                    aux_top_ucis = [m.uci for m in aux_top]
+    # 플레이어 이름이 공백/기본값일 경우 캐싱용 표준 대체명 적용하여 매칭율 최적화
+    db_white = white_name if (white_name and white_name != "-" and not white_name.lower().startswith("player")) else "Cho_Player"
+    db_black = black_name if (black_name and black_name != "-" and not black_name.lower().startswith("player")) else "Han_Player"
+
+    if not force_reanalyze:
+        cached_moves_w = get_cached_game_moves(game_hash, db_white, search_config)
+        cached_moves_b = get_cached_game_moves(game_hash, db_black, search_config)
+        if cached_moves_w and cached_moves_b:
+            print(f"{log_prefix} [DB Cache] 이미 분석 완료된 수순을 로컬 DB에서 즉시 로드했습니다.")
+            total_cached = []
+            for i in range(max(len(cached_moves_w), len(cached_moves_b))):
+                if i < len(cached_moves_w):
+                    cached_moves_w[i].game_id = game_id
+                    total_cached.append(cached_moves_w[i])
+                if i < len(cached_moves_b):
+                    cached_moves_b[i].game_id = game_id
+                    total_cached.append(cached_moves_b[i])
+            return sorted(total_cached, key=lambda x: x.ply)
+    else:
+        print(f"{log_prefix} [DB Cache] Existing cache ignored by --force-reanalyze")
+        if repeat > 1:
+            print(f"{log_prefix} [Validation] Re-running analysis {repeat} times for stability check...")
+
+    all_runs = []
+    for run_idx in range(repeat):
+        run_prefix = f"{log_prefix}[Run {run_idx+1}/{repeat}] " if repeat > 1 else log_prefix
+        board = JanggiBoard()
+        engine = EngineSession(engine_path, depth, nodes, nnue_path, use_nnue, threads)
+        
+        aux_sessions = []
+        if use_nnue and aux_nnues:
+            print(f"{run_prefix}➔ AI 다각도 합의(Consensus) 패널 엔진 {len(aux_nnues)}개 추가 로드 중...")
+            for aux_path in aux_nnues[:2]: 
+                aux_sessions.append(EngineSession(engine_path, depth, nodes, aux_path, True, max(1, threads // 2)))
+
+        fen_match = re.search(r'\[FEN\s+"([^"]+)"\]', pgn_text)
+        start_fen = fen_match.group(1) if fen_match else None
+        if start_fen: board.load_fen(start_fen)
+
+        tokens = tokenize_pgn_moves(pgn_text)
+        uci_moves = []
+        run_history = []
+        
+        search_type = f"{nodes} Nodes" if nodes else f"Depth {depth}"
+        print(f"{run_prefix}총 {len(tokens)}수 정밀 분석({search_type}, 강제수 필터링, 합의 패널 가동)을 시작합니다...")
+        
+        try:
+            for ply, san in enumerate(tokens):
+                # 대국 실행 전 현재 위치의 FEN 상태 확보
+                current_fen = board.get_fen(ply)
+
+                try:
+                    actual_uci = board.move_to_uci(san, ply)
+                except ValueError as e:
+                    print(f"\n\n[Warning] 기보 인식 오류 발생 ({san}) (Ply {ply+1}, {'백' if ply % 2 == 0 else '흑'} 차례)")
+                    print(f"상세 원인: {e}\n==> 해당 수 이후의 좌표를 명확히 인식할 수 없어 이전 수순(총 {ply}수)까지만을 기준으로 정상 분석합니다.\n")
+                    break
                     
-                    if actual_uci in aux_top_ucis:
-                        aux_actual = next((m.score for m in aux_top if m.uci == actual_uci), None)
-                        if aux_actual is None: continue
-                        
-                        aux_loss = max(0, cap_score(aux_best_score) - cap_score(aux_actual))
-                        aux_loss = min(aux_loss, 300)
-                        
-                        if aux_loss < loss:
-                            loss = aux_loss
-                            best_uci = aux_top_ucis[0] if aux_top_ucis else best_uci
-                            actual_score = aux_actual
-                            for u in aux_top_ucis:
-                                if u not in top_ucis: top_ucis.append(u)
-                            
-                            if actual_uci == best_uci:
+                try:
+                    # uci_moves 목록 주입 대신 실시간 current_fen 주입
+                    top_moves, best_score = engine.get_top_moves(current_fen)
+                    top_ucis = [m.uci for m in top_moves]
+                    best_uci = top_ucis[0] if top_ucis else ""
+                    
+                    actual_score = None
+                    if actual_uci == "0000":
+                        # 한수쉼 평가: 차례만 넘겨진 다음 위치의 상대 베스트 스코어 점수의 부호를 반전하여 자신의 가치로 환산
+                        next_fen = board.get_fen(ply + 1)
+                        _, opp_best_score = engine.get_top_moves(next_fen)
+                        actual_score = -opp_best_score
+                    else:
+                        for m in top_moves:
+                            if m.uci == actual_uci:
+                                actual_score = m.score
                                 break
-            
-            is_critical = False
-            is_forced = False
-            eval_gap = 9999
-            
-            if len(top_moves) >= 2:
-                eval_gap = abs(cap_score(top_moves[0].score) - cap_score(top_moves[1].score))
-                forced_threshold = 200 if ply >= 60 else 300
-                if eval_gap >= forced_threshold: is_forced = True
-                elif eval_gap < 150 and abs(cap_score(best_score)) < 1500: is_critical = True
-            elif len(top_moves) == 1: is_forced = True
+                                
+                        if actual_score is None:
+                            actual_score = engine.evaluate_specific_move(current_fen, actual_uci)
+                except (RuntimeError, TimeoutError) as e:
+                    print(f"\n\n[Error] AI 엔진 치명적 오류 발생: {e}")
+                    print(f"==> 프로세스 보호를 위해 해당 수순(Ply {ply+1})까지만 분석을 기록하고 안전하게 중단합니다.\n")
+                    break
+                
+                loss = max(0, cap_score(best_score) - cap_score(actual_score))
+                loss = min(loss, 300)
+                
+                if loss >= 15 and actual_uci != best_uci and aux_sessions:
+                    for aux_eng in aux_sessions:
+                        aux_top, aux_best_score = aux_eng.get_top_moves(current_fen)
+                        aux_top_ucis = [m.uci for m in aux_top]
+                        
+                        if actual_uci in aux_top_ucis:
+                            aux_actual = next((m.score for m in aux_top if m.uci == actual_uci), None)
+                            if aux_actual is None: continue
+                            
+                            aux_loss = max(0, cap_score(aux_best_score) - cap_score(aux_actual))
+                            aux_loss = min(aux_loss, 300)
+                            
+                            if aux_loss < loss:
+                                loss = aux_loss
+                                best_uci = aux_top_ucis[0] if aux_top_ucis else best_uci
+                                actual_score = aux_actual
+                                for u in aux_top_ucis:
+                                    if u not in top_ucis: top_ucis.append(u)
+                                
+                                if actual_uci == best_uci:
+                                    break
+                
+                is_critical = False
+                is_forced = False
+                eval_gap = 9999
+                
+                if len(top_moves) >= 2:
+                    eval_gap = abs(cap_score(top_moves[0].score) - cap_score(top_moves[1].score))
+                    forced_threshold = 200 if ply >= 60 else 300
+                    if eval_gap >= forced_threshold: is_forced = True
+                    elif eval_gap < 150 and abs(cap_score(best_score)) < 1500: is_critical = True
+                elif len(top_moves) == 1: is_forced = True
+
+                run_history.append(HistoryEntry(
+                            ply=ply, san=san, uci=actual_uci,
+                            best_move=best_uci, top_3_moves=top_ucis,
+                            is_top_1=(actual_uci == best_uci),
+                            is_top_3=(actual_uci in top_ucis),
+                            eval_loss=loss, current_eval=actual_score,
+                            is_critical=is_critical, is_forced=is_forced, eval_gap=eval_gap,
+                            start_fen=current_fen, uci_history=list(uci_moves), game_id=game_id
+                        ))
+                
+                uci_moves.append(actual_uci)
+                mark = "F" if is_forced else ("C" if is_critical else "N")
+                print(f"Analyzing... [{ply+1:03d}/{len(tokens):03d}] [실제: {actual_uci} | AI: {best_uci} | Loss: {loss:3d}cp | {mark}]    ", end='\r')
+                
+        finally:
+            print(f"\nAnalysis Run Complete.                        ")
+            engine.close()
+            for aux_eng in aux_sessions:
+                aux_eng.close()
+        all_runs.append(run_history)
+
+    if repeat == 1:
+        history = all_runs[0]
+    else:
+        min_len = min(len(r) for r in all_runs)
+        history = []
+        for p in range(min_len):
+            entries = [all_runs[run_idx][p] for run_idx in range(repeat)]
+            losses = [e.eval_loss for e in entries]
+            mean_loss = sum(losses) / len(losses)
+            variance = sum((x - mean_loss) ** 2 for x in losses) / (len(losses) - 1) if len(losses) > 1 else 0.0
+            stdev_loss = math.sqrt(variance)
+
+            sorted_with_indices = sorted(enumerate(losses), key=lambda x: x[1])
+            median_run_idx = sorted_with_indices[len(sorted_with_indices) // 2][0]
+            median_entry = entries[median_run_idx]
 
             history.append(HistoryEntry(
-                ply=ply, san=san, uci=actual_uci,
-                best_move=best_uci, top_3_moves=top_ucis,
-                is_top_1=(actual_uci == best_uci),
-                is_top_3=(actual_uci in top_ucis),
-                eval_loss=loss, current_eval=actual_score,
-                is_critical=is_critical, is_forced=is_forced, eval_gap=eval_gap,
-                start_fen=start_fen, uci_history=list(uci_moves), game_id=game_id
+                ply=median_entry.ply,
+                san=median_entry.san,
+                uci=median_entry.uci,
+                best_move=median_entry.best_move,
+                top_3_moves=median_entry.top_3_moves,
+                is_top_1=bool(sorted([1 if e.is_top_1 else 0 for e in entries])[len(entries) // 2]),
+                is_top_3=bool(sorted([1 if e.is_top_3 else 0 for e in entries])[len(entries) // 2]),
+                eval_loss=sorted(losses)[len(losses) // 2],
+                current_eval=sorted([e.current_eval for e in entries])[len(entries) // 2],
+                is_critical=bool(sorted([1 if e.is_critical else 0 for e in entries])[len(entries) // 2]),
+                is_forced=bool(sorted([1 if e.is_forced else 0 for e in entries])[len(entries) // 2]),
+                eval_gap=sorted([e.eval_gap for e in entries])[len(entries) // 2],
+                start_fen=median_entry.start_fen,
+                uci_history=median_entry.uci_history,
+                game_id=median_entry.game_id,
+                stability=stdev_loss
             ))
-            
-            uci_moves.append(actual_uci)
-            mark = "F" if is_forced else ("C" if is_critical else "N")
-            print(f"Analyzing... [{ply+1:03d}/{len(tokens):03d}] [실제: {actual_uci} | AI: {best_uci} | Loss: {loss:3d}cp | {mark}]    ", end='\r')
-            
-    finally:
-        print("\nAnalysis Step Complete.                        ")
-        engine.close()
-        for aux_eng in aux_sessions:
-            aux_eng.close()
+
+    # [C] 분석 완료 직후 로컬 DB 캐시에 수순 저장
+    cho_moves = [h for h in history if h.ply % 2 == 0]
+    han_moves = [h for h in history if h.ply % 2 != 0]
+    save_moves_to_db(game_hash, db_white, search_config, cho_moves)
+    save_moves_to_db(game_hash, db_black, search_config, han_moves)
+    
     return history
 
 def get_numeric_phase_acpl(moves, start_ply, end_ply):
@@ -926,7 +1134,7 @@ def calculate_tactical_burst(moves: List[HistoryEntry]) -> Tuple[float, List[Tac
     matching so naturally inflated Janggi Top-3 rates do not dominate the score.
     """
     if len(moves) < 6:
-        return 0.0, [], "데이터 부족"
+        return 0.0, [], "단기 전술 버스트 특이점 없음"
 
     def clamp_map(val, in_min, in_max, out_min, out_max):
         if in_min < in_max:
@@ -973,8 +1181,6 @@ def calculate_tactical_burst(moves: List[HistoryEntry]) -> Tuple[float, List[Tac
         for m in game_moves:
             if m.is_forced or m.ply < 12 or abs(m.current_eval) >= 1800:
                 continue
-            # Avoid overvaluing naturally forcing Janggi continuations: a perfect move is
-            # not treated as difficult unless the engine gap also indicates real choice.
             is_hard = m.eval_gap <= 60
             is_tactical_close = m.is_critical and m.eval_gap <= 90
             has_candidate_choice = len(m.top_3_moves) >= 2
@@ -1078,9 +1284,6 @@ def calculate_tactical_burst(moves: List[HistoryEntry]) -> Tuple[float, List[Tac
                     or (stability_mode and next_gain >= 8.0 and transition_rank_gain >= 0.22)
                 )
 
-                # Normal Janggi focus often stabilizes a position.  This block only scores
-                # unusual resistance to collapse under high pressure, with stabilization
-                # treated as weak context rather than evidence by itself.
                 acpl_component = clamp_map(w_acpl, 35.0, 4.0, 0.0, 8.0)
                 improvement_component = clamp_map(relative_gain, 18.0, 60.0, 0.0, 20.0)
                 transition_component = clamp_map(transition_gain, 14.0, 55.0, 0.0, 24.0)
@@ -1132,9 +1335,6 @@ def calculate_tactical_burst(moves: List[HistoryEntry]) -> Tuple[float, List[Tac
                     deep_resource_signal
                 )
 
-                # Stabilization, safe play, and evaluation preservation are ordinary human
-                # crisis behaviors. They only become review context after a switch-in/switch-out
-                # collapse-pressure structural gate is satisfied; otherwise they are neutral.
                 stabilization_context = (
                     (error_component + severe_component + preservation_component +
                      safe_component + acpl_component + improvement_component +
@@ -1242,92 +1442,244 @@ def calculate_tactical_burst(moves: List[HistoryEntry]) -> Tuple[float, List[Tac
     if not filtered:
         return 0.0, [], "단기 전술 버스트 특이점 없음"
 
-    structural_count = sum(b.island_count for b in filtered)
-    if structural_count >= 2:
-        reinforcement = min(8.0, 3.0 * (structural_count - 1))
-        filtered[0].score = min(82.0, filtered[0].score + reinforcement)
-        filtered[0].island_count = structural_count
-        filtered[0].commentary += f", 반복 구조이상 구간 {structural_count}개"
+    if filtered:
+        structural_count = sum(b.island_count for b in filtered)
+        if structural_count >= 2:
+            reinforcement = min(8.0, 3.0 * (structural_count - 1))
+            filtered[0].score = min(82.0, filtered[0].score + reinforcement)
+            filtered[0].island_count = structural_count
+            filtered[0].commentary += f", 반복 구조이상 구간 {structural_count}개"
 
-    best = filtered[0]
-    if best.score >= 70.0:
-        verdict = "다른 지표와 함께 검토할 국지 정밀도 상승"
-    elif best.score >= 50.0:
-        verdict = "참고용 국지 정밀도 신호"
-    else:
-        verdict = "약한 단기 정밀도 신호(참고용)"
-    return best.score, filtered, verdict
+    best = filtered[0] if filtered else None
+    if best:
+        if best.score >= 70.0:
+            verdict = "다른 지표와 함께 검토할 국지 정밀도 상승"
+        elif best.score >= 50.0:
+            verdict = "참고용 국지 정밀도 신호"
+        else:
+            verdict = "약한 단기 정밀도 신호(참고용)"
+        return best.score, filtered, verdict
+    return 0.0, [], "단기 전술 버스트 특이점 없음"
 
-def calculate_partial_ai_probability(moves: List[HistoryEntry]) -> Tuple[float, str, List[int]]:
-    valid_unforced = [m for m in moves if not m.is_forced and 20 <= m.ply <= 90]
-    
-    cleaned_unforced = []
-    for m in valid_unforced:
-        best_eval = cap_score(m.current_eval + m.eval_loss)
-        if best_eval >= 200 and m.eval_loss >= 80 and m.current_eval >= -150:
-            continue 
-        cleaned_unforced.append(m)
-        
-    window_size = 16  # 프로들의 강제/필연 수순을 고려해 검사 구간을 16수(8턴)로 늘림
+# ==============================================================================
+# [A/F/피드백 반영] 고도화된 스캔형 윈도우 스캔 탐색 엔진
+# ==============================================================================
+@dataclass
+class SuspiciousSegment:
+    start_ply: int
+    end_ply: int
+    game_id: int
+    window_size: int
+    acpl: float
+    top1_rate: float
+    weighted_top1: float
+    suspicion_score: float
+    verdict: str
+
+def scan_suspicious_segments(moves: List[HistoryEntry], max_segments: int = 5) -> List[SuspiciousSegment]:
+    """W = 4, 6, 8, 12, 16, 20 수순 비중복 그리디 억제 매칭 (프로 기사 정밀 보정 버전)"""
+    unforced_moves = [m for m in moves if not m.is_forced]
+    if len(unforced_moves) < 4:
+        return []
 
     def clamp_map(val, in_min, in_max, out_min, out_max):
-        if in_min < in_max:
-            if val <= in_min: return out_min
-            if val >= in_max: return out_max
-            return out_min + (val - in_min) * (out_max - out_min) / (in_max - in_min)
-        else:
-            if val >= in_min: return out_min
-            if val <= in_max: return out_max
-            return out_min + (in_min - val) * (out_max - out_min) / (in_min - in_max)
+        if val <= in_min: return out_min
+        if val >= in_max: return out_max
+        return out_min + (val - in_min) * (out_max - out_min) / (in_max - in_min)
 
-    max_spike_score = 0.0
-    suspect_range = [0, 0]
-    checked_windows = 0
+    # 전체 대국의 인간적 기복 지표 산출
+    global_stats = calc_stats(moves)
+    global_std = global_stats[7]
+    global_blunder = global_stats[6]
+    global_mistake = global_stats[5]
+    global_inacc = global_stats[4]
 
-    by_game: Dict[int, List[HistoryEntry]] = {}
-    for m in cleaned_unforced:
-        by_game.setdefault(m.game_id, []).append(m)
+    # [C] 기복분포(std_dev > 20) 혹은 명백한 인간적 실수 감지 시 감쇄 계수 (Humanity Dampener) 작동
+    human_dampener = 1.0
+    if global_std > 20.0:
+        human_dampener *= max(0.6, 1.0 - (global_std - 20.0) / 50.0)  # 최대 40% 감쇄 차감
+    if global_blunder >= 1:
+        human_dampener *= 0.75  # 명백한 블런더 동반 대국은 의심 구간 전반의 신뢰도 대폭 조정
+    elif global_mistake >= 2:
+        human_dampener *= 0.85  # 다수의 미스테이크 관찰 시 조정
 
-    for game_moves in by_game.values():
-        if len(game_moves) < window_size:
+    # [D-4] 인간적 결함 가중 인정 크레딧 (Imperfection Credit)
+    # 대국 어딘가에 실수가 동반된 흔적이 발견되면 구간 의심도를 추가 차감하여 인간의 기복 인정
+    inconsistency_credit = 1.0
+    if global_blunder >= 1 or global_mistake >= 3 or global_inacc >= 6:
+        inconsistency_credit = 0.80
+    elif global_mistake >= 1 or global_inacc >= 3:
+        inconsistency_credit = 0.90
+    elif global_std > 22.0:
+        inconsistency_credit = 0.95
+
+    WINDOWS = [4, 6, 8, 12, 16, 20]
+    all_candidates: List[SuspiciousSegment] = []
+
+    for w_size in WINDOWS:
+        if len(unforced_moves) < w_size:
             continue
-        for i in range(len(game_moves) - window_size + 1):
-            window = game_moves[i:i + window_size]
-            checked_windows += 1
-            w_acpl = sum(m.eval_loss for m in window) / window_size
-            w_top1 = (sum(1 for m in window if m.is_top_1) / window_size) * 100
+        for i in range(len(unforced_moves) - w_size + 1):
+            window = unforced_moves[i : i + w_size]
+            
+            # 국지 ACPL 산출
+            w_acpl = sum(m.eval_loss for m in window) / w_size
+            weighted_matches = 0.0
+            total_weight = 0.0
+            top1_matches = 0
+            
+            blunders = 0
+            mistakes = 0
+            early_moves_count = 0
+            
+            losses = []
+            for m in window:
+                losses.append(m.eval_loss)
+                weight = get_difficulty_weight(m.eval_gap)
+                total_weight += weight
+                if m.is_top_1:
+                    weighted_matches += weight
+                    top1_matches += 1
+                if m.eval_loss >= 200:
+                    blunders += 1
+                elif m.eval_loss >= 100:
+                    mistakes += 1
+                if m.ply < 20:
+                    early_moves_count += 1
+            
+            top1_rate = (top1_matches / w_size) * 100
+            weighted_top1 = (weighted_matches / total_weight) * 100 if total_weight > 0 else 0.0
 
-            mistakes = sum(1 for m in window if m.eval_loss >= 100)
-            inaccs = sum(1 for m in window if m.eval_loss >= 50)
+            # [D-1] 세그먼트 오차 기복 편차 감쇄 (Segment Variance Credit)
+            # 수순별 손실값 편차(w_std)가 관찰되는 인간 특유의 기복 있는 고정밀 세그먼트는 최대 20% 보정 차감
+            w_mean = sum(losses) / w_size
+            w_variance = sum((x - w_mean) ** 2 for x in losses) / w_size
+            w_std = math.sqrt(w_variance)
+            segment_variance_credit = 1.0
+            if w_std > 0.0:
+                segment_variance_credit = clamp_map(w_std, 1.0, 12.0, 1.0, 0.80)
+            
+            # [B] 수순 길이에 따른 감쇄 정합성 보정 (단기 구간 과탐지 근본 차단)
+            size_factor = {
+                4: 0.20,   # 단순 참고 정보 수준 (30% 이하로 제어)
+                6: 0.35,
+                8: 0.50,
+                12: 0.70,
+                16: 0.90,
+                20: 1.00
+            }.get(w_size, 1.0)
+            
+            # [D-2] 기본 일치율 기준선 공제 (Baseline Agreement Removal)
+            # 60% 이하의 매칭 일치율은 의심도 상승에 거의 기여하지 못하도록 가중선 이동
+            if weighted_top1 <= 60.0:
+                effective_top1 = clamp_map(weighted_top1, 0.0, 60.0, 0.0, 25.0)
+            else:
+                effective_top1 = clamp_map(weighted_top1, 60.0, 100.0, 25.0, 100.0)
 
-            # 프로 컷 상향: ACPL이 7점 이하, Top-1이 65% 이상일 때만 점수가 오르기 시작함
-            acpl_score = clamp_map(w_acpl, 7.0, 1.5, 0.0, 60.0)
-            top1_score = clamp_map(w_top1, 65.0, 90.0, 0.0, 40.0)
-            err_penalty = (mistakes * 20.0) + (inaccs * 10.0)
+            base_score = (effective_top1 * 0.6) + (max(0.0, 100.0 - w_acpl) * 0.4)
 
-            current_spike = max(0.0, acpl_score + top1_score - err_penalty)
-            if current_spike > max_spike_score:
-                max_spike_score = current_spike
-                suspect_range = [window[0].ply + 1, window[-1].ply + 1]
+            # [B-1, B-4] 전후 맥락 및 세그먼트 지속성 보너스/감쇄 산출
+            prev_unforced = unforced_moves[max(0, i-6):i]
+            next_unforced = unforced_moves[i+w_size:i+w_size+6]
+            context_moves = prev_unforced + next_unforced
+            if context_moves:
+                context_acpl = sum(m.eval_loss for m in context_moves) / len(context_moves)
+                if context_acpl > 20.0:
+                    persistence_factor = clamp_map(context_acpl, 20.0, 45.0, 1.0, 0.7)  # 단발성 집중 구간 감쇄
+                else:
+                    persistence_factor = 1.05  # 지속적인 고정밀 구간 보너스
+            else:
+                persistence_factor = 1.0
 
-    if checked_windows == 0:
-        return 0.0, "데이터 부족 (탐색 구간 짧음)", [0, 0]
+            # [D-3] 엘리트 ACPL 구간 정밀 보호막 (Elite ACPL Protection)
+            # 세그먼트 ACPL이 인간 고수 영역(3.0~12.0)에 위치할 시, 단순 일치율로 인한 인플레 제한
+            if 3.0 <= w_acpl <= 12.0:
+                acpl_floor_factor = clamp_map(w_acpl, 3.0, 12.0, 0.85, 0.75)
+            elif 12.0 < w_acpl <= 25.0:
+                acpl_floor_factor = clamp_map(w_acpl, 12.0, 25.0, 0.75, 0.60)
+            elif w_acpl > 25.0:
+                acpl_floor_factor = 0.50
+            else:
+                acpl_floor_factor = 1.0
 
-    # [수정된 프로 기사 보호막 (Pro-Dampener)]
-    # 프로 수준의 편차(15~35)를 가지면 스파이크 점수를 대폭 깎아줍니다.
-    stats = calc_stats(moves)
-    std_dev = stats[7]
-    pro_dampener = 1.0
-    if 15.0 <= std_dev <= 45.0:
-        pro_dampener = clamp_map(std_dev, 15.0, 30.0, 0.8, 0.2) # 기복이 20대면 점수를 50% 이상 깎음
+            suspicion_score = base_score * size_factor * human_dampener * persistence_factor * acpl_floor_factor * inconsistency_credit * segment_variance_credit
+            
+            # [포진 필터] 초반 정석 포진(Ply < 20) 감쇄 적용
+            if early_moves_count > 0:
+                suspicion_score *= (1.0 - 0.40 * (early_moves_count / w_size))
+            
+            # 실수 페널티 적용
+            penalty = (blunders * 25.0) + (mistakes * 10.0)
+            suspicion_score = max(0.0, suspicion_score - penalty)
+            
+            # [D] 비단정적 통계학 용어로의 임계점 재조정 (0-40-70-90-100 분포 완벽 준수)
+            if suspicion_score >= 90.0:
+                verdict = "🔴 일치도가 극도로 높은 이례적인 통계적 특이성"
+            elif suspicion_score >= 70.0:
+                verdict = "🟡 정밀 검토가 요구되는 높은 정교함 및 기계적 연관성"
+            elif suspicion_score >= 40.0:
+                verdict = "🟠 최상위권 프로 및 고수 수준의 전술적 일치"
+            else:
+                verdict = "🟢 자연스러운 인간 대국자의 흐름 및 정밀도"
 
-    final_spike_prob = min(99.0, max_spike_score * pro_dampener)
+            all_candidates.append(SuspiciousSegment(
+                start_ply=window[0].ply + 1,
+                end_ply=window[-1].ply + 1,
+                game_id=window[0].game_id,
+                window_size=w_size,
+                acpl=w_acpl,
+                top1_rate=top1_rate,
+                weighted_top1=weighted_top1,
+                suspicion_score=suspicion_score,
+                verdict=verdict
+            ))
+
+    # [E] 다중 구간 교차 검증 및 비지속성 감쇄 (Persistence Confirmation Filter)
+    # 고정밀 다중 세그먼트가 연속 검출되지 않는 단발성 일치는 인간 고수적 단기 집중으로 해석하여 차감
+    all_candidates.sort(key=lambda x: x.suspicion_score, reverse=True)
     
-    p_verdict = "🟢 특이 구간 없음 (자연스러운 수순)"
-    if final_spike_prob >= 85: p_verdict = "🔴 특정 난전 구간에서 기계적 수순 전개와 매우 흡사함"
-    elif final_spike_prob >= 70: p_verdict = "🟡 특정 승부처에서 AI 추천수와의 연관성이 관찰됨"
-    
-    return final_spike_prob, p_verdict, suspect_range
+    high_score_disjoint_count = 0
+    temp_selected = []
+    for cand in all_candidates:
+        overlap = False
+        for sel in temp_selected:
+            if cand.game_id == sel.game_id:
+                if not (cand.end_ply < sel.start_ply or cand.start_ply > sel.end_ply):
+                    overlap = True
+                    break
+        if not overlap:
+            temp_selected.append(cand)
+            if cand.suspicion_score >= 45.0:
+                high_score_disjoint_count += 1
+
+    for cand in all_candidates:
+        if cand.suspicion_score >= 70.0 and high_score_disjoint_count <= 1:
+            cand.suspicion_score *= 0.80
+            if cand.suspicion_score < 70.0:
+                cand.verdict = "🟠 최상위권 프로 및 고수 수준의 전술적 일치"
+
+    selected_segments: List[SuspiciousSegment] = []
+    for cand in all_candidates:
+        if len(selected_segments) >= max_segments:
+            break
+        overlap = False
+        for sel in selected_segments:
+            if cand.game_id == sel.game_id:
+                if not (cand.end_ply < sel.start_ply or cand.start_ply > sel.end_ply):
+                    overlap = True
+                    break
+        if not overlap:
+            selected_segments.append(cand)
+
+    return selected_segments
+
+def calculate_partial_ai_probability(moves: List[HistoryEntry]) -> Tuple[float, str, List[int]]:
+    """과탐지 보호막이 적용된 단일 피크 구간 탐색 결과 출력기 (기존 연동용)"""
+    segs = scan_suspicious_segments(moves, max_segments=1)
+    if not segs:
+        return 0.0, "🟢 특이 구간 없음 (자연스러운 수순)", [0, 0]
+    best = segs[0]
+    return best.suspicion_score, best.verdict, [best.start_ply, best.end_ply]
 
 def calculate_cheat_probability(moves) -> Tuple[float, float, str]:
     if len(moves) < 5:
@@ -1457,8 +1809,6 @@ def calculate_cheat_probability(moves) -> Tuple[float, float, str]:
     tactical_prob, tactical_bursts, tactical_verdict = calculate_tactical_burst(moves)
     global_support = max(final_full_prob, segment_partial_prob)
     if tactical_prob >= 70.0 and global_support >= 50.0:
-        # Tactical bursts are supporting evidence only; they cannot create a high
-        # partial verdict when the rest of the game is statistically ordinary.
         partial_prob = max(partial_prob, min(75.0, global_support + min(10.0, (tactical_prob - 70.0) / 2.0)))
 
     final_verdict = ""
@@ -1466,14 +1816,18 @@ def calculate_cheat_probability(moves) -> Tuple[float, float, str]:
         flag_str = ", ".join(centaur_flags[:2])
         if not flag_str: flag_str = "통계적 특이 지표 다수"
         spike_info = f" [의심 구간: {s_range[0]}~{s_range[1]}수]" if segment_partial_prob >= 65.0 else ""
-        final_verdict = f"🟡 [스마트 치팅 감지] 안전수 위장 속 부분적 AI 개입 발견 ({flag_str}){spike_info}"
+        final_verdict = f"🟡 [특이 패턴 감지] 수순 전반에 걸쳐 부분적인 고가중 매칭 구간 관찰 ({flag_str}){spike_info}"
     elif partial_prob > final_full_prob + 10.0 and partial_prob >= 65.0:
         final_verdict = f"{p_verdict} [의심 구간: {s_range[0]}~{s_range[1]}수]"
     else:
-        if final_full_prob >= 85: final_verdict = "🔴 기계적 수순 패턴과 매우 높은 통계적 연관성을 보임"
-        elif final_full_prob >= 75: final_verdict = "🟡 인간 최고수 범주를 상회하는 통계적 일치도가 관찰됨"
-        elif final_full_prob >= 60: final_verdict = "🟠 최상위권 프로 및 고수 수준의 정교한 대국 내용"
-        else: final_verdict = "🟢 보편적인 인간 대국자의 흐름 및 편차"
+        if final_full_prob >= 90.0:
+            final_verdict = "🔴 일치도가 극도로 높은 이례적인 통계적 특이성"
+        elif final_full_prob >= 70.0:
+            final_verdict = "🟡 정밀 검토가 요구되는 높은 정교함 및 기계적 연관성"
+        elif final_full_prob >= 40.0:
+            final_verdict = "🟠 최상위권 프로 및 고수 수준의 정교한 대국 내용"
+        else:
+            final_verdict = "🟢 자연스러운 인간 대국자의 흐름 및 편차"
 
     return final_full_prob, partial_prob, final_verdict
 
@@ -1495,6 +1849,84 @@ def format_tactical_burst_cell(score: float, bursts: List[TacticalBurstResult]) 
     best = bursts[0]
     return f"{score:.1f}% / {best.start_ply}~{best.end_ply}수"
 
+# ==============================================================================
+# [E] ASCII 터미널 평가 곡선 시각화 엔진
+# ==============================================================================
+def generate_ascii_eval_curve(moves: List[HistoryEntry], width: int = 65, height: int = 10) -> str:
+    """대국 전반의 흐름을 시각화해 주는 텍스트 기반 ASCII 그래프 드로잉 도구"""
+    if not moves: return " [!] 시각화할 대국 데이터가 존재하지 않습니다."
+    
+    evals = [cap_score(m.current_eval) for m in moves]
+    min_val, max_val = min(evals), max(evals)
+    val_range = max_val - min_val
+    if val_range == 0: val_range = 1
+    
+    grid = [[" " for _ in range(width)] for _ in range(height)]
+    num_moves = len(moves)
+    
+    for col in range(width):
+        move_idx = int((col / (width - 1)) * (num_moves - 1)) if width > 1 else 0
+        curr_val = evals[move_idx]
+        
+        row = int(((curr_val - min_val) / val_range) * (height - 1))
+        row = max(0, min(height - 1, row))
+        grid[height - 1 - row][col] = "●" if col in (0, width-1) or col % 5 == 0 else "·"
+
+    lines = []
+    for r in range(height):
+        val_at_row = max_val - (r / (height - 1)) * val_range if height > 1 else max_val
+        val_label = f"{val_at_row / 100.0:+5.1f} | "
+        lines.append(val_label + "".join(grid[r]))
+         
+    lines.append("-" * (width + 8))
+    
+    # 가로축 수순 진행 상황을 한눈에 파악할 수 있도록 5등분 지점(0%, 25%, 50%, 75%, 100%)의 실제 Ply 수순 번호를 정밀 정렬
+    x_label_chars = [" "] * width
+    cols_to_label = [0, int(width * 0.25), int(width * 0.50), int(width * 0.75), width - 1]
+    
+    for col in cols_to_label:
+        move_idx = int((col / (width - 1)) * (num_moves - 1)) if width > 1 else 0
+        # 개별 리스트 순번이 아닌, 기보 객체에 보존된 절대 대국 수순 번호(ply)를 추출하여 매핑 (선수 홀수, 후수 짝수 완벽 출력)
+        tgt_move = moves[move_idx]
+        ply_num_str = str(tgt_move.ply + 1)
+        str_len = len(ply_num_str)
+        
+        if col == 0:
+            start_pos = 0
+        elif col == width - 1:
+            start_pos = width - str_len
+        else:
+            start_pos = col - (str_len // 2)
+            
+        for idx_char, char in enumerate(ply_num_str):
+            pos = start_pos + idx_char
+            if 0 <= pos < width:
+                x_label_chars[pos] = char
+                
+    lines.append("Ply:    " + "".join(x_label_chars))
+    return "\n".join(lines)
+
+# ==============================================================================
+# [D] Move Range Analysis ( cached move analyzer )
+# ==============================================================================
+def analyze_move_range(moves: List[HistoryEntry], start_ply: int, end_ply: int) -> List[HistoryEntry]:
+    return [m for m in moves if start_ply <= (m.ply + 1) <= end_ply]
+
+def print_suspicious_segments_report(moves: List[HistoryEntry], name: str):
+    """그리디 수순 비중복 억제 기준 Top 5 의심 구간 세부 지표 상세 출력"""
+    segs = scan_suspicious_segments(moves, max_segments=5)
+    print(f"\n [ {name} - Top 5 비중복 국지적 의심 구간 상세 ]")
+    header = f" {pad_korean('의심 순위', 10)} | {pad_korean('범위(수)', 12)} | {pad_korean('윈도우', 8)} | {pad_korean('의심도', 11)} | {pad_korean('구간 ACPL', 11)} | {pad_korean('가중 일치율', 13)} | 판독 소견"
+    print(header)
+    print("-" * 115)
+    if not segs:
+        print(f" {pad_korean('기록 없음', 115)}")
+        return
+    for idx, s in enumerate(segs, 1):
+        row = f" {pad_korean(f'# {idx}', 10)} | {pad_korean(f'{s.start_ply}~{s.end_ply}', 12)} | {pad_korean(f'{s.window_size}수', 8)} | {pad_korean(f'{s.suspicion_score:.1f}%', 11)} | {s.acpl:11.2f} | {pad_korean(f'{s.weighted_top1:.1f}%', 13)} | {s.verdict}"
+        print(row)
+    print("-" * 115)
+
 def print_tactical_burst_details(rows: List[Tuple[str, float, List[TacticalBurstResult], str]]) -> None:
     print("\n [ 붕괴압 전환 참고 지표 (5~6수 구조 이상 중심) ]")
     header = f" {pad_korean('진영', 12)} | {pad_korean('참고 점수/구간', 22)} | {pad_korean('검토 근거', 58)}"
@@ -1510,7 +1942,7 @@ def print_tactical_burst_details(rows: List[Tuple[str, float, List[TacticalBurst
         for extra in bursts[:2]:
             print(f" {'':12} | {'':22} | ↳ G{extra.game_id} {extra.start_ply}~{extra.end_ply}수: {extra.commentary}")
 
-def run_files_analysis(inputs, engine_path, depth, nodes, nnue_path, aux_nnues, use_nnue, threads, is_single_no_target, log_prefix=""):
+def run_files_analysis(inputs, engine_path, depth, nodes, nnue_path, aux_nnues, use_nnue, threads, is_single_no_target, log_prefix="", force_reanalyze=False, repeat=1):
     cho_moves_all = []
     han_moves_all = []
     target_moves_all = []
@@ -1527,7 +1959,7 @@ def run_files_analysis(inputs, engine_path, depth, nodes, nnue_path, aux_nnues, 
         input_text = Path(file_path).read_text(encoding="utf-8")
         if i == 1: white_name, black_name = extract_player_names(input_text)
         
-        game_history = analyze_game(engine_path, input_text, depth, nodes, nnue_path, aux_nnues, use_nnue, threads, log_prefix, game_id=i)
+        game_history = analyze_game(engine_path, input_text, depth, nodes, nnue_path, aux_nnues, use_nnue, threads, log_prefix, game_id=i, force_reanalyze=force_reanalyze, repeat=repeat)
         
         if is_single_no_target:
             cho_moves_all.extend([h for h in game_history if h.ply % 2 == 0])
@@ -1546,7 +1978,7 @@ def evaluate_single_nnue(nnue_path: Path, engine_path: Path, depth: int, nodes: 
     engine = EngineSession(engine_path, depth, nodes, str(nnue_path), True, 1)
     preds = []
     for tgt in test_targets:
-        top_moves, _ = engine.get_top_moves(tgt.start_fen, tgt.uci_history)
+        top_moves, _ = engine.get_top_moves(tgt.start_fen)
         top_ucis = [m.uci for m in top_moves]
         t1 = top_ucis[0] if top_ucis else ""
         preds.append((t1, top_ucis))
@@ -1700,6 +2132,10 @@ def print_target_report(target_moves: List[HistoryEntry], opp_moves: List[Histor
     print(pad_korean(f"총 분석 게임 수: {game_count} 게임 / 타겟 분석 수순: {len(target_moves)}수", 105))
     print("="*105)
     
+    print("\n [ 타겟 진영 실시간 형세 추세 시각화 (Evaluation Curve) ]")
+    print(generate_ascii_eval_curve(target_moves))
+    print("-" * 105)
+
     print(f" [ 핵심 지표 (강제수 필터링 적용) ]")
     header = f" {pad_korean('진영', 12)} | {pad_korean('전체ACPL', 11)} | {pad_korean('비강제ACPL', 12)} | {pad_korean('편차(기복)', 11)} | {pad_korean('전체Top-3', 11)} | {pad_korean('비강제Top-1', 12)} | {pad_korean('난전Top-1', 11)}"
     print(header)
@@ -1731,6 +2167,9 @@ def print_target_report(target_moves: List[HistoryEntry], opp_moves: List[Histor
     for name, a in [("타겟(분석)", t_adv), ("상대방(평균)", o_adv)]:
         row = f" {pad_korean(name, 12)} | {pad_korean(format_adv_metric(a[0]), 26)} | {pad_korean(format_adv_metric(a[1], True), 30)} | {pad_korean(format_adv_metric(a[2], True), 30)}"
         print(row)
+
+    # Top 5 비중복 국지적 의심 구간 상세 보고서 출력
+    print_suspicious_segments_report(target_moves, "타겟(분석)")
 
     print_tactical_burst_details([
         ("타겟(분석)", t_burst_score, t_bursts, t_burst_verdict),
@@ -1783,13 +2222,16 @@ def print_single_report(cho_moves: List[HistoryEntry], han_moves: List[HistoryEn
     c_calib_full, c_calib_part, c_db_msg = calibrate_with_db(cho_name, c_fprob, c_pprob, c_stats, use_db, search_config)
     h_calib_full, h_calib_part, h_db_msg = calibrate_with_db(han_name, h_fprob, h_pprob, h_stats, use_db, search_config)
 
-    # DB 보정 후 소견 워딩 재평가
+    # DB 보정 후 소견 워딩 재평가 (프로 기사 오탐 최소화 통계 기준 정합)
     def re_evaluate_verdict(f_prob, p_prob):
-        if p_prob > f_prob + 15.0 and p_prob >= 75.0: return "🔴 특정 난전 구간에서 기계적 수순 전개와 매우 흡사함"
-        if f_prob >= 85: return "🔴 기계적 수순 패턴과 매우 높은 통계적 연관성을 보임"
-        if f_prob >= 75: return "🟡 인간 최고수 범주를 상회하는 통계적 일치도가 관찰됨"
-        if f_prob >= 60: return "🟠 최상위권 프로 및 고수 수준의 정교한 대국 내용"
-        return "🟢 보편적인 인간 대국자의 흐름 및 편차"
+        max_prob = max(f_prob, p_prob)
+        if max_prob >= 90.0: 
+            return "🔴 일치도가 극도로 높은 이례적인 통계적 특이성"
+        if max_prob >= 70.0: 
+            return "🟡 정밀 검토가 요구되는 높은 정교함 및 기계적 연관성"
+        if max_prob >= 40.0: 
+            return "🟠 최상위권 프로 및 고수 수준의 정교한 대국 내용"
+        return "🟢 자연스러운 인간 대국자의 흐름 및 편차"
 
     if use_db:
         c_verdict = re_evaluate_verdict(c_calib_full, c_calib_part)
@@ -1811,6 +2253,12 @@ def print_single_report(cho_moves: List[HistoryEntry], han_moves: List[HistoryEn
         print(f"\n ▶ 한(Grn) [{han_name if han_name else '익명'}]:")
         print(get_playstyle_narrative(han_name, search_config, han_moves))
         print("-" * 105)
+
+    print("\n [ 초 (Red) 진영 실시간 형세 추세 시각화 (Evaluation Curve) ]")
+    print(generate_ascii_eval_curve(cho_moves))
+    print("\n [ 한 (Grn) 진영 실시간 형세 추세 시각화 (Evaluation Curve) ]")
+    print(generate_ascii_eval_curve(han_moves))
+    print("-" * 105)
 
     print(f"\n [ 핵심 지표 (강제수 필터링 적용) ]")
     header = f" {pad_korean('진영', 10)} | {pad_korean('전체ACPL', 11)} | {pad_korean('비강제ACPL', 12)} | {pad_korean('편차(기복)', 11)} | {pad_korean('전체Top-3', 11)} | {pad_korean('비강제Top-1', 12)} | {pad_korean('난전Top-1', 11)}"
@@ -1843,6 +2291,10 @@ def print_single_report(cho_moves: List[HistoryEntry], han_moves: List[HistoryEn
     for name, a in [("초(Red)", c_adv), ("한(Grn)", h_adv)]:
         row = f" {pad_korean(name, 10)} | {pad_korean(format_adv_metric(a[0]), 26)} | {pad_korean(format_adv_metric(a[1], True), 30)} | {pad_korean(format_adv_metric(a[2], True), 30)}"
         print(row)
+
+    # Top 5 비중복 국지적 의심 구간 세부 보고서 출력
+    print_suspicious_segments_report(cho_moves, "초(Red)")
+    print_suspicious_segments_report(han_moves, "한(Grn)")
 
     print_tactical_burst_details([
         ("초(Red)", c_burst_score, c_bursts, c_burst_verdict),
@@ -1940,8 +2392,8 @@ def write_csv_log(filename: str, history: List[HistoryEntry]):
 def prompt_label_for_anonymous(side_name: str) -> Optional[Tuple[int, str]]:
     print(f"\n[DB 라벨링] 기보에 '{side_name}' 진영의 닉네임이 없습니다.")
     print("이 대국자의 판독 결과를 입력하여 DB 판단 기준을 정밀하게 학습시킬 수 있습니다.")
-    print("  1: AI로 확신 (Definite AI)")
-    print("  2: AI로 의심 (Suspected AI)")
+    print("  1: 기계적 의심 높음 (Definite/High Machine Suspect)")
+    print("  2: 기계적 의심 보통 (Suspected Machine)")
     print("  3: 사람으로 추정 (Likely Human)")
     print("  4: 사람으로 확신 (Definite Human)")
     print("  엔터: 건너뛰기")
@@ -1951,8 +2403,8 @@ def prompt_label_for_anonymous(side_name: str) -> Optional[Tuple[int, str]]:
             choice = input("선택 (1/2/3/4 또는 엔터): ").strip()
             if not choice: return None
             val = int(choice)
-            if val == 1: return (1, "AI 확신")
-            elif val == 2: return (2, "AI 의심")
+            if val == 1: return (1, "기계적 의심 높음")
+            elif val == 2: return (2, "기계적 의심 보통")
             elif val == 3: return (3, "사람 추정")
             elif val == 4: return (4, "사람 확신")
             print("잘못된 입력입니다. 1~4 사이의 숫자를 입력하세요.")
@@ -1962,7 +2414,7 @@ def prompt_label_for_anonymous(side_name: str) -> Optional[Tuple[int, str]]:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     init_db()
     
-    parser = argparse.ArgumentParser(description="FJACE Profile & Similarity Analyzer v4.3")
+    parser = argparse.ArgumentParser(description="FJACE Profile & Similarity Analyzer v5.2")
     parser.add_argument("inputs", nargs='+', help="Path to PGN files. 'filename:cho' or 'filename:han' targets specific player.")
     parser.add_argument("--engine", default="./stockfish.exe", help="Path to engine")
     parser.add_argument("--depth", type=int, default=15, help="Search depth (기본 15)")
@@ -1981,8 +2433,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--csv", default=None, help="분석 완료 후 각 수순별 상세 로그를 CSV 파일로 저장 (예: result.csv)")
     
     parser.add_argument("--db", action="store_true", help="DB(janggi_profiles.db) 연동 모드 활성화. 유저 성향 추적 및 다중 라벨링(KNN) 정밀 보정 수행")
+    parser.add_argument("--range", default=None, help="특정 수순 구간 제한 (예: 30:70, 1:40)")
+    parser.add_argument("--repeat", type=int, default=1, help="Number of repetitions for engine analysis (1, 3, or 5)")
+    parser.add_argument("--force-reanalyze", action="store_true", help="Bypass DB cache and force re-analysis")
     
     args = parser.parse_args(argv)
+
+    if args.repeat not in (1, 3, 5):
+        print("--repeat must be one of: 1, 3, 5")
+        return 1
 
     engine_path = Path(args.engine)
     if not engine_path.exists():
@@ -2019,6 +2478,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     cho_all, han_all, target_all, opp_all = [], [], [], []
     white_name, black_name = "", ""
 
+    # 분석 구간 슬라이싱 변수 매핑
+    start_ply, end_ply = 1, 999
+    if args.range:
+        try:
+            sp, ep = args.range.split(":")
+            start_ply = int(sp) if sp else 1
+            end_ply = int(ep) if ep else 999
+            print(f"[안내] 지정된 Move Range ({start_ply}수 ~ {end_ply}수) 범위 내의 수순만 필터링하여 보고서를 구성합니다.")
+        except ValueError:
+            print("[오류] --range 인자 지정 형식이 올바르지 않습니다. (예: 30:70)")
+
     for stage in stages:
         if stage["num"] == 2 and not args.nnue2: continue
         if stage["num"] == 3 and not args.force_3stage:
@@ -2029,10 +2499,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"### [ {stage['name']} 분석 가동 ]")
         print("#"*70)
 
-        cho_all, han_all, target_all, opp_all, w_n, b_n = run_files_analysis(
-            args.inputs, engine_path, args.depth, args.nodes, stage["nnue"], aux_nnues_for_consensus, stage["use"], args.threads, is_single_no_target
+        cho_raw, han_raw, target_raw, opp_raw, w_n, b_n = run_files_analysis(
+            args.inputs, engine_path, args.depth, args.nodes, stage["nnue"], aux_nnues_for_consensus, stage["use"], args.threads, is_single_no_target, force_reanalyze=args.force_reanalyze, repeat=args.repeat
         )
         if stage["num"] == 1: white_name, black_name = w_n, b_n
+
+        # Move Range 기준 고속 비엔진 슬라이싱
+        cho_all = analyze_move_range(cho_raw, start_ply, end_ply)
+        han_all = analyze_move_range(han_raw, start_ply, end_ply)
+        target_all = analyze_move_range(target_raw, start_ply, end_ply)
+        opp_all = analyze_move_range(opp_raw, start_ply, end_ply)
 
         if is_single_no_target:
             cf, cp, _ = calculate_cheat_probability(cho_all)
@@ -2049,9 +2525,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             
             current_search_config = get_search_config(deep_depth, deep_nodes)
             
-            cho_all, han_all, target_all, opp_all, _, _ = run_files_analysis(
-                args.inputs, engine_path, deep_depth, deep_nodes, stage["nnue"], aux_nnues_for_consensus, stage["use"], args.threads, is_single_no_target, log_prefix="[심층 탐색] "
+            cho_raw, han_raw, target_raw, opp_raw, _, _ = run_files_analysis(
+                args.inputs, engine_path, deep_depth, deep_nodes, stage["nnue"], aux_nnues_for_consensus, stage["use"], args.threads, is_single_no_target, log_prefix="[심층 탐색] ", force_reanalyze=args.force_reanalyze, repeat=args.repeat
             )
+            cho_all = analyze_move_range(cho_raw, start_ply, end_ply)
+            han_all = analyze_move_range(han_raw, start_ply, end_ply)
+            target_all = analyze_move_range(target_raw, start_ply, end_ply)
+            opp_all = analyze_move_range(opp_raw, start_ply, end_ply)
             
             if is_single_no_target:
                 cf, cp, _ = calculate_cheat_probability(cho_all)
