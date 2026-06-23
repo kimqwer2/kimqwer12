@@ -3,7 +3,7 @@
     <div class="mistake-header">
       <div>
         <h3>실수방지 모드</h3>
-        <small>실수 방지 학습</small>
+        <small>엔진 기준 실수 자동 교정</small>
       </div>
       <label class="toggle"><input :checked="settings.enabled" type="checkbox" @change="update({ enabled: $event.target.checked })"> 사용</label>
     </div>
@@ -15,9 +15,9 @@
       </label>
       <label>실수 판정 방식
         <select :value="settings.evaluationMode || 'practical'" @change="update({ evaluationMode: $event.target.value })">
-          <option value="perfect">완전 판정</option>
-          <option value="practical">실전 판정</option>
-          <option value="flexible">유연 실전 판정</option>
+          <option value="perfect">엄격</option>
+          <option value="flexible">실전적</option>
+          <option value="practical">관대함</option>
         </select>
       </label>
       <label>실수 검증 깊이
@@ -42,8 +42,8 @@
       <label v-if="settings.opponentTraining && settings.opponentPreventionMode !== 'perfect'">상대 스타일 (일반 모드)
         <select :value="settings.opponentPreventionMode || 'off'" @change="update({ opponentPreventionMode: $event.target.value })">
           <option value="off">난이도만 적용 · CP 샘플링</option>
-          <option value="practical">실전형 · 좋은 평가 유지</option>
-          <option value="flexible">유연형 · 넓은 실전 허용폭</option>
+          <option value="flexible">실전형 · 좋은 평가 유지</option>
+          <option value="practical">유연형 · 넓은 실전 허용폭</option>
         </select>
       </label>
       <small v-if="settings.opponentTraining" class="mode-help">엔진 최선수 강제는 상대 수준을 무시하고 최선수를 둡니다. 스타일은 CP 난이도는 유지하면서 비최선수 허용 방식을 조절합니다.</small>
@@ -132,7 +132,7 @@ export default {
     },
     clearPreview () { this.$store.dispatch('clearReviewPreview') },
     points (cp) { return ((Number(cp) || 0) / 100).toFixed(1) },
-    modeLabel (mode) { return mode === 'perfect' ? '완전 판정' : (mode === 'flexible' ? '유연 실전 판정' : '실전 판정') },
+    modeLabel (mode) { return mode === 'perfect' ? '엄격' : (mode === 'flexible' ? '실전적' : '관대함') },
     entryKey (entry) { return entry.id || `${entry.timestamp}-${entry.userMove}` },
     isEntryExpanded (entry) { return this.allEntriesExpanded || !!this.expandedEntries[this.entryKey(entry)] },
     toggleEntry (entry) { this.$set(this.expandedEntries, this.entryKey(entry), !this.isEntryExpanded(entry)) },
