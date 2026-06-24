@@ -74,6 +74,18 @@
             </button>
             <button
               class="mini-btn"
+              @click="copyWinBoardSequence"
+            >
+              WinBoard 전체 수순 복사
+            </button>
+            <button
+              class="mini-btn"
+              @click="copyWinBoardPosition"
+            >
+              Copy WinBoard Position
+            </button>
+            <button
+              class="mini-btn"
               @click="pasteSequence"
             >
               수순 붙여넣기
@@ -220,6 +232,7 @@ import SettingsTab from './SettingsTab'
 import GameInfo from './GameInfo.vue'
 import { findBestOpeningForFen } from '../../shared/openingLookup'
 import { parseGameSequence, serializeGameSequence } from '../../shared/gameSequence'
+import { serializeWinBoardFen, serializeWinBoardGame } from '../../shared/winboardExport'
 import { copyTextReliable, readTextReliable } from '../../shared/clipboard'
 import { mapGetters } from 'vuex'
 
@@ -625,6 +638,28 @@ export default {
       const result = await copyTextReliable(text)
       if (result.ok) {
         alert('전체 대국 수순을 복사했습니다.')
+        return
+      }
+      alert('복사에 실패했습니다. 다른 창을 닫고 다시 시도해 주세요.')
+    },
+    async copyWinBoardSequence () {
+      const text = serializeWinBoardGame({
+        fen: this.$store.getters.fen,
+        moves: this.$store.getters.currentMainlineUci,
+        includeBoardDump: true
+      })
+      const result = await copyTextReliable(text)
+      if (result.ok) {
+        alert('WinBoard 전체 대국 수순을 복사했습니다.')
+        return
+      }
+      alert('복사에 실패했습니다. 다른 창을 닫고 다시 시도해 주세요.')
+    },
+    async copyWinBoardPosition () {
+      const text = serializeWinBoardFen(this.$store.getters.fen)
+      const result = await copyTextReliable(text)
+      if (result.ok) {
+        alert('WinBoard 현재 포지션을 복사했습니다.')
         return
       }
       alert('복사에 실패했습니다. 다른 창을 닫고 다시 시도해 주세요.')
