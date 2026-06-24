@@ -194,6 +194,33 @@
               type="checkbox"
             > Controlled Margin Mode
           </label>
+          <label
+            v-if="whiteChoice !== blackChoice"
+            class="checkbox-label"
+          >
+            <input
+              v-model="pressureMode"
+              type="checkbox"
+            > Pressure Mode
+          </label>
+          <label
+            v-if="whiteChoice !== blackChoice"
+            class="checkbox-label"
+          >
+            <input
+              v-model="hunterMode"
+              type="checkbox"
+            > Hunter Mode
+          </label>
+          <label
+            v-if="whiteChoice !== blackChoice"
+            class="checkbox-label"
+          >
+            <input
+              v-model="closerMode"
+              type="checkbox"
+            > Closer / Finisher Mode
+          </label>
         </div>
 
         <p class="hint">
@@ -364,6 +391,21 @@ export default {
       set (v) { this.$store.commit('startGameModal', { closeWinMode: !!v }) }
     },
 
+    pressureMode: {
+      get () { return !!(this.$store.state.startGameModal && this.$store.state.startGameModal.pressureMode) },
+      set (v) { this.$store.commit('startGameModal', { pressureMode: !!v }) }
+    },
+
+    hunterMode: {
+      get () { return !!(this.$store.state.startGameModal && this.$store.state.startGameModal.hunterMode) },
+      set (v) { this.$store.commit('startGameModal', { hunterMode: !!v }) }
+    },
+
+    closerMode: {
+      get () { return !!(this.$store.state.startGameModal && this.$store.state.startGameModal.closerMode) },
+      set (v) { this.$store.commit('startGameModal', { closerMode: !!v }) }
+    },
+
     startDisabled () {
       // Disable if white is engine but no engine selected
       if (this.whiteChoice === 'engine' && !this.whiteEngineObj) {
@@ -479,6 +521,9 @@ export default {
         showEndGameModal: this.showEndGameModal,
         humanTrapMode: this.humanTrapMode,
         closeWinMode: this.closeWinMode,
+        pressureMode: this.pressureMode,
+        hunterMode: this.hunterMode,
+        closerMode: this.closerMode,
 
         // Engines are only relevant when a side is set to 'engine'. We emit names for simplicity
         whiteEngine: (this.whiteChoice === 'engine' && this.whiteEngineObj)
@@ -533,7 +578,10 @@ export default {
           : payload.whiteEngine,
         gameMode: payload.gameMode,
         humanTrapMode: payload.humanTrapMode,
-        closeWinMode: payload.closeWinMode
+        closeWinMode: payload.closeWinMode,
+        pressureMode: payload.pressureMode,
+        hunterMode: payload.hunterMode,
+        closerMode: payload.closerMode
       })
 
       // Emit a start event as well (UI layer hook), then close

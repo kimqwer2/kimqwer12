@@ -162,6 +162,16 @@ const HUMAN_TRAP_DEFAULTS = {
   earlyTrapScore: 85
 }
 
+const HUMAN_COMPETITIVE_DEFAULTS = {
+  pressureMode: false,
+  pressureMultiPv: 5,
+  pressureCpRange: 80,
+  hunterMode: false,
+  hunterMultiplier: 0.5,
+  hunterMoves: 3,
+  closerMode: false
+}
+
 
 const CHAOS_VALIDATION_PRESETS = [
   { name: 'Quick', stage1Depth: 4, stage2Depth: 8 },
@@ -770,6 +780,122 @@ function controlledMarginForcingInfo ({ fen, variant, is960, move }) {
   }
 }
 
+function normalizeHumanCompetitiveSettings (settings = {}) {
+  const merged = { ...HUMAN_COMPETITIVE_DEFAULTS, ...(settings || {}) }
+  return {
+    pressureMode: !!merged.pressureMode,
+    pressureMultiPv: Math.max(1, Math.min(20, Number(merged.pressureMultiPv) || HUMAN_COMPETITIVE_DEFAULTS.pressureMultiPv)),
+    pressureCpRange: Math.max(0, Math.min(1000, Number(merged.pressureCpRange) || HUMAN_COMPETITIVE_DEFAULTS.pressureCpRange)),
+    hunterMode: !!merged.hunterMode,
+    hunterMultiplier: clampNumber(Number(merged.hunterMultiplier) || HUMAN_COMPETITIVE_DEFAULTS.hunterMultiplier, 0.01, 1),
+    hunterMoves: Math.max(1, Math.min(20, Number(merged.hunterMoves) || HUMAN_COMPETITIVE_DEFAULTS.hunterMoves)),
+    closerMode: !!merged.closerMode
+  }
+}
+
+function humanCompetitiveScore ({ fen, variant, is960, item, best, settings, hunterActive }) {
+  const cpLoss = Math.max(0, best.cp - item.cp)
+  const moveInfo = moveCaptureInfo(fen, item.ucimove)
+  const replyCount = legalReplyCountAfterMove({ fen, variant, is960, move: item.ucimove })
+  const pvSimplification = analyzePvSimplification({ fen, variant, is960, pvUCI: item.pvUCI, maxPlies: 6 })
+  const forcingBonus = replyCount === null ? 0 : (replyCount <= 2 ? 75 : (replyCount <= 5 ? 48 : (replyCount <= 8 ? 24 : 0)))
+  let score = (item.ucimove === best.ucimove ? 800 : 220) + Math.max(0, settings.pressureCpRange + 20 - cpLoss)
+
+  if (settings.pressureMode) {
+    score += Math.max(0, 90 - cpLoss)
+    score += forcingBonus
+    score += moveInfo.isCapture ? 25 : 18
+    score += pvSimplification.forcingPlies * 12
+  }
+
+  if (hunterActive) {
+    score += Math.max(0, 120 - 2 * cpLoss)
+    score += forcingBonus * 1.25
+    score += moveInfo.isCapture ? 44 : 0
+  }
+
+  if (settings.closerMode) {
+    if (best.cp >= 650) {
+      score += moveInfo.isCapture ? 75 + Math.round(moveInfo.capturedValue / 25) : 0
+      score += pvSimplification.captures ? Math.round(pvSimplification.captureValue / 60) : 0
+      score += Math.max(0, 120 - cpLoss)
+    } else if (best.cp >= 120) {
+      score += forcingBonus
+      score += moveInfo.isCapture ? 22 : 16
+      score += Math.max(0, 80 - cpLoss)
+    } else if (best.cp > -120) {
+      score += forcingBonus * 1.15
+      score += moveInfo.isCapture ? 28 : 20
+    } else {
+      score += forcingBonus * 1.4
+      score += moveInfo.isCapture ? 42 : 24
+      score += Math.max(0, 140 - cpLoss)
+    }
+  }
+
+  return {
+    ...item,
+    cpLoss,
+    moveInfo,
+    replyCount,
+    pvSimplification,
+    humanCompetitiveScore: Math.max(1, Math.round(score))
+  }
+}
+
+function selectHumanCompetitiveMove ({ fen, variant, is960, bestmove, rootLines, settings, sideToMove = true, hunterActive = false }) {
+  const safeSettings = normalizeHumanCompetitiveSettings(settings)
+  if (!safeSettings.pressureMode && !safeSettings.hunterMode && !safeSettings.closerMode) return null
+
+  const candidates = normalizeTrapRootCandidates(rootLines, bestmove, sideToMove).slice(0, safeSettings.pressureMultiPv)
+  const best = candidates.find(item => item.ucimove === bestmove) || candidates[0]
+  if (!best || typeof best.cp !== 'number') return null
+
+  const allowedLoss = Math.max(
+    safeSettings.pressureMode ? safeSettings.pressureCpRange : 0,
+    hunterActive ? 35 : 0,
+    safeSettings.closerMode ? (best.cp >= 650 ? 120 : (best.cp < -120 ? 100 : 70)) : 0
+  )
+
+  const pool = candidates
+    .filter(item => item.ucimove === best.ucimove || Math.max(0, best.cp - item.cp) <= allowedLoss)
+    .map(item => humanCompetitiveScore({ fen, variant, is960, item, best, settings: safeSettings, hunterActive }))
+
+  if (!pool.length) return null
+
+  const total = pool.reduce((sum, item) => sum + item.humanCompetitiveScore, 0)
+  let roll = Math.random() * total
+  let selected = pool[0]
+  for (const item of pool) {
+    roll -= item.humanCompetitiveScore
+    if (roll <= 0) {
+      selected = item
+      break
+    }
+  }
+
+  return {
+    mode: 'Human Competitive Modes',
+    type: [
+      safeSettings.pressureMode ? 'Pressure' : null,
+      hunterActive ? 'Hunter' : null,
+      safeSettings.closerMode ? 'Closer' : null
+    ].filter(Boolean).join(' + '),
+    move: selected.ucimove,
+    bestmove: best.ucimove,
+    selected: true,
+    replacement: selected.ucimove !== best.ucimove,
+    rootCandidates: candidates.length,
+    poolSize: pool.length,
+    bestCp: best.cp,
+    selectedCp: selected.cp,
+    cpLoss: selected.cpLoss,
+    displayEval: selected.rawCp,
+    reason: `selected from MultiPV pool (${pool.length}) within ${allowedLoss}cp; replyCount=${selected.replyCount === null ? 'n/a' : selected.replyCount}; capture=${selected.moveInfo.isCapture}`,
+    candidates: pool.map(item => ({ move: item.ucimove, cp: item.cp, cpLoss: item.cpLoss, weight: item.humanCompetitiveScore, multipv: item.multipv }))
+  }
+}
+
 
 function controlledMarginRefusalInfo ({ item, best, settings, fen, combinedMode = false }) {
   const moveInfo = moveCaptureInfo(fen, item.ucimove)
@@ -1332,10 +1458,17 @@ function personalityFlagsFromState (state) {
     ...(debug.closeWinSettings || {}),
     enabled: !!modal.closeWinMode
   })
+  const competitiveSettings = normalizeHumanCompetitiveSettings({
+    ...(debug.humanCompetitiveSettings || {}),
+    pressureMode: !!modal.pressureMode,
+    hunterMode: !!modal.hunterMode,
+    closerMode: !!modal.closerMode
+  })
   return {
     humanTrapSettings,
     closeWinSettings,
-    enabled: humanTrapSettings.enabled || closeWinSettings.enabled
+    competitiveSettings,
+    enabled: humanTrapSettings.enabled || closeWinSettings.enabled || competitiveSettings.pressureMode || competitiveSettings.hunterMode || competitiveSettings.closerMode
   }
 }
 
@@ -1892,7 +2025,10 @@ export const store = new Vuex.Store({
       blackLimiterValue: 1000,
       showEndGameModal: true,
       humanTrapMode: false,
-      closeWinMode: false
+      closeWinMode: false,
+      pressureMode: false,
+      hunterMode: false,
+      closerMode: false
     },
     showGameEndModal: false,
     gameResult: null,
@@ -2361,15 +2497,19 @@ export const store = new Vuex.Store({
     startGameModal (state, payload) {
       const before = state.startGameModal || {}
       state.startGameModal = Object.assign({}, before, payload)
-      if (payload && ('humanTrapMode' in payload || 'closeWinMode' in payload)) {
+      if (payload && ('humanTrapMode' in payload || 'closeWinMode' in payload || 'pressureMode' in payload || 'hunterMode' in payload || 'closerMode' in payload)) {
         console.info('[Personality]', {
           selectorEntered: false,
           settingsChanged: true,
           humanTrap: !!state.startGameModal.humanTrapMode,
-          controlledMargin: !!state.startGameModal.closeWinMode
+          controlledMargin: !!state.startGameModal.closeWinMode,
+          pressure: !!state.startGameModal.pressureMode,
+          hunter: !!state.startGameModal.hunterMode,
+          closer: !!state.startGameModal.closerMode
         })
         if ('humanTrapMode' in payload) console.info('[HumanTrap]', { entered: !!state.startGameModal.humanTrapMode, selected: 'n/a', reason: 'setting_changed' })
         if ('closeWinMode' in payload) console.info('[ControlledMargin]', { entered: !!state.startGameModal.closeWinMode, selected: 'n/a', reason: 'setting_changed' })
+        if ('pressureMode' in payload || 'hunterMode' in payload || 'closerMode' in payload) console.info('[HumanCompetitive]', { pressure: !!state.startGameModal.pressureMode, hunter: !!state.startGameModal.hunterMode, closer: !!state.startGameModal.closerMode, selected: 'n/a', reason: 'setting_changed' })
       }
     },
     showGameEndModal (state, payload) {
@@ -2954,7 +3094,12 @@ export const store = new Vuex.Store({
           blackLimiterEnabled: true,
           blackLimiterType: 'time',
           blackLimiterValue: 1000,
-          showEndGameModal: true
+          showEndGameModal: true,
+          humanTrapMode: false,
+          closeWinMode: false,
+          pressureMode: false,
+          hunterMode: false,
+          closerMode: false
         },
         openedPGN: false,
         QuickTourIndex: 0,
@@ -3443,7 +3588,37 @@ export const store = new Vuex.Store({
             context.commit('humanTrapDiagnostics', { mode: 'Opponent Training Strength', type: level.name, move: bestmove, cpLoss: selectedTraining.cpLoss, pointLoss: Number(pointLossString(selectedTraining.cpLoss)), reason: `${context.state.mistakePrevention.chaosMode !== 'off' ? context.state.mistakePrevention.chaosMode : 'human-like'} sampled legal move within ${selectedTraining.maxLoss}cp${selectedTraining.openingProtected ? ' (opening protected)' : ''}${selectedTraining.fallback ? ' (fallback closest target)' : ''}`, probeStats: { probes: selectedTraining.sampled }, selectedAt: Date.now() })
           }
         }
-        if (personality.enabled) {
+        if (personality.enabled && (personality.competitiveSettings.pressureMode || personality.competitiveSettings.hunterMode || personality.competitiveSettings.closerMode)) {
+          const rootCandidates = normalizeTrapRootCandidates(rootLines.filter(Boolean), bestmove, context.getters.turn)
+          const bestLine = rootCandidates.find(line => line.ucimove === bestmove) || rootCandidates[0]
+          const level = MISTAKE_PREVENTION_LEVELS.find(l => l.name === context.state.mistakePrevention.opponentLevelName) || MISTAKE_PREVENTION_LEVELS.find(l => l.name === context.state.mistakePrevention.levelName) || MISTAKE_PREVENTION_LEVELS[2]
+          const hunterThreshold = Math.round((Number(level && level.thresholdCp) || 300) * personality.competitiveSettings.hunterMultiplier)
+          const currentHunterPlies = Math.max(0, Number(context.state.enginePersonalityDebug.hunterPlies) || 0)
+          const triggeredHunter = !!(personality.competitiveSettings.hunterMode && bestLine && typeof bestLine.cp === 'number' && bestLine.cp >= hunterThreshold)
+          const hunterActive = triggeredHunter || currentHunterPlies > 0
+          const selectedCompetitive = selectHumanCompetitiveMove({
+            fen: rootFen,
+            variant: context.getters.variant,
+            is960: context.getters.is960,
+            bestmove,
+            rootLines: rootLines.filter(Boolean),
+            settings: personality.competitiveSettings,
+            sideToMove: context.getters.turn,
+            hunterActive
+          })
+          if (triggeredHunter) {
+            context.commit('enginePersonalityDebug', { hunterPlies: personality.competitiveSettings.hunterMoves })
+          } else if (currentHunterPlies > 0) {
+            context.commit('enginePersonalityDebug', { hunterPlies: currentHunterPlies - 1 })
+          }
+          if (selectedCompetitive && selectedCompetitive.move && context.state.board.legalMoves().includes(selectedCompetitive.move) && normalizeFen(context.getters.fen) === normalizeFen(rootFen)) {
+            bestmove = selectedCompetitive.move
+            context.commit('personalityDiagnostics', { ...selectedCompetitive, hunterActive, hunterThreshold, selectedAt: Date.now() })
+          } else if (selectedCompetitive) {
+            context.commit('personalityDiagnostics', { ...selectedCompetitive, hunterActive, hunterThreshold, selectedAt: Date.now() })
+          }
+        }
+        if (personality.humanTrapSettings.enabled || personality.closeWinSettings.enabled) {
           context.commit('enginePersonalityDebug', { trapAttempts: (context.state.enginePersonalityDebug.trapAttempts || 0) + 1 })
           const selected = await selectPersonalityMove({
             engineInstance: engine,
@@ -3486,6 +3661,9 @@ export const store = new Vuex.Store({
         console.info('[Personality]', {
           humanTrap: personality.humanTrapSettings.enabled,
           controlledMargin: personality.closeWinSettings.enabled,
+          pressure: personality.competitiveSettings.pressureMode,
+          hunter: personality.competitiveSettings.hunterMode,
+          closer: personality.competitiveSettings.closerMode,
           selectorEntered: true,
           phase: 'analysis-search-start',
           source
@@ -3502,10 +3680,13 @@ export const store = new Vuex.Store({
           selectorEntered: true,
           humanTrapEnabled: personality.humanTrapSettings.enabled,
           controlledMarginEnabled: personality.closeWinSettings.enabled,
+          pressureEnabled: personality.competitiveSettings.pressureMode,
+          hunterEnabled: personality.competitiveSettings.hunterMode,
+          closerEnabled: personality.competitiveSettings.closerMode,
           reason: 'analysis_root_search_started',
           selectedAt: Date.now()
         })
-        engine.send(`setoption name MultiPV value ${Math.max(personality.humanTrapSettings.multiPv, personality.closeWinSettings.maxCandidates)}`)
+        engine.send(`setoption name MultiPV value ${Math.max(personality.humanTrapSettings.multiPv, personality.closeWinSettings.maxCandidates, personality.competitiveSettings.pressureMultiPv)}`)
       }
       console.log('[engine-order] cmd:', goCmd)
       engine.send(goCmd)
@@ -3605,6 +3786,13 @@ export const store = new Vuex.Store({
           ...(payload.closeWinSettings || {}),
           enabled: !!(payload.closeWinMode || (context.state.startGameModal && context.state.startGameModal.closeWinMode))
         })
+        const competitiveSettings = normalizeHumanCompetitiveSettings({
+          ...personality.competitiveSettings,
+          ...(payload.humanCompetitiveSettings || {}),
+          pressureMode: !!(payload.pressureMode || (context.state.startGameModal && context.state.startGameModal.pressureMode)),
+          hunterMode: !!(payload.hunterMode || (context.state.startGameModal && context.state.startGameModal.hunterMode)),
+          closerMode: !!(payload.closerMode || (context.state.startGameModal && context.state.startGameModal.closerMode))
+        })
 
         // Stop old PvE engine if it exists to avoid listener conflicts
         if (context.state.PvEEngineInstance) {
@@ -3661,7 +3849,7 @@ export const store = new Vuex.Store({
         let humanTrapRootLines = []
 
         const pveInfoHandler = info => {
-          if (!(humanTrapSettings.enabled || closeWinSettings.enabled) || !info || !('pv' in info)) return
+          if (!(humanTrapSettings.enabled || closeWinSettings.enabled || competitiveSettings.pressureMode || competitiveSettings.hunterMode || competitiveSettings.closerMode) || !info || !('pv' in info)) return
           const rank = Number(info.multipv) || 1
           const ucimove = typeof info.pv === 'string' ? info.pv.split(/\s+/)[0] : ''
           if (!ucimove) return
@@ -3680,10 +3868,13 @@ export const store = new Vuex.Store({
           try {
             humanTrapRootFen = context.getters.fen
             humanTrapRootLines = []
-            if (humanTrapSettings.enabled || closeWinSettings.enabled) {
+            if (humanTrapSettings.enabled || closeWinSettings.enabled || competitiveSettings.pressureMode || competitiveSettings.hunterMode || competitiveSettings.closerMode) {
               console.info('[Personality]', {
                 humanTrap: humanTrapSettings.enabled,
                 controlledMargin: closeWinSettings.enabled,
+                pressure: competitiveSettings.pressureMode,
+                hunter: competitiveSettings.hunterMode,
+                closer: competitiveSettings.closerMode,
                 selectorEntered: true,
                 phase: 'pve-search-start'
               })
@@ -3695,6 +3886,9 @@ export const store = new Vuex.Store({
                 selectorEntered: true,
                 humanTrapEnabled: humanTrapSettings.enabled,
                 controlledMarginEnabled: closeWinSettings.enabled,
+                pressureEnabled: competitiveSettings.pressureMode,
+                hunterEnabled: competitiveSettings.hunterMode,
+                closerEnabled: competitiveSettings.closerMode,
                 reason: 'pve_root_search_started',
                 selectedAt: Date.now()
               })
@@ -3702,6 +3896,9 @@ export const store = new Vuex.Store({
               context.commit('humanTrapDiagnostics', null)
             }
             inst.send(buildPositionCommand(context.getters.gameState))
+            if (humanTrapSettings.enabled || closeWinSettings.enabled || competitiveSettings.pressureMode || competitiveSettings.hunterMode || competitiveSettings.closerMode) {
+              inst.send(`setoption name MultiPV value ${Math.max(humanTrapSettings.multiPv, closeWinSettings.maxCandidates, competitiveSettings.pressureMultiPv)}`)
+            }
             inst.send(limiterToGo(lim))
           } catch (err) {
             console.error('[PvE] Failed to send position/go:', err)
@@ -3717,6 +3914,33 @@ export const store = new Vuex.Store({
           try {
             let move = sanitizeEngineMove(ucimove)
             if (!move) return
+            if (competitiveSettings.pressureMode || competitiveSettings.hunterMode || competitiveSettings.closerMode) {
+              const rootCandidates = normalizeTrapRootCandidates(humanTrapRootLines.filter(Boolean), move, turnIsWhite)
+              const bestLine = rootCandidates.find(line => line.ucimove === move) || rootCandidates[0]
+              const level = MISTAKE_PREVENTION_LEVELS.find(l => l.name === context.state.mistakePrevention.opponentLevelName) || MISTAKE_PREVENTION_LEVELS.find(l => l.name === context.state.mistakePrevention.levelName) || MISTAKE_PREVENTION_LEVELS[2]
+              const hunterThreshold = Math.round((Number(level && level.thresholdCp) || 300) * competitiveSettings.hunterMultiplier)
+              const currentHunterPlies = Math.max(0, Number(context.state.enginePersonalityDebug.hunterPlies) || 0)
+              const triggeredHunter = !!(competitiveSettings.hunterMode && bestLine && typeof bestLine.cp === 'number' && bestLine.cp >= hunterThreshold)
+              const hunterActive = triggeredHunter || currentHunterPlies > 0
+              const selectedCompetitive = selectHumanCompetitiveMove({
+                fen: humanTrapRootFen || context.getters.fen,
+                variant: context.getters.variant,
+                is960: context.getters.is960,
+                bestmove: move,
+                rootLines: humanTrapRootLines.filter(Boolean),
+                settings: competitiveSettings,
+                sideToMove: turnIsWhite,
+                hunterActive
+              })
+              if (triggeredHunter) context.commit('enginePersonalityDebug', { hunterPlies: competitiveSettings.hunterMoves })
+              else if (currentHunterPlies > 0) context.commit('enginePersonalityDebug', { hunterPlies: currentHunterPlies - 1 })
+              if (selectedCompetitive && selectedCompetitive.move && context.state.board.legalMoves().includes(selectedCompetitive.move)) {
+                move = selectedCompetitive.move
+                context.commit('personalityDiagnostics', { ...selectedCompetitive, hunterActive, hunterThreshold, selectedAt: Date.now() })
+              } else if (selectedCompetitive) {
+                context.commit('personalityDiagnostics', { ...selectedCompetitive, hunterActive, hunterThreshold, selectedAt: Date.now() })
+              }
+            }
             if (humanTrapSettings.enabled || closeWinSettings.enabled) {
               context.commit('enginePersonalityDebug', { trapAttempts: (context.state.enginePersonalityDebug.trapAttempts || 0) + 1 })
               const currentFen = context.getters.fen
