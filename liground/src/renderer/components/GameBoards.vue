@@ -80,6 +80,12 @@
             </button>
             <button
               class="mini-btn"
+              @click="copyWinBoardPosition"
+            >
+              Copy WinBoard Position
+            </button>
+            <button
+              class="mini-btn"
               @click="pasteSequence"
             >
               수순 붙여넣기
@@ -90,29 +96,6 @@
             >
               현재 기보를 오프닝북에 추가
             </button>
-          </div>
-          <div class="human-competitive-modes">
-            <div class="human-competitive-title">
-              Human Competitive Modes
-            </div>
-            <label>
-              <input
-                v-model="pressureMode"
-                type="checkbox"
-              > Pressure
-            </label>
-            <label>
-              <input
-                v-model="hunterMode"
-                type="checkbox"
-              > Hunter
-            </label>
-            <label>
-              <input
-                v-model="closerMode"
-                type="checkbox"
-              > Closer / Finisher
-            </label>
           </div>
           <div
             v-if="showOpeningSuggestions"
@@ -249,7 +232,7 @@ import SettingsTab from './SettingsTab'
 import GameInfo from './GameInfo.vue'
 import { findBestOpeningForFen } from '../../shared/openingLookup'
 import { parseGameSequence, serializeGameSequence } from '../../shared/gameSequence'
-import { serializeWinBoardGame } from '../../shared/winboardExport'
+import { serializeWinBoardFen, serializeWinBoardGame } from '../../shared/winboardExport'
 import { copyTextReliable, readTextReliable } from '../../shared/clipboard'
 import { mapGetters } from 'vuex'
 
@@ -321,18 +304,6 @@ export default {
     },
     showOpeningSuggestions () {
       return this.openingBook.enabled && this.openingBook.showSuggestions && this.openingCandidates.length > 0
-    },
-    pressureMode: {
-      get () { return !!(this.$store.state.startGameModal && this.$store.state.startGameModal.pressureMode) },
-      set (v) { this.$store.commit('startGameModal', { pressureMode: !!v }) }
-    },
-    hunterMode: {
-      get () { return !!(this.$store.state.startGameModal && this.$store.state.startGameModal.hunterMode) },
-      set (v) { this.$store.commit('startGameModal', { hunterMode: !!v }) }
-    },
-    closerMode: {
-      get () { return !!(this.$store.state.startGameModal && this.$store.state.startGameModal.closerMode) },
-      set (v) { this.$store.commit('startGameModal', { closerMode: !!v }) }
     },
     ...mapGetters(['QuickTourIndex'])
   },
@@ -684,6 +655,15 @@ export default {
       }
       alert('복사에 실패했습니다. 다른 창을 닫고 다시 시도해 주세요.')
     },
+    async copyWinBoardPosition () {
+      const text = serializeWinBoardFen(this.$store.getters.fen)
+      const result = await copyTextReliable(text)
+      if (result.ok) {
+        alert('WinBoard 현재 포지션을 복사했습니다.')
+        return
+      }
+      alert('복사에 실패했습니다. 다른 창을 닫고 다시 시도해 주세요.')
+    },
     async pasteSequence () {
       const read = await readTextReliable()
       if (!read.ok) {
@@ -817,20 +797,6 @@ input {
   background: var(--second-bg-color);
   color: var(--main-text-color);
 }
-.human-competitive-modes {
-  margin-top: 8px;
-  padding: 8px;
-  border: 1px solid rgba(255,255,255,0.16);
-  border-radius: 6px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 12px;
-  align-items: center;
-  background: rgba(127,127,127,0.08);
-}
-.human-competitive-title { font-weight: 600; width: 100%; }
-.human-competitive-modes label { display: inline-flex; align-items: center; gap: 4px; }
-
 .opening-candidates {
   margin-top: 8px;
   display: flex;

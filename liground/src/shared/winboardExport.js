@@ -15,6 +15,18 @@ function exportDate (date = new Date()) {
   return `${yyyy}.${mm}.${dd}`
 }
 
+function ligroundPieceToWinBoardPiece (piece) {
+  if (piece === 'H') return 'N'
+  if (piece === 'h') return 'n'
+  if (piece === 'E') return 'B'
+  if (piece === 'e') return 'b'
+  return piece
+}
+
+export function serializeWinBoardFen (fen) {
+  return String(fen || '').trim().replace(/[HhEe]/g, ligroundPieceToWinBoardPiece)
+}
+
 function boardDumpFromFen (fen) {
   const board = String(fen || '').split(/\s+/)[0]
   if (!board) return ''
@@ -35,7 +47,7 @@ function formatWinBoardMoveList (moves) {
 }
 
 export function serializeWinBoardGame ({ fen, moves, includeBoardDump = true, date = new Date() } = {}) {
-  const safeFen = String(fen || '').trim()
+  const safeFen = serializeWinBoardFen(fen)
   const headers = [
     '[Event "Edited game"]',
     '[Site "--"]',
@@ -57,4 +69,4 @@ export function serializeWinBoardGame ({ fen, moves, includeBoardDump = true, da
   return sections.filter(section => section !== '').join('\n\n')
 }
 
-export const __test__ = { toFsUci, boardDumpFromFen, formatWinBoardMoveList, exportDate }
+export const __test__ = { toFsUci, ligroundPieceToWinBoardPiece, boardDumpFromFen, formatWinBoardMoveList, exportDate }
