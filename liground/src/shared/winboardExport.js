@@ -16,10 +16,10 @@ function exportDate (date = new Date()) {
 }
 
 function ligroundPieceToWinBoardPiece (piece) {
-  if (piece === 'H') return 'N'
-  if (piece === 'h') return 'n'
-  if (piece === 'E') return 'B'
-  if (piece === 'e') return 'b'
+  if (piece === 'N') return 'H'
+  if (piece === 'n') return 'h'
+  if (piece === 'B') return 'E'
+  if (piece === 'b') return 'e'
   return piece
 }
 
