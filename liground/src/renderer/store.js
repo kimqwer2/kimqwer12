@@ -2509,7 +2509,16 @@ export const store = new Vuex.Store({
         })
         if ('humanTrapMode' in payload) console.info('[HumanTrap]', { entered: !!state.startGameModal.humanTrapMode, selected: 'n/a', reason: 'setting_changed' })
         if ('closeWinMode' in payload) console.info('[ControlledMargin]', { entered: !!state.startGameModal.closeWinMode, selected: 'n/a', reason: 'setting_changed' })
-        if ('pressureMode' in payload || 'hunterMode' in payload || 'closerMode' in payload) console.info('[HumanCompetitive]', { pressure: !!state.startGameModal.pressureMode, hunter: !!state.startGameModal.hunterMode, closer: !!state.startGameModal.closerMode, selected: 'n/a', reason: 'setting_changed' })
+        if ('pressureMode' in payload || 'hunterMode' in payload || 'closerMode' in payload) {
+          console.info('[HumanCompetitive]', { pressure: !!state.startGameModal.pressureMode, hunter: !!state.startGameModal.hunterMode, closer: !!state.startGameModal.closerMode, selected: 'n/a', reason: 'setting_changed' })
+          try {
+            localStorage.setItem('humanCompetitiveSettings', JSON.stringify({
+              pressureMode: !!state.startGameModal.pressureMode,
+              hunterMode: !!state.startGameModal.hunterMode,
+              closerMode: !!state.startGameModal.closerMode
+            }))
+          } catch (err) {}
+        }
       }
     },
     showGameEndModal (state, payload) {
@@ -3248,9 +3257,11 @@ export const store = new Vuex.Store({
         }
       }
       try {
+        if (localStorage.humanCompetitiveSettings) context.commit('startGameModal', JSON.parse(localStorage.humanCompetitiveSettings))
         if (localStorage.mistakePreventionSettings) context.commit('mistakePreventionSettings', JSON.parse(localStorage.mistakePreventionSettings))
         if (localStorage.mistakeNotebook) context.state.mistakeNotebook = JSON.parse(localStorage.mistakeNotebook)
       } catch (err) {
+        localStorage.removeItem('humanCompetitiveSettings')
         localStorage.removeItem('mistakePreventionSettings')
         localStorage.removeItem('mistakeNotebook')
       }
