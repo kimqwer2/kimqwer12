@@ -4,7 +4,13 @@
     <label><input v-model="local.showMultiPvArrows" type="checkbox" @change="save"> 후보수 화살표</label>
     <label><input v-model="humanTrapMode" type="checkbox"> Human Trap Mode</label>
     <label><input v-model="closeWinMode" type="checkbox"> Controlled Margin Mode</label>
-    <small>Human Trap은 분석/추천/엔진 선택에 실전 함정 압력을 반영합니다. Controlled Margin은 작은 목표 우세권(+0.7~+1.3) 안에서 승리 마진을 조절합니다. 둘 다 기본값은 꺼짐입니다.</small>
+    <div class="personality-box">
+      <h4>Human Personality</h4>
+      <label><input v-model="pressureMode" type="checkbox"> Pressure Mode</label>
+      <label><input v-model="hunterMode" type="checkbox"> Hunter Mode</label>
+      <label><input v-model="closerMode" type="checkbox"> Closer / Finisher Mode</label>
+    </div>
+    <small>Human Trap은 분석/추천/엔진 선택에 실전 함정 압력을 반영합니다. Controlled Margin은 작은 목표 우세권(+0.7~+1.3) 안에서 승리 마진을 조절합니다. Human Personality는 Pressure/Hunter/Closer 엔진 성향을 영구 설정으로 적용합니다.</small>
     <label>표시 후보 수 <input v-model.number="local.multiPvCount" min="1" type="number" @change="save"></label>
     <label><input v-model="local.trajectoryEnabled" type="checkbox" @change="save"> 최선 수순 궤적</label>
     <label>표시 방향
@@ -231,6 +237,18 @@ export default {
     closeWinMode: {
       get () { return !!(this.$store.state.startGameModal && this.$store.state.startGameModal.closeWinMode) },
       set (value) { this.$store.commit('startGameModal', { closeWinMode: !!value }) }
+    },
+    pressureMode: {
+      get () { return !!(this.$store.state.startGameModal && this.$store.state.startGameModal.pressureMode) },
+      set (value) { this.$store.commit('startGameModal', { pressureMode: !!value }) }
+    },
+    hunterMode: {
+      get () { return !!(this.$store.state.startGameModal && this.$store.state.startGameModal.hunterMode) },
+      set (value) { this.$store.commit('startGameModal', { hunterMode: !!value }) }
+    },
+    closerMode: {
+      get () { return !!(this.$store.state.startGameModal && this.$store.state.startGameModal.closerMode) },
+      set (value) { this.$store.commit('startGameModal', { closerMode: !!value }) }
     }
   },
   watch: {
@@ -447,6 +465,8 @@ h4 { margin: 0 0 4px 0; }
 button { border: none; border-radius: 4px; padding: 6px 8px; background: #7289da; color: white; cursor: pointer; }
 button:disabled { cursor: default; opacity: 0.6; }
 small { color: var(--second-text-color, #9aa0a6); overflow-wrap: anywhere; }
+.personality-box { display: flex; flex-direction: column; gap: 6px; margin: 4px 0; padding: 8px; border: 1px solid var(--main-border-color); border-radius: 4px; background: rgba(127,127,127,0.08); }
+.personality-box h4 { margin: 0 0 2px 0; }
 .deep-box { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--main-border-color); }
 .radio-row { justify-content: flex-start; }
 .deep-error { padding: 6px; border-left: 4px solid #d7263d; background: rgba(215, 38, 61, 0.18); }
