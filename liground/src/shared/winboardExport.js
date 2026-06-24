@@ -16,15 +16,18 @@ function exportDate (date = new Date()) {
 }
 
 function ligroundPieceToWinBoardPiece (piece) {
-  if (piece === 'H') return 'N'
-  if (piece === 'h') return 'n'
-  if (piece === 'E') return 'B'
-  if (piece === 'e') return 'b'
+  if (piece === 'N') return 'H'
+  if (piece === 'n') return 'h'
+  if (piece === 'B') return 'E'
+  if (piece === 'b') return 'e'
   return piece
 }
 
 export function serializeWinBoardFen (fen) {
-  return String(fen || '').trim().replace(/[HhEe]/g, ligroundPieceToWinBoardPiece)
+  const parts = String(fen || '').trim().split(/\s+/)
+  if (!parts[0]) return ''
+  parts[0] = parts[0].replace(/[NnBb]/g, ligroundPieceToWinBoardPiece)
+  return parts.join(' ')
 }
 
 function boardDumpFromFen (fen) {
