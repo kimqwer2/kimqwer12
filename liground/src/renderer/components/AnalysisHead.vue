@@ -326,6 +326,13 @@ export default {
       this.autoPlayTimer = null
     }
   },
+  watch: {
+    focusMode (value) {
+      this.$nextTick(() => {
+        console.log('[FocusMode] UI updated', { focusMode: value, label: value ? 'Focus Mode ON' : 'Focus Mode OFF' })
+      })
+    }
+  },
   methods: {
     updateVariant (payload) {
       this.$emit('updateVariant')
@@ -366,7 +373,10 @@ export default {
     },
 
     toggleFocusMode () {
-      this.$store.dispatch('focusMode', !this.focusMode)
+      const nextFocusMode = !this.focusMode
+      console.log('[FocusMode] Button clicked', { previous: this.focusMode, next: nextFocusMode })
+      console.log('[FocusMode] Vue method called', { next: nextFocusMode })
+      this.$store.dispatch('focusMode', nextFocusMode)
     },
 
     closeStartModal () {

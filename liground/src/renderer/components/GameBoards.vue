@@ -319,6 +319,7 @@ export default {
     ...mapGetters(['QuickTourIndex'])
   },
   mounted () { // EventListener für Keyboardinput, ruft direkt die jeweilige Methode auf
+    console.log('[FocusMode] UI updated', { focusMode: this.focusMode })
     this.keydownHandler = (event) => {
       const keyName = event.key
       const target = event.target
@@ -393,6 +394,11 @@ export default {
   watch: {
     fen () {
       this.tryAutoOpeningResponse()
+    },
+    focusMode (value) {
+      this.$nextTick(() => {
+        console.log('[FocusMode] UI updated', { focusMode: value })
+      })
     }
   },
   beforeDestroy () {

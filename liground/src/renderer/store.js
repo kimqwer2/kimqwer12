@@ -23,6 +23,11 @@ try {
 
 const MIN_CACHE_DEPTH = 20
 let lastCacheKey = null
+let lastFocusModeGetterLog = null
+
+function logFocusMode (stage, payload) {
+  console.log(`[FocusMode] ${stage}`, payload)
+}
 
 class TwoWayMap {
   constructor (map) {
@@ -2084,6 +2089,7 @@ export const store = new Vuex.Store({
     destinations: {},
     variant: 'chess',
     gameConfig: null,
+    focusMode: false,
     startGameModal: {
       whiteChoice: 'player',
       blackChoice: 'engine',
@@ -2320,8 +2326,10 @@ export const store = new Vuex.Store({
       state.viewAnalysis = payload
     },
     focusMode (state, payload) {
-      state.focusMode = !!payload
+      Vue.set(state, 'focusMode', !!payload)
       try { localStorage.setItem('focusMode', state.focusMode ? 'true' : 'false') } catch (err) {}
+      logFocusMode('Mutation committed', { focusMode: state.focusMode })
+      logFocusMode('State changed', { focusMode: state.focusMode, persisted: localStorage.focusMode })
     },
     fen (state, payload) {
       state.fen = payload
@@ -5730,6 +5738,7 @@ export const store = new Vuex.Store({
       context.commit('viewAnalysis', payload)
     },
     focusMode (context, payload) {
+      logFocusMode('Action dispatched', { previous: context.state.focusMode, next: !!payload })
       context.commit('focusMode', payload)
     },
     boardStyle (context, payload) {
@@ -6872,6 +6881,10 @@ export const store = new Vuex.Store({
       return state.viewAnalysis
     },
     focusMode (state) {
+      if (lastFocusModeGetterLog !== state.focusMode) {
+        lastFocusModeGetterLog = state.focusMode
+        logFocusMode('Getter evaluated', { focusMode: !!state.focusMode })
+      }
       return !!state.focusMode
     },
     evalPlotDepth (state) {
