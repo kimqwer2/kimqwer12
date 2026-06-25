@@ -64,10 +64,10 @@
       </fieldset>
       <div class="section-head" @click="toggleSection('competitive')"><span>{{ sectionArrow('competitive') }}</span> Pressure / Hunter / Closer <b>[{{ pressureMode || hunterMode || closerMode || recoveryMode.enabled ? 'ON' : 'OFF' }}]</b><span class="inline-toggle" @click.stop><label><input v-model="pressureMode" type="checkbox"> Pressure</label><label><input v-model="hunterMode" type="checkbox"> Hunter</label><label><input v-model="closerMode" type="checkbox"> Closer</label><label><input :checked="recoveryMode.enabled" type="checkbox" @change="updateRecoveryMode({ enabled: $event.target.checked })"> Recovery</label></span></div>
       <template v-if="expandedSections.competitive">
-        <small class="mode-help">실수 유도/압박형 엔진 성향입니다. Recovery는 큰 CP 손실 이후 1–2 ply 동안 최종 선택 직전에 안정적인 후보만 통과시킵니다.</small>
-        <label>Recovery Trigger CP <input class="small-input" :value="recoveryMode.thresholdCp" min="25" max="500" type="number" @change="updateRecoveryMode({ thresholdCp: Number($event.target.value) })"></label>
+        <small class="mode-help">실수 유도/압박형 엔진 성향입니다. Recovery는 난이도 CP × {{ recoveryMode.recoveryRatio }} 비율로 자동 계산되는 수동 튜닝 없는 안정화 레이어입니다.</small>
+        <label>Recovery Trigger CP <input class="small-input" :value="computedRecoveryTriggerCp" type="number" readonly> <small>난이도 {{ currentDifficultyCp }}CP × {{ recoveryMode.recoveryRatio }}</small></label>
         <label>Recovery Duration <input class="small-input" :value="recoveryMode.durationPlies" min="1" max="4" type="number" @change="updateRecoveryMode({ durationPlies: Number($event.target.value) })"> plies</label>
-        <label>Recovery CP Window <input class="small-input" :value="recoveryMode.cpWindow" min="10" max="250" type="number" @change="updateRecoveryMode({ cpWindow: Number($event.target.value) })"></label>
+        <label>Recovery CP Window <input class="small-input" :value="computedRecoveryCpWindow" type="number" readonly> <small>Trigger × {{ recoveryMode.windowRatio }}</small></label>
       </template>
       <div v-if="settings.opponentTraining && (settings.chaosMode || (settings.chaosTraining ? 'search' : 'off')) !== 'off'" class="section-head" @click="toggleSection('chaos')"><span>{{ sectionArrow('chaos') }}</span> Chaos Validation <b>[ON]</b></div>
       <template v-if="settings.opponentTraining && (settings.chaosMode || (settings.chaosTraining ? 'search' : 'off')) !== 'off' && expandedSections.chaos">
@@ -130,7 +130,14 @@ export default {
     settings () { return this.mistakePrevention || {} },
     chaosValidation () { return this.settings.chaosValidation || { preset: 'Normal', stage1Depth: 4, stage2Depth: 10, maxAttempts: 24 } },
     openingStabilizer () { return this.settings.openingStabilizer || { enabled: true, phase1Moves: 5, phase1Cp: 25, phase2Moves: 10, phase2Cp: 75, phase3Moves: 20 } },
-    recoveryMode () { return this.settings.recoveryMode || { enabled: true, thresholdCp: 75, durationPlies: 2, cpWindow: 50 } },
+    recoveryMode () { return { enabled: true, recoveryRatio: 0.75, windowRatio: 0.6, durationPlies: 2, thresholdCp: null, cpWindow: null, ...(this.settings.recoveryMode || {}) } },
+    currentDifficultyCp () {
+      const selectedName = this.settings.opponentTraining ? (this.settings.opponentLevelName || this.settings.levelName) : this.settings.levelName
+      const selected = this.levels.find(level => level.name === selectedName)
+      return Number((selected && selected.thresholdCp) || this.settings.thresholdCp || 300)
+    },
+    computedRecoveryTriggerCp () { return Math.round(this.currentDifficultyCp * (Number(this.recoveryMode.recoveryRatio) || 0.75)) },
+    computedRecoveryCpWindow () { return Math.round(this.computedRecoveryTriggerCp * (Number(this.recoveryMode.windowRatio) || 0.6)) },
     levels () { return this.mistakePreventionLevels || [] },
     notebook () { return this.mistakeNotebook || [] },
     stats () { return this.mistakeStatistics || {} },

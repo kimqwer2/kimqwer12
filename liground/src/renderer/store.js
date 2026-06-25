@@ -179,9 +179,35 @@ const HUMAN_COMPETITIVE_DEFAULTS = {
 
 const RECOVERY_MODE_DEFAULTS = {
   enabled: true,
-  thresholdCp: 75,
+  recoveryRatio: 0.75,
+  windowRatio: 0.6,
   durationPlies: 2,
-  cpWindow: 50
+  thresholdCp: null,
+  cpWindow: null
+}
+
+function finiteNumberOrNull (value) {
+  const number = Number(value)
+  return Number.isFinite(number) ? number : null
+}
+
+function recoveryModeEffectiveSettings (settings = {}, difficultyCp = 300) {
+  const normalized = normalizeRecoveryModeSettings(settings)
+  const baseCp = Math.max(0, Number(difficultyCp) || 300)
+  const computedThresholdCp = Math.round(baseCp * normalized.recoveryRatio)
+  const computedCpWindow = Math.round(baseCp * normalized.recoveryRatio * normalized.windowRatio)
+  const thresholdOverride = finiteNumberOrNull(normalized.thresholdCp)
+  const windowOverride = finiteNumberOrNull(normalized.cpWindow)
+  return {
+    ...normalized,
+    difficultyCp: baseCp,
+    computedThresholdCp,
+    computedCpWindow,
+    thresholdCp: thresholdOverride === null ? computedThresholdCp : Math.max(1, Math.min(1000, thresholdOverride)),
+    cpWindow: windowOverride === null ? computedCpWindow : Math.max(1, Math.min(1000, windowOverride)),
+    thresholdOverride: thresholdOverride !== null,
+    cpWindowOverride: windowOverride !== null
+  }
 }
 
 const CHAOS_VALIDATION_PRESETS = [
@@ -218,11 +244,17 @@ function normalizeOpeningStabilizerSettings (settings = {}) {
 
 function normalizeRecoveryModeSettings (settings = {}) {
   const merged = { ...RECOVERY_MODE_DEFAULTS, ...(settings || {}) }
+  const ratio = finiteNumberOrNull(merged.recoveryRatio)
+  const windowRatio = finiteNumberOrNull(merged.windowRatio)
+  const thresholdCp = finiteNumberOrNull(merged.thresholdCp)
+  const cpWindow = finiteNumberOrNull(merged.cpWindow)
   return {
     enabled: merged.enabled !== false,
-    thresholdCp: Math.max(25, Math.min(500, Number(merged.thresholdCp) || RECOVERY_MODE_DEFAULTS.thresholdCp)),
+    recoveryRatio: Math.max(0.05, Math.min(2, ratio === null ? RECOVERY_MODE_DEFAULTS.recoveryRatio : ratio)),
+    windowRatio: Math.max(0.1, Math.min(2, windowRatio === null ? RECOVERY_MODE_DEFAULTS.windowRatio : windowRatio)),
     durationPlies: Math.max(1, Math.min(4, Number(merged.durationPlies) || RECOVERY_MODE_DEFAULTS.durationPlies)),
-    cpWindow: Math.max(10, Math.min(250, Number(merged.cpWindow) || RECOVERY_MODE_DEFAULTS.cpWindow))
+    thresholdCp: thresholdCp === null ? null : Math.max(1, Math.min(1000, thresholdCp)),
+    cpWindow: cpWindow === null ? null : Math.max(1, Math.min(1000, cpWindow))
   }
 }
 
@@ -1005,8 +1037,8 @@ function recoveryRiskScore ({ fen, variant, is960, item }) {
   }
 }
 
-function selectRecoveryMove ({ fen, variant, is960, bestmove, rootLines, settings, sideToMove = true }) {
-  const safeSettings = normalizeRecoveryModeSettings(settings)
+function selectRecoveryMove ({ fen, variant, is960, bestmove, rootLines, settings, difficultyCp = 300, sideToMove = true }) {
+  const safeSettings = recoveryModeEffectiveSettings(settings, difficultyCp)
   if (!safeSettings.enabled) return null
   const candidates = normalizeTrapRootCandidates(rootLines, bestmove, sideToMove)
   const best = candidates.find(item => item.ucimove === bestmove) || candidates[0]
@@ -3758,7 +3790,8 @@ export const store = new Vuex.Store({
       const personality = personalityFlagsFromState(context.state)
       const rootMpSettings = context.state.mistakePrevention || {}
       const rootOpeningStabilizerSettings = normalizeOpeningStabilizerSettings(rootMpSettings.openingStabilizer)
-      const rootRecoverySettings = normalizeRecoveryModeSettings(rootMpSettings.recoveryMode)
+      const rootLevel = MISTAKE_PREVENTION_LEVELS.find(l => l.name === rootMpSettings.opponentLevelName) || MISTAKE_PREVENTION_LEVELS.find(l => l.name === rootMpSettings.levelName) || MISTAKE_PREVENTION_LEVELS[2]
+      const rootRecoverySettings = recoveryModeEffectiveSettings(rootMpSettings.recoveryMode, rootLevel.thresholdCp)
       const rootInfoNeeded = personality.enabled || rootOpeningStabilizerSettings.enabled || rootRecoverySettings.enabled
       const rootFen = context.getters.fen
       let rootLines = []
@@ -3785,8 +3818,8 @@ export const store = new Vuex.Store({
         const engineBestmove = bestmove
         const mpSettings = context.state.mistakePrevention || {}
         const openingStabilizerSettings = normalizeOpeningStabilizerSettings(mpSettings.openingStabilizer)
-        const recoverySettings = normalizeRecoveryModeSettings(mpSettings.recoveryMode)
         const mpLevel = MISTAKE_PREVENTION_LEVELS.find(l => l.name === mpSettings.opponentLevelName) || MISTAKE_PREVENTION_LEVELS.find(l => l.name === mpSettings.levelName) || MISTAKE_PREVENTION_LEVELS[2]
+        const recoverySettings = recoveryModeEffectiveSettings(mpSettings.recoveryMode, mpLevel.thresholdCp)
         const plies = (context.getters.currentMainlineUci || []).length
         const engineMoveNumber = Math.floor(plies / 2) + 1
         if (openingStabilizerSettings.enabled) {
@@ -3812,6 +3845,7 @@ export const store = new Vuex.Store({
             bestmove,
             rootLines: rootLines.filter(Boolean),
             settings: recoverySettings,
+            difficultyCp: mpLevel.thresholdCp,
             sideToMove: context.getters.turn
           })
           context.commit('enginePersonalityDebug', { recoveryPlies: Math.max(0, activeRecoveryPlies - 1) })
@@ -3876,7 +3910,7 @@ export const store = new Vuex.Store({
           if (recoveryTrigger && recoveryTrigger.cpLoss >= recoverySettings.thresholdCp) {
             context.commit('enginePersonalityDebug', { recoveryPlies: recoverySettings.durationPlies, recoveryLastCpLoss: recoveryTrigger.cpLoss, recoveryLastMove: bestmove })
             context.commit('recoveryMode', true)
-            console.info('[RecoveryMode]', { entered: true, cpLoss: recoveryTrigger.cpLoss, durationPlies: recoverySettings.durationPlies, thresholdCp: recoverySettings.thresholdCp, move: bestmove })
+            console.info('[RecoveryMode]', { entered: true, cpLoss: recoveryTrigger.cpLoss, durationPlies: recoverySettings.durationPlies, thresholdCp: recoverySettings.thresholdCp, recoveryRatio: recoverySettings.recoveryRatio, difficultyCp: recoverySettings.difficultyCp, move: bestmove })
           }
         }
         await context.dispatch('push', { move: bestmove, prev: context.getters.currentMove[0], skipMistakePrevention: true })
@@ -3899,7 +3933,8 @@ export const store = new Vuex.Store({
       const { goCmd } = await context.dispatch('computeEngineSearchLimits', payload)
       const personality = personalityFlagsFromState(context.state)
       const mpSettings = context.state.mistakePrevention || {}
-      const recoverySettings = normalizeRecoveryModeSettings(mpSettings.recoveryMode)
+      const goLevel = MISTAKE_PREVENTION_LEVELS.find(l => l.name === mpSettings.opponentLevelName) || MISTAKE_PREVENTION_LEVELS.find(l => l.name === mpSettings.levelName) || MISTAKE_PREVENTION_LEVELS[2]
+      const recoverySettings = recoveryModeEffectiveSettings(mpSettings.recoveryMode, goLevel.thresholdCp)
       const openingStabilizerSettings = normalizeOpeningStabilizerSettings(mpSettings.openingStabilizer)
       if (personality.enabled) {
         console.info('[Personality]', {
@@ -4038,7 +4073,8 @@ export const store = new Vuex.Store({
           closerMode: !!(payload.closerMode || (context.state.startGameModal && context.state.startGameModal.closerMode))
         })
         const openingStabilizerSettings = normalizeOpeningStabilizerSettings(context.state.mistakePrevention && context.state.mistakePrevention.openingStabilizer)
-        const recoverySettings = normalizeRecoveryModeSettings(context.state.mistakePrevention && context.state.mistakePrevention.recoveryMode)
+        const recoveryLevel = MISTAKE_PREVENTION_LEVELS.find(l => l.name === context.state.mistakePrevention.opponentLevelName) || MISTAKE_PREVENTION_LEVELS.find(l => l.name === context.state.mistakePrevention.levelName) || MISTAKE_PREVENTION_LEVELS[2]
+        const recoverySettings = recoveryModeEffectiveSettings(context.state.mistakePrevention && context.state.mistakePrevention.recoveryMode, recoveryLevel.thresholdCp)
 
         // Stop old PvE engine if it exists to avoid listener conflicts
         if (context.state.PvEEngineInstance) {
@@ -4163,8 +4199,8 @@ export const store = new Vuex.Store({
             let move = sanitizeEngineMove(ucimove)
             if (!move) return
             const engineBestmove = move
+            const level = MISTAKE_PREVENTION_LEVELS.find(l => l.name === context.state.mistakePrevention.opponentLevelName) || MISTAKE_PREVENTION_LEVELS.find(l => l.name === context.state.mistakePrevention.levelName) || MISTAKE_PREVENTION_LEVELS[2]
             if (openingStabilizerSettings.enabled) {
-              const level = MISTAKE_PREVENTION_LEVELS.find(l => l.name === context.state.mistakePrevention.opponentLevelName) || MISTAKE_PREVENTION_LEVELS.find(l => l.name === context.state.mistakePrevention.levelName) || MISTAKE_PREVENTION_LEVELS[2]
               const plies = (context.getters.currentMainlineUci || []).length
               const priorEngineMoves = engineIsWhite ? Math.ceil(plies / 2) : Math.floor(plies / 2)
               const stabilized = selectOpeningStabilizedMove({ rootLines: humanTrapRootLines.filter(Boolean), bestmove: move, selectedCp: level.thresholdCp, engineMoveNumber: priorEngineMoves + 1, settings: openingStabilizerSettings, sideToMove: turnIsWhite })
@@ -4182,6 +4218,7 @@ export const store = new Vuex.Store({
                 bestmove: move,
                 rootLines: humanTrapRootLines.filter(Boolean),
                 settings: recoverySettings,
+                difficultyCp: level.thresholdCp,
                 sideToMove: turnIsWhite
               })
               context.commit('enginePersonalityDebug', { recoveryPlies: Math.max(0, activeRecoveryPlies - 1) })
@@ -4249,7 +4286,7 @@ export const store = new Vuex.Store({
               if (recoveryTrigger && recoveryTrigger.cpLoss >= recoverySettings.thresholdCp) {
                 context.commit('enginePersonalityDebug', { recoveryPlies: recoverySettings.durationPlies, recoveryLastCpLoss: recoveryTrigger.cpLoss, recoveryLastMove: move })
                 context.commit('recoveryMode', true)
-                console.info('[RecoveryMode]', { entered: true, cpLoss: recoveryTrigger.cpLoss, durationPlies: recoverySettings.durationPlies, thresholdCp: recoverySettings.thresholdCp, move })
+                console.info('[RecoveryMode]', { entered: true, cpLoss: recoveryTrigger.cpLoss, durationPlies: recoverySettings.durationPlies, thresholdCp: recoverySettings.thresholdCp, recoveryRatio: recoverySettings.recoveryRatio, difficultyCp: recoverySettings.difficultyCp, move })
               }
             }
             await context.dispatch('push', { move, prev: context.getters.currentMove[0] })
