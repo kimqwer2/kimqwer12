@@ -3,7 +3,7 @@
   <div id="inner">
     <div>
       <div
-        class="main-grid"
+        :class="['main-grid', { 'focus-mode': focusMode }]"
         @wheel.exact="routeWheelToRightPanel"
       >
         <div class="chessboard-grid">
@@ -38,6 +38,7 @@
               </div>
               <EvalBar
                 v-if="QuickTourIndex !== 3"
+                v-show="!focusMode"
                 class="evalbar"
               />
               <EvalBar
@@ -198,13 +199,14 @@
         </div>
         <EvalPlot
           v-if="QuickTourIndex !== 6"
+          v-show="!focusMode"
           id="evalplot"
         />
         <EvalPlot
           v-else
           id="evalplot-qt"
         />
-        <div id="right-column">
+        <div v-show="!focusMode" id="right-column">
           <AnalysisView
             id="analysisview"
             class="tab"
@@ -310,6 +312,9 @@ export default {
     },
     showOpeningSuggestions () {
       return this.openingBook.enabled && this.openingBook.showSuggestions && this.openingCandidates.length > 0
+    },
+    focusMode () {
+      return this.$store.getters.focusMode
     },
     ...mapGetters(['QuickTourIndex'])
   },
@@ -971,6 +976,31 @@ input {
 #evalbutton-style {
   margin-top: 10px;
   grid-area: evalButton;
+}
+
+.main-grid.focus-mode {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto;
+  grid-template-areas: "chessboard";
+  justify-items: center;
+  align-items: start;
+  padding-right: 0;
+}
+.main-grid.focus-mode .chessboard-grid {
+  width: min(96vw, 980px);
+}
+.main-grid.focus-mode .board {
+  grid-template-areas:
+    "gameinfo"
+    "scrollable";
+  justify-items: center;
+  row-gap: 10px;
+}
+.main-grid.focus-mode #fen-field,
+.main-grid.focus-mode #fen-field-qt,
+.main-grid.focus-mode .game-sequence-row,
+.main-grid.focus-mode .opening-candidates {
+  display: none;
 }
 
 @media (max-width: 1100px) {

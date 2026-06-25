@@ -8,6 +8,8 @@
       <label class="toggle"><input :checked="settings.enabled" type="checkbox" @change="update({ enabled: $event.target.checked })"> 사용</label>
     </div>
     <div class="mistake-controls">
+      <div class="section-head" @click="toggleSection('core')"><span>{{ sectionArrow('core') }}</span> Mistake Prevention <b>[{{ settings.enabled ? 'ON' : 'OFF' }}]</b></div>
+      <template v-if="expandedSections.core">
       <label>학습 난이도
         <select :value="settings.levelName" @change="update({ levelName: $event.target.value })">
           <option v-for="level in levels" :key="level.name" :value="level.name">{{ level.name }} · {{ level.thresholdCp }}CP ({{ points(level.thresholdCp) }}점)</option>
@@ -47,17 +49,23 @@
         </select>
       </label>
       <small v-if="settings.opponentTraining" class="mode-help">엔진 최선수 강제는 상대 수준을 무시하고 최선수를 둡니다. 스타일은 CP 난이도는 유지하면서 비최선수 허용 방식을 조절합니다.</small>
+      </template>
       <fieldset v-if="settings.opponentTraining" class="opening-stabilizer">
-        <legend>Opening Stabilizer</legend>
-        <label><input :checked="openingStabilizer.enabled !== false" type="checkbox" @change="updateOpeningStabilizer({ enabled: $event.target.checked })"> ON</label>
+        <div class="section-head" @click="toggleSection('opening')"><span>{{ sectionArrow('opening') }}</span> Opening Stabilizer <b>[{{ openingStabilizer.enabled !== false ? 'ON' : 'OFF' }}]</b> <label class="inline-toggle" @click.stop><input :checked="openingStabilizer.enabled !== false" type="checkbox" @change="updateOpeningStabilizer({ enabled: $event.target.checked })"> ON</label></div>
+        <template v-if="expandedSections.opening">
+
         <label>Phase 1 Moves <input class="small-input" :value="openingStabilizer.phase1Moves" min="0" max="60" type="number" @change="updateOpeningStabilizer({ phase1Moves: Number($event.target.value) })"></label>
         <label>Phase 1 CP <input class="small-input" :value="openingStabilizer.phase1Cp" min="0" max="1000" type="number" @change="updateOpeningStabilizer({ phase1Cp: Number($event.target.value) })"></label>
         <label>Phase 2 Moves <input class="small-input" :value="openingStabilizer.phase2Moves" min="0" max="80" type="number" @change="updateOpeningStabilizer({ phase2Moves: Number($event.target.value) })"></label>
         <label>Phase 2 CP <input class="small-input" :value="openingStabilizer.phase2Cp" min="0" max="1000" type="number" @change="updateOpeningStabilizer({ phase2Cp: Number($event.target.value) })"></label>
         <label>Phase 3 Moves <input class="small-input" :value="openingStabilizer.phase3Moves" min="0" max="120" type="number" @change="updateOpeningStabilizer({ phase3Moves: Number($event.target.value) })"></label>
-        <small class="mode-help">초반에는 MultiPV 후보 중 CP 손실이 큰 수만 제외하고, 추가 엔진 검색은 하지 않습니다.</small>
+        <small class="mode-help">초반에는 MultiPV 후보 중 CP 손실이 큰 수를 제외하고 필터링 결과를 다음 단계가 사용합니다.</small>
+        </template>
       </fieldset>
-      <template v-if="settings.opponentTraining && (settings.chaosMode || (settings.chaosTraining ? 'search' : 'off')) !== 'off'">
+      <div class="section-head" @click="toggleSection('competitive')"><span>{{ sectionArrow('competitive') }}</span> Pressure / Hunter / Closer <b>[{{ pressureMode || hunterMode || closerMode ? 'ON' : 'OFF' }}]</b><span class="inline-toggle" @click.stop><label><input v-model="pressureMode" type="checkbox"> Pressure</label><label><input v-model="hunterMode" type="checkbox"> Hunter</label><label><input v-model="closerMode" type="checkbox"> Closer</label></span></div>
+      <template v-if="expandedSections.competitive"><small class="mode-help">실수 유도/압박형 엔진 성향입니다. 최선 분석 후보를 기준으로 Pressure, Hunter, Closer를 최종 선택 직전에 적용합니다.</small></template>
+      <div v-if="settings.opponentTraining && (settings.chaosMode || (settings.chaosTraining ? 'search' : 'off')) !== 'off'" class="section-head" @click="toggleSection('chaos')"><span>{{ sectionArrow('chaos') }}</span> Chaos Validation <b>[ON]</b></div>
+      <template v-if="settings.opponentTraining && (settings.chaosMode || (settings.chaosTraining ? 'search' : 'off')) !== 'off' && expandedSections.chaos">
         <label>카오스 검증
           <select :value="chaosValidation.preset" @change="updateChaosPreset($event.target.value)">
             <option v-for="preset in chaosValidationPresets" :key="preset.name" :value="preset.name">{{ preset.name }} · {{ preset.stage1Depth }}/{{ preset.stage2Depth }}</option>
@@ -107,7 +115,7 @@ import { mapGetters } from 'vuex'
 export default {
   name: 'MistakeNotebook',
   data () {
-    return { verificationDepths: [10, 12, 14, 16, 18, 20], expandedEntries: {}, allEntriesExpanded: false }
+    return { verificationDepths: [10, 12, 14, 16, 18, 20], expandedEntries: {}, allEntriesExpanded: false, expandedSections: {} }
   },
   beforeDestroy () {
     this.clearPreview()
@@ -122,6 +130,18 @@ export default {
     stats () { return this.mistakeStatistics || {} },
     pending () { return this.mistakePreventionPending },
     latest () { return this.notebook[0] },
+    pressureMode: {
+      get () { return !!(this.$store.state.startGameModal && this.$store.state.startGameModal.pressureMode) },
+      set (value) { this.$store.commit('startGameModal', { pressureMode: !!value }) }
+    },
+    hunterMode: {
+      get () { return !!(this.$store.state.startGameModal && this.$store.state.startGameModal.hunterMode) },
+      set (value) { this.$store.commit('startGameModal', { hunterMode: !!value }) }
+    },
+    closerMode: {
+      get () { return !!(this.$store.state.startGameModal && this.$store.state.startGameModal.closerMode) },
+      set (value) { this.$store.commit('startGameModal', { closerMode: !!value }) }
+    },
     pieceRows () {
       const total = Math.max(1, this.stats.totalMistakes || 0)
       return Object.entries(this.stats.mistakesByPieceType || {}).map(([piece, count]) => ({ piece, percent: Math.round(count * 100 / total) }))
@@ -129,6 +149,8 @@ export default {
   },
   methods: {
     update (payload) { this.$store.dispatch('setMistakePreventionSettings', payload) },
+    toggleSection (key) { this.$set(this.expandedSections, key, !this.expandedSections[key]) },
+    sectionArrow (key) { return this.expandedSections[key] ? '▼' : '▶' },
     updateOpeningStabilizer (payload) { this.update({ openingStabilizer: { ...this.openingStabilizer, ...payload } }) },
     updateChaosValidation (payload) { this.update({ chaosValidation: { ...this.chaosValidation, ...payload } }) },
     updateChaosPreset (name) {
@@ -166,6 +188,9 @@ h3 { margin: 0; }
 select { margin-left: 6px; }
 .small-input { width: 58px; margin-left: 6px; }
 .mode-help { flex-basis: 100%; opacity: .75; }
+.section-head { flex-basis: 100%; padding: 7px 9px; border-radius: 6px; background: rgba(127,127,127,.16); cursor: pointer; font-weight: 700; }
+.inline-toggle { margin-left: 10px; font-weight: 400; }
+.inline-toggle label { margin-left: 8px; }
 .pending { color: #c28500; font-weight: bold; }
 .lesson, .entry { border-left: 5px solid #888; margin: 8px 0; padding: 8px; background: rgba(0,0,0,.06); }
 .review-move:hover, .lesson:hover { outline: 2px solid rgba(114, 137, 218, .55); cursor: pointer; }
