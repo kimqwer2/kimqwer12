@@ -692,6 +692,64 @@ function boardFromFen (variant, fen, is960) {
   return is960 ? new ffish.Board(variant, fen, true) : new ffish.Board(variant, fen)
 }
 
+function legalMoveListFromBoard (board) {
+  if (!board || typeof board.legalMoves !== 'function') return []
+  const legal = board.legalMoves()
+  return (Array.isArray(legal) ? legal : String(legal || '').split(/\s+/)).filter(Boolean)
+}
+
+function isPositionInCheck ({ board = null, fen = '', variant = 'chess', is960 = false } = {}) {
+  if (board) {
+    if (typeof board.inCheck === 'boolean') return board.inCheck
+    if (typeof board.isCheck === 'function') return !!board.isCheck()
+    if (typeof board.checkedPieces === 'function') return !!String(board.checkedPieces() || '').trim()
+  }
+  if (!fen) return false
+  try {
+    const fenBoard = boardFromFen(variant, fen, is960)
+    if (typeof fenBoard.isCheck === 'function') return !!fenBoard.isCheck()
+    if (typeof fenBoard.checkedPieces === 'function') return !!String(fenBoard.checkedPieces() || '').trim()
+  } catch (err) {}
+  return false
+}
+
+function selectForcedCheckMove ({ board = null, fen = '', variant = 'chess', is960 = false, bestmove = '', rootLines = [] } = {}) {
+  const positionInCheck = isPositionInCheck({ board, fen, variant, is960 })
+  if (!positionInCheck) return null
+  let legalMoves = legalMoveListFromBoard(board)
+  if (!legalMoves.length && fen) {
+    try { legalMoves = legalMoveListFromBoard(boardFromFen(variant, fen, is960)) } catch (err) {}
+  }
+  if (!legalMoves.length) return null
+
+  const sortedRootLines = (Array.isArray(rootLines) ? rootLines : [])
+    .filter(Boolean)
+    .slice()
+    .sort((a, b) => (Number(a.multipv) || 999) - (Number(b.multipv) || 999))
+  const pv1 = sanitizeEngineMove(bestmove) || sanitizeEngineMove(sortedRootLines[0] && sortedRootLines[0].ucimove)
+  const pv2Line = sortedRootLines.find(line => (Number(line.multipv) || 0) === 2) || sortedRootLines[1]
+  const pv2 = sanitizeEngineMove(pv2Line && pv2Line.ucimove)
+  const candidates = [pv1, pv2].filter(Boolean)
+  for (const move of candidates) {
+    if (legalMoves.includes(move)) {
+      return {
+        move,
+        inCheck: true,
+        deterministic: true,
+        reason: move === pv1 ? 'in_check_forced_pv1' : 'in_check_forced_pv2_fallback',
+        fallback: move !== pv1
+      }
+    }
+  }
+  return {
+    move: legalMoves[0],
+    inCheck: true,
+    deterministic: true,
+    reason: 'in_check_legal_escape_fallback',
+    fallback: true
+  }
+}
+
 function detectPoisonedCaptureReplies ({ variant, is960, fen, candidateUci, settings }) {
   const candidateMove = parseUciFromTo(candidateUci)
   if (!candidateMove) return []
@@ -3817,6 +3875,20 @@ export const store = new Vuex.Store({
       try {
         let bestmove = sanitizeEngineMove(await bestMovePromise)
         if (requestSeq !== context.state.singleMoveRequestSeq) return
+        const forcedCheckMove = selectForcedCheckMove({
+          board: context.state.board,
+          fen: rootFen,
+          variant: context.getters.variant,
+          is960: context.getters.is960,
+          bestmove,
+          rootLines: rootLines.filter(Boolean)
+        })
+        if (forcedCheckMove && forcedCheckMove.move) {
+          if (normalizeFen(context.getters.fen) !== normalizeFen(rootFen)) return
+          context.commit('personalityDiagnostics', { ...forcedCheckMove, selectedAt: Date.now() })
+          await context.dispatch('push', { move: forcedCheckMove.move, prev: context.getters.currentMove[0], skipMistakePrevention: true })
+          return
+        }
         if (!bestmove) return
         const engineBestmove = bestmove
         const mpSettings = context.state.mistakePrevention || {}
@@ -4200,6 +4272,19 @@ export const store = new Vuex.Store({
           if (!context.state.PvE || !engineToMoveNow) return
           try {
             let move = sanitizeEngineMove(ucimove)
+            const forcedCheckMove = selectForcedCheckMove({
+              board: context.state.board,
+              fen: humanTrapRootFen || context.getters.fen,
+              variant: context.getters.variant,
+              is960: context.getters.is960,
+              bestmove: move,
+              rootLines: humanTrapRootLines.filter(Boolean)
+            })
+            if (forcedCheckMove && forcedCheckMove.move) {
+              context.commit('personalityDiagnostics', { ...forcedCheckMove, selectedAt: Date.now() })
+              await context.dispatch('push', { move: forcedCheckMove.move, prev: context.getters.currentMove[0] })
+              return
+            }
             if (!move) return
             const engineBestmove = move
             const level = MISTAKE_PREVENTION_LEVELS.find(l => l.name === context.state.mistakePrevention.opponentLevelName) || MISTAKE_PREVENTION_LEVELS.find(l => l.name === context.state.mistakePrevention.levelName) || MISTAKE_PREVENTION_LEVELS[2]
