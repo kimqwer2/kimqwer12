@@ -181,6 +181,7 @@ const RECOVERY_MODE_DEFAULTS = {
   enabled: true,
   recoveryRatio: 0.75,
   windowRatio: 0.2,
+  windowRatioUserOverride: false,
   durationPlies: 2,
   thresholdCp: null,
   cpWindow: null
@@ -245,13 +246,15 @@ function normalizeOpeningStabilizerSettings (settings = {}) {
 function normalizeRecoveryModeSettings (settings = {}) {
   const merged = { ...RECOVERY_MODE_DEFAULTS, ...(settings || {}) }
   const ratio = finiteNumberOrNull(merged.recoveryRatio)
-  const windowRatio = finiteNumberOrNull(merged.windowRatio)
+  const staleWindowRatio = finiteNumberOrNull(merged.windowRatio) === 0.6 && merged.windowRatioUserOverride !== true
+  const windowRatio = staleWindowRatio ? RECOVERY_MODE_DEFAULTS.windowRatio : finiteNumberOrNull(merged.windowRatio)
   const thresholdCp = finiteNumberOrNull(merged.thresholdCp)
   const cpWindow = finiteNumberOrNull(merged.cpWindow)
   return {
     enabled: merged.enabled !== false,
     recoveryRatio: Math.max(0.05, Math.min(2, ratio === null ? RECOVERY_MODE_DEFAULTS.recoveryRatio : ratio)),
     windowRatio: Math.max(0.1, Math.min(2, windowRatio === null ? RECOVERY_MODE_DEFAULTS.windowRatio : windowRatio)),
+    windowRatioUserOverride: merged.windowRatioUserOverride === true,
     durationPlies: Math.max(1, Math.min(4, Number(merged.durationPlies) || RECOVERY_MODE_DEFAULTS.durationPlies)),
     thresholdCp: thresholdCp === null ? null : Math.max(1, Math.min(1000, thresholdCp)),
     cpWindow: cpWindow === null ? null : Math.max(1, Math.min(1000, cpWindow))
