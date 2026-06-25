@@ -177,6 +177,12 @@ const HUMAN_COMPETITIVE_DEFAULTS = {
   closerMode: false
 }
 
+const RECOVERY_MODE_DEFAULTS = {
+  enabled: true,
+  thresholdCp: 75,
+  durationPlies: 2,
+  cpWindow: 50
+}
 
 const CHAOS_VALIDATION_PRESETS = [
   { name: 'Quick', stage1Depth: 4, stage2Depth: 8 },
@@ -207,6 +213,16 @@ function normalizeOpeningStabilizerSettings (settings = {}) {
     phase2Moves,
     phase2Cp: Math.max(0, Math.min(1000, Number.isFinite(p2Cp) ? p2Cp : OPENING_STABILIZER_DEFAULTS.phase2Cp)),
     phase3Moves
+  }
+}
+
+function normalizeRecoveryModeSettings (settings = {}) {
+  const merged = { ...RECOVERY_MODE_DEFAULTS, ...(settings || {}) }
+  return {
+    enabled: merged.enabled !== false,
+    thresholdCp: Math.max(25, Math.min(500, Number(merged.thresholdCp) || RECOVERY_MODE_DEFAULTS.thresholdCp)),
+    durationPlies: Math.max(1, Math.min(4, Number(merged.durationPlies) || RECOVERY_MODE_DEFAULTS.durationPlies)),
+    cpWindow: Math.max(10, Math.min(250, Number(merged.cpWindow) || RECOVERY_MODE_DEFAULTS.cpWindow))
   }
 }
 
@@ -971,6 +987,76 @@ function selectHumanCompetitiveMove ({ fen, variant, is960, bestmove, rootLines,
     displayEval: selected.rawCp,
     reason: `selected from MultiPV pool (${pool.length}) within ${allowedLoss}cp; replyCount=${selected.replyCount === null ? 'n/a' : selected.replyCount}; capture=${selected.moveInfo.isCapture}`,
     candidates: pool.map(item => ({ move: item.ucimove, cp: item.cp, cpLoss: item.cpLoss, weight: item.humanCompetitiveScore, multipv: item.multipv }))
+  }
+}
+
+function recoveryRiskScore ({ fen, variant, is960, item }) {
+  const moveInfo = moveCaptureInfo(fen, item.ucimove)
+  const replyCount = legalReplyCountAfterMove({ fen, variant, is960, move: item.ucimove })
+  const pvSimplification = analyzePvSimplification({ fen, variant, is960, pvUCI: item.pvUCI, maxPlies: 6 })
+  const forcingRisk = replyCount === null ? 12 : (replyCount <= 2 ? 80 : (replyCount <= 5 ? 45 : (replyCount <= 8 ? 20 : 0)))
+  const captureRisk = moveInfo.isCapture ? 18 : 0
+  const pvRisk = (pvSimplification.forcingPlies || 0) * 10 + (pvSimplification.captures ? 12 : 0)
+  return {
+    moveInfo,
+    replyCount,
+    pvSimplification,
+    riskScore: forcingRisk + captureRisk + pvRisk
+  }
+}
+
+function selectRecoveryMove ({ fen, variant, is960, bestmove, rootLines, settings, sideToMove = true }) {
+  const safeSettings = normalizeRecoveryModeSettings(settings)
+  if (!safeSettings.enabled) return null
+  const candidates = normalizeTrapRootCandidates(rootLines, bestmove, sideToMove)
+  const best = candidates.find(item => item.ucimove === bestmove) || candidates[0]
+  if (!best || typeof best.cp !== 'number') return null
+  const pool = candidates
+    .map(item => {
+      const cpLoss = Math.max(0, best.cp - item.cp)
+      const risk = recoveryRiskScore({ fen, variant, is960, item })
+      return {
+        ...item,
+        cpLoss,
+        ...risk,
+        recoveryScore: Math.max(1, 1000 - (cpLoss * 8) - (risk.riskScore * 5) + (item.ucimove === best.ucimove ? 90 : 0))
+      }
+    })
+    .filter(item => item.ucimove === best.ucimove || item.cpLoss <= safeSettings.cpWindow)
+    .sort((a, b) => b.recoveryScore - a.recoveryScore)
+  if (!pool.length) return null
+  const selected = pool[0]
+  return {
+    mode: 'Mistake Recovery Mode',
+    type: 'Recovery Stabilization',
+    move: selected.ucimove,
+    bestmove: best.ucimove,
+    selected: true,
+    replacement: selected.ucimove !== best.ucimove,
+    rootCandidates: candidates.length,
+    poolSize: pool.length,
+    bestCp: best.cp,
+    selectedCp: selected.cp,
+    cpLoss: selected.cpLoss,
+    displayEval: selected.rawCp,
+    recoveryCpWindow: safeSettings.cpWindow,
+    riskScore: selected.riskScore,
+    replyCount: selected.replyCount,
+    reason: `recovery active; selected lowest-risk candidate within ${safeSettings.cpWindow}cp of best`,
+    candidates: pool.map(item => ({ move: item.ucimove, cp: item.cp, cpLoss: item.cpLoss, risk: item.riskScore, weight: item.recoveryScore, multipv: item.multipv }))
+  }
+}
+
+function rootCpLossForMove ({ rootLines, bestmove, move, sideToMove = true }) {
+  if (!move) return null
+  const candidates = normalizeTrapRootCandidates(rootLines, bestmove || move, sideToMove)
+  const best = candidates.find(item => item.ucimove === bestmove) || candidates[0]
+  const selected = candidates.find(item => item.ucimove === move)
+  if (!best || !selected || typeof best.cp !== 'number' || typeof selected.cp !== 'number') return null
+  return {
+    bestCp: best.cp,
+    selectedCp: selected.cp,
+    cpLoss: Math.max(0, best.cp - selected.cp)
   }
 }
 
@@ -2028,7 +2114,8 @@ export const store = new Vuex.Store({
     PvELimiter: null, // stores the limiter config for the PvE engine
     PvEEngineInstance: null,
     humanTrapDiagnostics: null,
-    mistakePrevention: { enabled: false, levelName: '중급', thresholdCp: 300, opponentTraining: false, opponentLevelName: '중급', evaluationMode: 'practical', verificationDepth: 14, chaosTraining: false, chaosMode: 'off', chaosValidation: DEFAULT_CHAOS_VALIDATION, opponentPreventionMode: 'flexible', openingStabilizer: OPENING_STABILIZER_DEFAULTS },
+    mistakePrevention: { enabled: false, levelName: '중급', thresholdCp: 300, opponentTraining: false, opponentLevelName: '중급', evaluationMode: 'practical', verificationDepth: 14, chaosTraining: false, chaosMode: 'off', chaosValidation: DEFAULT_CHAOS_VALIDATION, opponentPreventionMode: 'flexible', openingStabilizer: OPENING_STABILIZER_DEFAULTS, recoveryMode: RECOVERY_MODE_DEFAULTS },
+    recoveryMode: false,
     mistakeNotebook: [],
     mistakePreventionPending: false,
     enginePersonalityDebug: {
@@ -2046,7 +2133,8 @@ export const store = new Vuex.Store({
       controlledMarginAverageBestCp: 0,
       controlledMarginAverageSelectedCp: 0,
       humanTrapSettings: {},
-      closeWinSettings: {}
+      closeWinSettings: {},
+      recoveryPlies: 0
     },
     playVsEngineEnabled: false,
     playVsEngineHumanSide: 'white',
@@ -2435,9 +2523,13 @@ export const store = new Vuex.Store({
       next.opponentPreventionMode = ['off'].concat(PREVENTION_MODES).includes(next.opponentPreventionMode) ? next.opponentPreventionMode : 'flexible'
       next.chaosValidation = normalizeChaosValidationSettings(next.chaosValidation || DEFAULT_CHAOS_VALIDATION)
       next.openingStabilizer = normalizeOpeningStabilizerSettings(next.openingStabilizer || OPENING_STABILIZER_DEFAULTS)
+      next.recoveryMode = normalizeRecoveryModeSettings(next.recoveryMode || RECOVERY_MODE_DEFAULTS)
       if (!next.opponentLevelName) next.opponentLevelName = next.levelName
       state.mistakePrevention = next
       try { localStorage.setItem('mistakePreventionSettings', JSON.stringify(next)) } catch (err) {}
+    },
+    recoveryMode (state, payload) {
+      state.recoveryMode = !!payload
     },
     mistakePreventionPending (state, payload) {
       state.mistakePreventionPending = !!payload
@@ -3169,6 +3261,7 @@ export const store = new Vuex.Store({
         mainFirstMove: null,
         legalMoves: '',
         destinations: {},
+        recoveryMode: false,
         variant: 'chess',
         viewAnalysis: true,
         focusMode: false,
@@ -3530,7 +3623,8 @@ export const store = new Vuex.Store({
     },
     resetEngineData (context) {
       context.commit('humanTrapDiagnostics', null)
-      context.commit('enginePersonalityDebug', { trapAttempts: 0, trapSelections: 0, closeWinSelections: 0, replacementSelections: 0, combinedSelections: 0, controlledMarginReductions: 0, controlledMarginReductionCp: 0, controlledRefusals: 0, controlledMarginBestCpTotal: 0, controlledMarginSelectedCpTotal: 0, controlledMarginAverageBestCp: 0, controlledMarginAverageSelectedCp: 0, categorySelections: {} })
+      context.commit('enginePersonalityDebug', { trapAttempts: 0, trapSelections: 0, closeWinSelections: 0, replacementSelections: 0, combinedSelections: 0, controlledMarginReductions: 0, controlledMarginReductionCp: 0, controlledRefusals: 0, controlledMarginBestCpTotal: 0, controlledMarginSelectedCpTotal: 0, controlledMarginAverageBestCp: 0, controlledMarginAverageSelectedCp: 0, recoveryPlies: 0, categorySelections: {} })
+      context.commit('recoveryMode', false)
       context.commit('resetMultiPV')
       context.commit('resetEngineStats')
       context.commit('resetWdlCache')
@@ -3662,6 +3756,10 @@ export const store = new Vuex.Store({
       context.commit('nextSingleMoveRequestSeq')
       const requestSeq = context.state.singleMoveRequestSeq
       const personality = personalityFlagsFromState(context.state)
+      const rootMpSettings = context.state.mistakePrevention || {}
+      const rootOpeningStabilizerSettings = normalizeOpeningStabilizerSettings(rootMpSettings.openingStabilizer)
+      const rootRecoverySettings = normalizeRecoveryModeSettings(rootMpSettings.recoveryMode)
+      const rootInfoNeeded = personality.enabled || rootOpeningStabilizerSettings.enabled || rootRecoverySettings.enabled
       const rootFen = context.getters.fen
       let rootLines = []
       let handleBestMove
@@ -3670,9 +3768,12 @@ export const store = new Vuex.Store({
         handleBestMove = move => resolve(move)
         engine.on('bestmove', handleBestMove)
       })
-      if (personality.enabled) {
+      if (rootInfoNeeded) {
         handleInfo = info => collectRootInfoLine(rootLines, info)
         engine.on('info', handleInfo)
+        if (!personality.enabled) {
+          engine.send(`setoption name MultiPV value ${Math.max(1, rootRecoverySettings.enabled ? 5 : 3)}`)
+        }
       }
 
       context.dispatch('goEngine', payload)
@@ -3681,8 +3782,10 @@ export const store = new Vuex.Store({
         let bestmove = sanitizeEngineMove(await bestMovePromise)
         if (requestSeq !== context.state.singleMoveRequestSeq) return
         if (!bestmove) return
+        const engineBestmove = bestmove
         const mpSettings = context.state.mistakePrevention || {}
         const openingStabilizerSettings = normalizeOpeningStabilizerSettings(mpSettings.openingStabilizer)
+        const recoverySettings = normalizeRecoveryModeSettings(mpSettings.recoveryMode)
         const mpLevel = MISTAKE_PREVENTION_LEVELS.find(l => l.name === mpSettings.opponentLevelName) || MISTAKE_PREVENTION_LEVELS.find(l => l.name === mpSettings.levelName) || MISTAKE_PREVENTION_LEVELS[2]
         const plies = (context.getters.currentMainlineUci || []).length
         const engineMoveNumber = Math.floor(plies / 2) + 1
@@ -3698,6 +3801,24 @@ export const store = new Vuex.Store({
           if (selectedTraining && selectedTraining.move && context.state.board.legalMoves().includes(selectedTraining.move) && normalizeFen(context.getters.fen) === normalizeFen(rootFen)) {
             bestmove = selectedTraining.move
             context.commit('humanTrapDiagnostics', { mode: 'Opponent Training Strength', type: mpLevel.name, move: bestmove, cpLoss: selectedTraining.cpLoss, pointLoss: Number(pointLossString(selectedTraining.cpLoss)), reason: `${mpSettings.chaosMode !== 'off' ? mpSettings.chaosMode : 'human-like'} sampled legal move within ${selectedTraining.maxLoss}cp${selectedTraining.openingProtected ? ' (opening protected)' : ''}${selectedTraining.fallback ? ' (fallback closest target)' : ''}`, probeStats: { probes: selectedTraining.sampled, source: selectedTraining.source, verificationDepth: selectedTraining.verificationDepth }, selectedAt: Date.now() })
+          }
+        }
+        const activeRecoveryPlies = Math.max(0, Number(context.state.enginePersonalityDebug.recoveryPlies) || 0)
+        if (recoverySettings.enabled && activeRecoveryPlies > 0) {
+          const selectedRecovery = selectRecoveryMove({
+            fen: rootFen,
+            variant: context.getters.variant,
+            is960: context.getters.is960,
+            bestmove,
+            rootLines: rootLines.filter(Boolean),
+            settings: recoverySettings,
+            sideToMove: context.getters.turn
+          })
+          context.commit('enginePersonalityDebug', { recoveryPlies: Math.max(0, activeRecoveryPlies - 1) })
+          context.commit('recoveryMode', activeRecoveryPlies - 1 > 0)
+          if (selectedRecovery && selectedRecovery.move && context.state.board.legalMoves().includes(selectedRecovery.move) && normalizeFen(context.getters.fen) === normalizeFen(rootFen)) {
+            bestmove = selectedRecovery.move
+            context.commit('personalityDiagnostics', { ...selectedRecovery, recoveryPliesRemaining: Math.max(0, activeRecoveryPlies - 1), selectedAt: Date.now() })
           }
         }
         if (personality.enabled && (personality.competitiveSettings.pressureMode || personality.competitiveSettings.hunterMode || personality.competitiveSettings.closerMode)) {
@@ -3750,6 +3871,14 @@ export const store = new Vuex.Store({
             context.commit('personalityDiagnostics', { ...selected, selectedAt: Date.now() })
           }
         }
+        if (recoverySettings.enabled) {
+          const recoveryTrigger = rootCpLossForMove({ rootLines: rootLines.filter(Boolean), bestmove: engineBestmove, move: bestmove, sideToMove: context.getters.turn })
+          if (recoveryTrigger && recoveryTrigger.cpLoss >= recoverySettings.thresholdCp) {
+            context.commit('enginePersonalityDebug', { recoveryPlies: recoverySettings.durationPlies, recoveryLastCpLoss: recoveryTrigger.cpLoss, recoveryLastMove: bestmove })
+            context.commit('recoveryMode', true)
+            console.info('[RecoveryMode]', { entered: true, cpLoss: recoveryTrigger.cpLoss, durationPlies: recoverySettings.durationPlies, thresholdCp: recoverySettings.thresholdCp, move: bestmove })
+          }
+        }
         await context.dispatch('push', { move: bestmove, prev: context.getters.currentMove[0], skipMistakePrevention: true })
       } catch (err) {
         console.error('[playSingleEngineMove] Failed to apply single engine move:', err)
@@ -3769,6 +3898,9 @@ export const store = new Vuex.Store({
       }
       const { goCmd } = await context.dispatch('computeEngineSearchLimits', payload)
       const personality = personalityFlagsFromState(context.state)
+      const mpSettings = context.state.mistakePrevention || {}
+      const recoverySettings = normalizeRecoveryModeSettings(mpSettings.recoveryMode)
+      const openingStabilizerSettings = normalizeOpeningStabilizerSettings(mpSettings.openingStabilizer)
       if (personality.enabled) {
         console.info('[Personality]', {
           humanTrap: personality.humanTrapSettings.enabled,
@@ -3798,7 +3930,7 @@ export const store = new Vuex.Store({
           reason: 'analysis_root_search_started',
           selectedAt: Date.now()
         })
-        engine.send(`setoption name MultiPV value ${Math.max(personality.humanTrapSettings.multiPv, personality.closeWinSettings.maxCandidates, personality.competitiveSettings.pressureMultiPv)}`)
+        engine.send(`setoption name MultiPV value ${Math.max(personality.humanTrapSettings.multiPv, personality.closeWinSettings.maxCandidates, personality.competitiveSettings.pressureMultiPv, recoverySettings.enabled ? 5 : 1, openingStabilizerSettings.enabled ? 3 : 1)}`)
       }
       console.log('[engine-order] cmd:', goCmd)
       engine.send(goCmd)
@@ -3906,6 +4038,7 @@ export const store = new Vuex.Store({
           closerMode: !!(payload.closerMode || (context.state.startGameModal && context.state.startGameModal.closerMode))
         })
         const openingStabilizerSettings = normalizeOpeningStabilizerSettings(context.state.mistakePrevention && context.state.mistakePrevention.openingStabilizer)
+        const recoverySettings = normalizeRecoveryModeSettings(context.state.mistakePrevention && context.state.mistakePrevention.recoveryMode)
 
         // Stop old PvE engine if it exists to avoid listener conflicts
         if (context.state.PvEEngineInstance) {
@@ -3944,7 +4077,9 @@ export const store = new Vuex.Store({
             })
             if (humanTrapSettings.enabled) console.info('[HumanTrap]', { entered: true, candidates: 0, filtered: 0, probed: 0, selected: 'pending', reason: 'pve_waiting_for_engine_turn' })
             if (closeWinSettings.enabled) console.info('[ControlledMargin]', { entered: true, bestEval: null, selected: 'pending', reason: 'pve_waiting_for_engine_turn' })
-            pveEngine.send(`setoption name MultiPV value ${Math.max(humanTrapSettings.multiPv, closeWinSettings.maxCandidates)}`)
+            pveEngine.send(`setoption name MultiPV value ${Math.max(humanTrapSettings.multiPv, closeWinSettings.maxCandidates, competitiveSettings.pressureMultiPv, recoverySettings.enabled ? 5 : 1)}`)
+          } else if (recoverySettings.enabled || openingStabilizerSettings.enabled || competitiveSettings.pressureMode || competitiveSettings.hunterMode || competitiveSettings.closerMode) {
+            pveEngine.send(`setoption name MultiPV value ${Math.max(5, competitiveSettings.pressureMultiPv || 1)}`)
           }
         } catch (err) {
           console.warn('[PvEtrue] Failed to send variant/960 to PvE engine:', err)
@@ -3962,7 +4097,7 @@ export const store = new Vuex.Store({
         let humanTrapRootLines = []
 
         const pveInfoHandler = info => {
-          if (!(humanTrapSettings.enabled || closeWinSettings.enabled || competitiveSettings.pressureMode || competitiveSettings.hunterMode || competitiveSettings.closerMode || openingStabilizerSettings.enabled) || !info || !('pv' in info)) return
+          if (!(humanTrapSettings.enabled || closeWinSettings.enabled || competitiveSettings.pressureMode || competitiveSettings.hunterMode || competitiveSettings.closerMode || openingStabilizerSettings.enabled || recoverySettings.enabled) || !info || !('pv' in info)) return
           const rank = Number(info.multipv) || 1
           const ucimove = typeof info.pv === 'string' ? info.pv.split(/\s+/)[0] : ''
           if (!ucimove) return
@@ -4009,8 +4144,8 @@ export const store = new Vuex.Store({
               context.commit('humanTrapDiagnostics', null)
             }
             inst.send(buildPositionCommand(context.getters.gameState))
-            if (humanTrapSettings.enabled || closeWinSettings.enabled || competitiveSettings.pressureMode || competitiveSettings.hunterMode || competitiveSettings.closerMode) {
-              inst.send(`setoption name MultiPV value ${Math.max(humanTrapSettings.multiPv, closeWinSettings.maxCandidates, competitiveSettings.pressureMultiPv)}`)
+            if (humanTrapSettings.enabled || closeWinSettings.enabled || competitiveSettings.pressureMode || competitiveSettings.hunterMode || competitiveSettings.closerMode || recoverySettings.enabled || openingStabilizerSettings.enabled) {
+              inst.send(`setoption name MultiPV value ${Math.max(humanTrapSettings.multiPv, closeWinSettings.maxCandidates, competitiveSettings.pressureMultiPv, recoverySettings.enabled ? 5 : 1)}`)
             }
             inst.send(limiterToGo(lim))
           } catch (err) {
@@ -4027,6 +4162,7 @@ export const store = new Vuex.Store({
           try {
             let move = sanitizeEngineMove(ucimove)
             if (!move) return
+            const engineBestmove = move
             if (openingStabilizerSettings.enabled) {
               const level = MISTAKE_PREVENTION_LEVELS.find(l => l.name === context.state.mistakePrevention.opponentLevelName) || MISTAKE_PREVENTION_LEVELS.find(l => l.name === context.state.mistakePrevention.levelName) || MISTAKE_PREVENTION_LEVELS[2]
               const plies = (context.getters.currentMainlineUci || []).length
@@ -4035,6 +4171,24 @@ export const store = new Vuex.Store({
               if (stabilized && stabilized.move && context.state.board.legalMoves().includes(stabilized.move)) {
                 move = stabilized.move
                 context.commit('personalityDiagnostics', { ...stabilized, selectedAt: Date.now() })
+              }
+            }
+            const activeRecoveryPlies = Math.max(0, Number(context.state.enginePersonalityDebug.recoveryPlies) || 0)
+            if (recoverySettings.enabled && activeRecoveryPlies > 0) {
+              const selectedRecovery = selectRecoveryMove({
+                fen: humanTrapRootFen || context.getters.fen,
+                variant: context.getters.variant,
+                is960: context.getters.is960,
+                bestmove: move,
+                rootLines: humanTrapRootLines.filter(Boolean),
+                settings: recoverySettings,
+                sideToMove: turnIsWhite
+              })
+              context.commit('enginePersonalityDebug', { recoveryPlies: Math.max(0, activeRecoveryPlies - 1) })
+              context.commit('recoveryMode', activeRecoveryPlies - 1 > 0)
+              if (selectedRecovery && selectedRecovery.move && context.state.board.legalMoves().includes(selectedRecovery.move)) {
+                move = selectedRecovery.move
+                context.commit('personalityDiagnostics', { ...selectedRecovery, recoveryPliesRemaining: Math.max(0, activeRecoveryPlies - 1), selectedAt: Date.now() })
               }
             }
             if (competitiveSettings.pressureMode || competitiveSettings.hunterMode || competitiveSettings.closerMode) {
@@ -4090,6 +4244,14 @@ export const store = new Vuex.Store({
                 context.commit('personalityDiagnostics', null)
               }
             }
+            if (recoverySettings.enabled) {
+              const recoveryTrigger = rootCpLossForMove({ rootLines: humanTrapRootLines.filter(Boolean), bestmove: engineBestmove, move, sideToMove: turnIsWhite })
+              if (recoveryTrigger && recoveryTrigger.cpLoss >= recoverySettings.thresholdCp) {
+                context.commit('enginePersonalityDebug', { recoveryPlies: recoverySettings.durationPlies, recoveryLastCpLoss: recoveryTrigger.cpLoss, recoveryLastMove: move })
+                context.commit('recoveryMode', true)
+                console.info('[RecoveryMode]', { entered: true, cpLoss: recoveryTrigger.cpLoss, durationPlies: recoverySettings.durationPlies, thresholdCp: recoverySettings.thresholdCp, move })
+              }
+            }
             await context.dispatch('push', { move, prev: context.getters.currentMove[0] })
           } catch (err) {
             console.error('[PvEMakeMove] Engine provided invalid move:', ucimove, err)
@@ -4100,7 +4262,7 @@ export const store = new Vuex.Store({
         }
 
         // attach listeners
-        if (humanTrapSettings.enabled || closeWinSettings.enabled || competitiveSettings.pressureMode || competitiveSettings.hunterMode || competitiveSettings.closerMode || openingStabilizerSettings.enabled) pveEngine.on('info', pveInfoHandler)
+        if (humanTrapSettings.enabled || closeWinSettings.enabled || competitiveSettings.pressureMode || competitiveSettings.hunterMode || competitiveSettings.closerMode || openingStabilizerSettings.enabled || recoverySettings.enabled) pveEngine.on('info', pveInfoHandler)
         pveEngine.on('bestmove', pveEngineHandler)
 
         // kick off the engine if it's the engine's turn now
