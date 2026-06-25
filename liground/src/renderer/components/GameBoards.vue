@@ -82,7 +82,13 @@
               class="mini-btn"
               @click="copyWinBoardPosition"
             >
-              Copy WinBoard Position
+              WinBoard Position Copy
+            </button>
+            <button
+              class="mini-btn"
+              @click="pasteWinBoardPosition"
+            >
+              WinBoard Position Paste
             </button>
             <button
               class="mini-btn"
@@ -232,7 +238,7 @@ import SettingsTab from './SettingsTab'
 import GameInfo from './GameInfo.vue'
 import { findBestOpeningForFen } from '../../shared/openingLookup'
 import { parseGameSequence, serializeGameSequence } from '../../shared/gameSequence'
-import { serializeWinBoardFen, serializeWinBoardGame } from '../../shared/winboardExport'
+import { deserializeWinBoardFen, serializeWinBoardFen, serializeWinBoardGame } from '../../shared/winboardExport'
 import { copyTextReliable, readTextReliable } from '../../shared/clipboard'
 import { mapGetters } from 'vuex'
 
@@ -663,6 +669,20 @@ export default {
         return
       }
       alert('복사에 실패했습니다. 다른 창을 닫고 다시 시도해 주세요.')
+    },
+    async pasteWinBoardPosition () {
+      const read = await readTextReliable()
+      if (!read.ok) {
+        alert('클립보드를 읽지 못했습니다.')
+        return
+      }
+      const fen = deserializeWinBoardFen(read.text)
+      const ok = await this.$store.dispatch('loadWinBoardPosition', fen)
+      if (ok) {
+        alert('WinBoard 포지션을 불러왔습니다.')
+        return
+      }
+      alert('유효한 WinBoard/Fairy-Stockfish 장기 포지션이 아닙니다.')
     },
     async pasteSequence () {
       const read = await readTextReliable()

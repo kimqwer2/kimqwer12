@@ -182,6 +182,59 @@ const CHAOS_VALIDATION_PRESETS = [
 const DEFAULT_CHAOS_VALIDATION = { preset: 'Normal', stage1Depth: 4, stage2Depth: 10, maxAttempts: 24 }
 const CHAOS_MODES = ['off', 'fast', 'search']
 const PREVENTION_MODES = ['perfect', 'practical', 'flexible']
+const OPENING_STABILIZER_DEFAULTS = { enabled: true, phase1Moves: 5, phase1Cp: 25, phase2Moves: 10, phase2Cp: 75, phase3Moves: 20 }
+
+function normalizeOpeningStabilizerSettings (settings = {}) {
+  const merged = { ...OPENING_STABILIZER_DEFAULTS, ...(settings || {}) }
+  const p1Moves = Number(merged.phase1Moves)
+  const p2Moves = Number(merged.phase2Moves)
+  const p3Moves = Number(merged.phase3Moves)
+  const phase1Moves = Math.max(0, Math.min(60, Number.isFinite(p1Moves) ? p1Moves : OPENING_STABILIZER_DEFAULTS.phase1Moves))
+  const phase2Moves = Math.max(phase1Moves, Math.min(80, Number.isFinite(p2Moves) ? p2Moves : OPENING_STABILIZER_DEFAULTS.phase2Moves))
+  const phase3Moves = Math.max(phase2Moves, Math.min(120, Number.isFinite(p3Moves) ? p3Moves : OPENING_STABILIZER_DEFAULTS.phase3Moves))
+  const p1Cp = Number(merged.phase1Cp)
+  const p2Cp = Number(merged.phase2Cp)
+  return {
+    enabled: merged.enabled !== false,
+    phase1Moves,
+    phase1Cp: Math.max(0, Math.min(1000, Number.isFinite(p1Cp) ? p1Cp : OPENING_STABILIZER_DEFAULTS.phase1Cp)),
+    phase2Moves,
+    phase2Cp: Math.max(0, Math.min(1000, Number.isFinite(p2Cp) ? p2Cp : OPENING_STABILIZER_DEFAULTS.phase2Cp)),
+    phase3Moves
+  }
+}
+
+function openingStabilizerEffectiveCp (selectedCp, engineMoveNumber, settings = {}) {
+  const cfg = normalizeOpeningStabilizerSettings(settings)
+  if (!cfg.enabled) return Math.max(0, Number(selectedCp) || 0)
+  const baseCp = Math.max(0, Number(selectedCp) || 0)
+  const moveNo = Math.max(1, Number(engineMoveNumber) || 1)
+  if (moveNo <= cfg.phase1Moves) return Math.min(baseCp, cfg.phase1Cp)
+  if (moveNo <= cfg.phase2Moves) return Math.min(baseCp, cfg.phase2Cp)
+  if (moveNo <= cfg.phase3Moves && cfg.phase3Moves > cfg.phase2Moves) {
+    const t = (moveNo - cfg.phase2Moves) / (cfg.phase3Moves - cfg.phase2Moves)
+    return Math.min(baseCp, Math.floor(cfg.phase2Cp + (baseCp - cfg.phase2Cp) * t))
+  }
+  return baseCp
+}
+
+function selectOpeningStabilizedMove ({ rootLines, bestmove, selectedCp, engineMoveNumber, settings, sideToMove = true }) {
+  const effectiveCp = openingStabilizerEffectiveCp(selectedCp, engineMoveNumber, settings)
+  const candidates = normalizeTrapRootCandidates(rootLines, bestmove, sideToMove)
+  if (!candidates.length) return null
+  const best = candidates.find(line => line.ucimove === bestmove) || candidates[0]
+  if (!best || typeof best.cp !== 'number') return null
+  const eligible = candidates.map(line => ({ ...line, cpLoss: Math.max(0, best.cp - line.cp) })).filter(line => line.cpLoss <= effectiveCp)
+  if (!eligible.length) return { move: best.ucimove, effectiveCp, engineMoveNumber, candidates: candidates.length, eligible: 1, reason: 'opening_stabilizer_best_only' }
+  const total = eligible.reduce((sum, line) => sum + Math.max(1, effectiveCp - line.cpLoss + 1), 0)
+  let roll = Math.random() * total
+  for (const line of eligible) {
+    roll -= Math.max(1, effectiveCp - line.cpLoss + 1)
+    if (roll <= 0) return { move: line.ucimove, effectiveCp, engineMoveNumber, candidates: candidates.length, eligible: eligible.length, cpLoss: line.cpLoss, reason: 'opening_stabilizer' }
+  }
+  const last = eligible[eligible.length - 1]
+  return { move: last.ucimove, effectiveCp, engineMoveNumber, candidates: candidates.length, eligible: eligible.length, cpLoss: last.cpLoss, reason: 'opening_stabilizer' }
+}
 
 function normalizeChaosValidationSettings (settings = {}) {
   const preset = CHAOS_VALIDATION_PRESETS.find(p => p.name === settings.preset) || CHAOS_VALIDATION_PRESETS[1]
@@ -1950,7 +2003,7 @@ export const store = new Vuex.Store({
     PvELimiter: null, // stores the limiter config for the PvE engine
     PvEEngineInstance: null,
     humanTrapDiagnostics: null,
-    mistakePrevention: { enabled: false, levelName: '중급', thresholdCp: 300, opponentTraining: false, opponentLevelName: '중급', evaluationMode: 'practical', verificationDepth: 14, chaosTraining: false, chaosMode: 'off', chaosValidation: DEFAULT_CHAOS_VALIDATION, opponentPreventionMode: 'off' },
+    mistakePrevention: { enabled: false, levelName: '중급', thresholdCp: 300, opponentTraining: false, opponentLevelName: '중급', evaluationMode: 'practical', verificationDepth: 14, chaosTraining: false, chaosMode: 'off', chaosValidation: DEFAULT_CHAOS_VALIDATION, opponentPreventionMode: 'off', openingStabilizer: OPENING_STABILIZER_DEFAULTS },
     mistakeNotebook: [],
     mistakePreventionPending: false,
     enginePersonalityDebug: {
@@ -2349,6 +2402,7 @@ export const store = new Vuex.Store({
       next.chaosTraining = next.chaosMode !== 'off'
       next.opponentPreventionMode = ['off'].concat(PREVENTION_MODES).includes(next.opponentPreventionMode) ? next.opponentPreventionMode : 'off'
       next.chaosValidation = normalizeChaosValidationSettings(next.chaosValidation || DEFAULT_CHAOS_VALIDATION)
+      next.openingStabilizer = normalizeOpeningStabilizerSettings(next.openingStabilizer || OPENING_STABILIZER_DEFAULTS)
       if (!next.opponentLevelName) next.opponentLevelName = next.levelName
       state.mistakePrevention = next
       try { localStorage.setItem('mistakePreventionSettings', JSON.stringify(next)) } catch (err) {}
@@ -3804,6 +3858,7 @@ export const store = new Vuex.Store({
           hunterMode: !!(payload.hunterMode || (context.state.startGameModal && context.state.startGameModal.hunterMode)),
           closerMode: !!(payload.closerMode || (context.state.startGameModal && context.state.startGameModal.closerMode))
         })
+        const openingStabilizerSettings = normalizeOpeningStabilizerSettings(context.state.mistakePrevention && context.state.mistakePrevention.openingStabilizer)
 
         // Stop old PvE engine if it exists to avoid listener conflicts
         if (context.state.PvEEngineInstance) {
@@ -3860,7 +3915,7 @@ export const store = new Vuex.Store({
         let humanTrapRootLines = []
 
         const pveInfoHandler = info => {
-          if (!(humanTrapSettings.enabled || closeWinSettings.enabled || competitiveSettings.pressureMode || competitiveSettings.hunterMode || competitiveSettings.closerMode) || !info || !('pv' in info)) return
+          if (!(humanTrapSettings.enabled || closeWinSettings.enabled || competitiveSettings.pressureMode || competitiveSettings.hunterMode || competitiveSettings.closerMode || openingStabilizerSettings.enabled) || !info || !('pv' in info)) return
           const rank = Number(info.multipv) || 1
           const ucimove = typeof info.pv === 'string' ? info.pv.split(/\s+/)[0] : ''
           if (!ucimove) return
@@ -3925,6 +3980,16 @@ export const store = new Vuex.Store({
           try {
             let move = sanitizeEngineMove(ucimove)
             if (!move) return
+            if (openingStabilizerSettings.enabled) {
+              const level = MISTAKE_PREVENTION_LEVELS.find(l => l.name === context.state.mistakePrevention.opponentLevelName) || MISTAKE_PREVENTION_LEVELS.find(l => l.name === context.state.mistakePrevention.levelName) || MISTAKE_PREVENTION_LEVELS[2]
+              const plies = (context.getters.currentMainlineUci || []).length
+              const priorEngineMoves = engineIsWhite ? Math.ceil(plies / 2) : Math.floor(plies / 2)
+              const stabilized = selectOpeningStabilizedMove({ rootLines: humanTrapRootLines.filter(Boolean), bestmove: move, selectedCp: level.thresholdCp, engineMoveNumber: priorEngineMoves + 1, settings: openingStabilizerSettings, sideToMove: turnIsWhite })
+              if (stabilized && stabilized.move && context.state.board.legalMoves().includes(stabilized.move)) {
+                move = stabilized.move
+                context.commit('personalityDiagnostics', { ...stabilized, selectedAt: Date.now() })
+              }
+            }
             if (competitiveSettings.pressureMode || competitiveSettings.hunterMode || competitiveSettings.closerMode) {
               const rootCandidates = normalizeTrapRootCandidates(humanTrapRootLines.filter(Boolean), move, turnIsWhite)
               const bestLine = rootCandidates.find(line => line.ucimove === move) || rootCandidates[0]
@@ -3988,7 +4053,7 @@ export const store = new Vuex.Store({
         }
 
         // attach listeners
-        if (humanTrapSettings.enabled || closeWinSettings.enabled) pveEngine.on('info', pveInfoHandler)
+        if (humanTrapSettings.enabled || closeWinSettings.enabled || competitiveSettings.pressureMode || competitiveSettings.hunterMode || competitiveSettings.closerMode || openingStabilizerSettings.enabled) pveEngine.on('info', pveInfoHandler)
         pveEngine.on('bestmove', pveEngineHandler)
 
         // kick off the engine if it's the engine's turn now
@@ -4300,6 +4365,17 @@ export const store = new Vuex.Store({
         context.dispatch('updateBoard')
         context.dispatch('restartEngine')
       }
+    },
+    async loadWinBoardPosition (context, payload) {
+      const fen = String(payload || '').trim()
+      if (ffish.validateFen(fen, context.getters.variant) !== 1) return false
+      context.commit('newBoard', { fen })
+      await context.dispatch('fen', fen)
+      context.commit('selectedGame', null)
+      context.commit('gameInfo', {})
+      context.dispatch('updateBoard')
+      context.dispatch('position')
+      return true
     },
     fenField (context, payload) {
       if (ffish.validateFen(payload, context.getters.variant) === 1) { // this doesnt work properly for horde and racing kings
