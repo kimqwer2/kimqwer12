@@ -1,6 +1,15 @@
 <template>
   <!-- All components but menubar -->
   <div id="inner">
+    <button
+      v-if="focusMode"
+      class="focus-mode-exit"
+      type="button"
+      title="Exit Focus Mode (Esc)"
+      @click="exitFocusMode"
+    >
+      Exit Focus Mode
+    </button>
     <div>
       <div
         :class="['main-grid', { 'focus-mode': focusMode }]"
@@ -325,6 +334,11 @@ export default {
       const target = event.target
       const tag = target && target.nodeName ? target.nodeName.toLowerCase() : ''
       const isEditable = target && (target.isContentEditable || tag === 'textarea' || tag === 'select' || (tag === 'input' && target.type.toLowerCase() !== 'checkbox'))
+      if (keyName === 'Escape' && this.focusMode) {
+        event.preventDefault()
+        this.exitFocusMode()
+        return
+      }
       if (!isEditable) {
         if (keyName === 'ArrowUp') {
           event.preventDefault()
@@ -407,6 +421,10 @@ export default {
     }
   },
   methods: {
+    exitFocusMode () {
+      console.log('[FocusMode] Exit requested')
+      this.$store.dispatch('focusMode', false)
+    },
     setFenSize () {
       return this.fen.length + 3
     },
@@ -982,6 +1000,26 @@ input {
 #evalbutton-style {
   margin-top: 10px;
   grid-area: evalButton;
+}
+
+.focus-mode-exit {
+  position: fixed;
+  top: 14px;
+  right: 14px;
+  z-index: 1000;
+  padding: 8px 12px;
+  border: 1px solid #1f6f45;
+  border-radius: 6px;
+  background: #2f855a;
+  color: #fff;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.22);
+}
+
+.focus-mode-exit:focus,
+.focus-mode-exit:hover {
+  background: #276749;
 }
 
 .main-grid.focus-mode {
