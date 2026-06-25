@@ -23,10 +23,37 @@ function ligroundPieceToWinBoardPiece (piece) {
   return piece
 }
 
+function winBoardPieceToLigroundPiece (piece) {
+  if (piece === 'H') return 'N'
+  if (piece === 'h') return 'n'
+  if (piece === 'E') return 'B'
+  if (piece === 'e') return 'b'
+  return piece
+}
+
 export function serializeWinBoardFen (fen) {
   const parts = String(fen || '').trim().split(/\s+/)
   if (!parts[0]) return ''
   parts[0] = parts[0].replace(/[NnBb]/g, ligroundPieceToWinBoardPiece)
+  return parts.join(' ')
+}
+
+export function deserializeWinBoardFen (text) {
+  const raw = String(text || '').trim()
+  const fenMatch = /\[FEN\s+"([^"]+)"\]/i.exec(raw)
+  const candidate = (fenMatch ? fenMatch[1] : raw.split(/\r?\n/).map(line => line.trim()).find(line => line && !line.startsWith('[') && !line.startsWith('{')) || raw)
+    .replace(/^position\s+fen\s+/i, '')
+    .trim()
+  const parts = candidate.split(/\s+/).filter(Boolean)
+  if (!parts[0]) return ''
+  parts[0] = parts[0].replace(/[HhEe]/g, winBoardPieceToLigroundPiece)
+  if (parts.length === 1) parts.push('w')
+  while (parts.length < 6) {
+    if (parts.length === 2) parts.push('-')
+    else if (parts.length === 3) parts.push('-')
+    else if (parts.length === 4) parts.push('0')
+    else parts.push('1')
+  }
   return parts.join(' ')
 }
 
@@ -72,4 +99,4 @@ export function serializeWinBoardGame ({ fen, moves, includeBoardDump = true, da
   return sections.filter(section => section !== '').join('\n\n')
 }
 
-export const __test__ = { toFsUci, ligroundPieceToWinBoardPiece, boardDumpFromFen, formatWinBoardMoveList, exportDate }
+export const __test__ = { toFsUci, ligroundPieceToWinBoardPiece, winBoardPieceToLigroundPiece, boardDumpFromFen, formatWinBoardMoveList, exportDate }

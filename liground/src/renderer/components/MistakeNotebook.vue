@@ -47,6 +47,16 @@
         </select>
       </label>
       <small v-if="settings.opponentTraining" class="mode-help">엔진 최선수 강제는 상대 수준을 무시하고 최선수를 둡니다. 스타일은 CP 난이도는 유지하면서 비최선수 허용 방식을 조절합니다.</small>
+      <fieldset v-if="settings.opponentTraining" class="opening-stabilizer">
+        <legend>Opening Stabilizer</legend>
+        <label><input :checked="openingStabilizer.enabled !== false" type="checkbox" @change="updateOpeningStabilizer({ enabled: $event.target.checked })"> ON</label>
+        <label>Phase 1 Moves <input class="small-input" :value="openingStabilizer.phase1Moves" min="0" max="60" type="number" @change="updateOpeningStabilizer({ phase1Moves: Number($event.target.value) })"></label>
+        <label>Phase 1 CP <input class="small-input" :value="openingStabilizer.phase1Cp" min="0" max="1000" type="number" @change="updateOpeningStabilizer({ phase1Cp: Number($event.target.value) })"></label>
+        <label>Phase 2 Moves <input class="small-input" :value="openingStabilizer.phase2Moves" min="0" max="80" type="number" @change="updateOpeningStabilizer({ phase2Moves: Number($event.target.value) })"></label>
+        <label>Phase 2 CP <input class="small-input" :value="openingStabilizer.phase2Cp" min="0" max="1000" type="number" @change="updateOpeningStabilizer({ phase2Cp: Number($event.target.value) })"></label>
+        <label>Phase 3 Moves <input class="small-input" :value="openingStabilizer.phase3Moves" min="0" max="120" type="number" @change="updateOpeningStabilizer({ phase3Moves: Number($event.target.value) })"></label>
+        <small class="mode-help">초반에는 MultiPV 후보 중 CP 손실이 큰 수만 제외하고, 추가 엔진 검색은 하지 않습니다.</small>
+      </fieldset>
       <template v-if="settings.opponentTraining && (settings.chaosMode || (settings.chaosTraining ? 'search' : 'off')) !== 'off'">
         <label>카오스 검증
           <select :value="chaosValidation.preset" @change="updateChaosPreset($event.target.value)">
@@ -106,6 +116,7 @@ export default {
     ...mapGetters(['mistakePrevention', 'mistakePreventionLevels', 'chaosValidationPresets', 'mistakeNotebook', 'mistakeStatistics', 'mistakePreventionPending']),
     settings () { return this.mistakePrevention || {} },
     chaosValidation () { return this.settings.chaosValidation || { preset: 'Normal', stage1Depth: 4, stage2Depth: 10, maxAttempts: 24 } },
+    openingStabilizer () { return this.settings.openingStabilizer || { enabled: true, phase1Moves: 5, phase1Cp: 25, phase2Moves: 10, phase2Cp: 75, phase3Moves: 20 } },
     levels () { return this.mistakePreventionLevels || [] },
     notebook () { return this.mistakeNotebook || [] },
     stats () { return this.mistakeStatistics || {} },
@@ -118,6 +129,7 @@ export default {
   },
   methods: {
     update (payload) { this.$store.dispatch('setMistakePreventionSettings', payload) },
+    updateOpeningStabilizer (payload) { this.update({ openingStabilizer: { ...this.openingStabilizer, ...payload } }) },
     updateChaosValidation (payload) { this.update({ chaosValidation: { ...this.chaosValidation, ...payload } }) },
     updateChaosPreset (name) {
       const preset = (this.chaosValidationPresets || []).find(p => p.name === name)
