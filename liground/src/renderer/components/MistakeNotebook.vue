@@ -130,14 +130,14 @@ export default {
     settings () { return this.mistakePrevention || {} },
     chaosValidation () { return this.settings.chaosValidation || { preset: 'Normal', stage1Depth: 4, stage2Depth: 10, maxAttempts: 24 } },
     openingStabilizer () { return this.settings.openingStabilizer || { enabled: true, phase1Moves: 5, phase1Cp: 25, phase2Moves: 10, phase2Cp: 75, phase3Moves: 20 } },
-    recoveryMode () { return { enabled: true, recoveryRatio: 0.75, windowRatio: 0.2, durationPlies: 2, thresholdCp: null, cpWindow: null, ...(this.settings.recoveryMode || {}) } },
+    recoveryMode () { return { enabled: true, recoveryRatio: 0.75, windowRatio: 0.6, durationPlies: 2, thresholdCp: null, cpWindow: null, ...(this.settings.recoveryMode || {}) } },
     currentDifficultyCp () {
       const selectedName = this.settings.opponentTraining ? (this.settings.opponentLevelName || this.settings.levelName) : this.settings.levelName
       const selected = this.levels.find(level => level.name === selectedName)
       return Number((selected && selected.thresholdCp) || this.settings.thresholdCp || 300)
     },
     computedRecoveryTriggerCp () { return Math.round(this.currentDifficultyCp * (Number(this.recoveryMode.recoveryRatio) || 0.75)) },
-    computedRecoveryCpWindow () { return Math.round(this.computedRecoveryTriggerCp * (Number(this.recoveryMode.windowRatio) || 0.2)) },
+    computedRecoveryCpWindow () { return Math.round(this.computedRecoveryTriggerCp * (Number(this.recoveryMode.windowRatio) || 0.6)) },
     levels () { return this.mistakePreventionLevels || [] },
     notebook () { return this.mistakeNotebook || [] },
     stats () { return this.mistakeStatistics || {} },
