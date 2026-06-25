@@ -180,6 +180,7 @@ const CHAOS_VALIDATION_PRESETS = [
 ]
 
 const DEFAULT_CHAOS_VALIDATION = { preset: 'Normal', stage1Depth: 4, stage2Depth: 10, maxAttempts: 24 }
+const DEFAULT_OPPONENT_VERIFICATION = { stage1Depth: 6, stage2Depth: 12, maxCandidates: 8 }
 const CHAOS_MODES = ['off', 'fast', 'search']
 const PREVENTION_MODES = ['perfect', 'practical', 'flexible']
 const OPENING_STABILIZER_DEFAULTS = { enabled: true, phase1Moves: 5, phase1Cp: 25, phase2Moves: 10, phase2Cp: 75, phase3Moves: 20 }
@@ -319,7 +320,7 @@ function practicalCpLoss ({ rawCpLoss, beforeCp, userCp, mode = 'practical' }) {
   return rawCpLoss
 }
 
-async function selectTrainingOpponentMove ({ engineInstance, fen, variant, is960, level, chaos = false, chaosMode = 'off', chaosValidation, preventionMode = 'off' }) {
+async function selectTrainingOpponentMove ({ engineInstance, fen, variant, is960, level, chaos = false, chaosMode = 'off', chaosValidation, preventionMode = 'off', rootLines = [], bestmove = '', sideToMove = true, openingStabilizerSettings = null, engineMoveNumber = 1 }) {
   const configuredMaxLoss = Math.max(0, Number(level && level.thresholdCp) || 300)
   const maxLoss = phaseAdjustedMaxLoss(configuredMaxLoss, fen, chaos)
   let board
@@ -328,9 +329,17 @@ async function selectTrainingOpponentMove ({ engineInstance, fen, variant, is960
   const moves = (Array.isArray(legal) ? legal : String(legal || '').split(/\s+/)).filter(Boolean)
   if (!moves.length) return null
   const validation = normalizeChaosValidationSettings(chaosValidation || DEFAULT_CHAOS_VALIDATION)
-  const bestRaw = await engineInstance.evaluate(fen, chaos ? validation.stage2Depth : 6)
-  const bestCp = parseEngineScoreToCp(bestRaw)
+  const rootCandidates = normalizeTrapRootCandidates(rootLines, bestmove, sideToMove)
+  const rootBest = rootCandidates.find(line => line.ucimove === bestmove) || rootCandidates[0]
+  const bestRaw = rootBest && typeof rootBest.cp === 'number' ? null : await engineInstance.evaluate(fen, chaos ? validation.stage2Depth : DEFAULT_OPPONENT_VERIFICATION.stage2Depth)
+  const bestCp = rootBest && typeof rootBest.cp === 'number' ? rootBest.cp : parseEngineScoreToCp(bestRaw)
   if (bestCp === null) return null
+  let rootPool = rootCandidates
+  if (openingStabilizerSettings && openingStabilizerSettings.enabled) {
+    const effectiveCp = openingStabilizerEffectiveCp(maxLoss, engineMoveNumber, openingStabilizerSettings)
+    rootPool = rootCandidates.filter(line => typeof line.cp === 'number' && Math.max(0, bestCp - line.cp) <= effectiveCp)
+    if (!rootPool.length && rootBest) rootPool = [rootBest]
+  }
   if (!chaos && preventionMode === 'perfect') return null
 
   if (chaos) {
@@ -370,22 +379,33 @@ async function selectTrainingOpponentMove ({ engineInstance, fen, variant, is960
     return { ...fallback[0], targetLoss, maxLoss, configuredMaxLoss, openingProtected: false, sampled: attempts, validation, chaosMode, fallback: true }
   }
 
-  const sampleSize = Math.min(moves.length, Math.max(8, Math.ceil(Math.sqrt(moves.length) * 3)))
-  const shuffled = moves.slice().sort(() => Math.random() - 0.5)
-  const candidates = []
+  const rootFiltered = rootPool.filter(line => line.ucimove && moves.includes(line.ucimove) && typeof line.cp === 'number').map(line => ({ move: line.ucimove, cpLoss: Math.max(0, bestCp - line.cp), estimatedForMover: line.cp, source: 'root_multipv', depth: line.depth }))
+  const seeded = rootFiltered.filter(candidate => candidate.cpLoss <= maxLoss)
+  const sampleSize = Math.min(moves.length, Math.max(DEFAULT_OPPONENT_VERIFICATION.maxCandidates, Math.ceil(Math.sqrt(moves.length) * 3)))
+  const seededMoves = new Set(seeded.map(c => c.move))
+  const shuffled = moves.filter(move => !seededMoves.has(move)).sort(() => Math.random() - 0.5)
+  const stage1 = seeded.slice()
   for (const move of shuffled.slice(0, sampleSize)) {
     try {
-      const candidate = await evaluateTrainingCandidate({ engineInstance, fen, variant, is960, move, bestCp, depth: 3 })
+      const candidate = await evaluateTrainingCandidate({ engineInstance, fen, variant, is960, move, bestCp, depth: DEFAULT_OPPONENT_VERIFICATION.stage1Depth })
+      if (candidate && candidate.cpLoss <= maxLoss) stage1.push({ ...candidate, source: 'stage1', depth: DEFAULT_OPPONENT_VERIFICATION.stage1Depth })
+    } catch (err) {}
+  }
+  const verifyDepth = Math.max(DEFAULT_OPPONENT_VERIFICATION.stage2Depth, Math.min(18, Number(level && level.verificationDepth) || DEFAULT_OPPONENT_VERIFICATION.stage2Depth))
+  const candidates = []
+  for (const quick of stage1.slice(0, DEFAULT_OPPONENT_VERIFICATION.maxCandidates)) {
+    try {
+      const candidate = quick.source === 'root_multipv' && Number(quick.depth) >= verifyDepth ? quick : await evaluateTrainingCandidate({ engineInstance, fen, variant, is960, move: quick.move, bestCp, depth: verifyDepth })
       if (candidate) {
         const effectiveLoss = preventionMode === 'off' ? candidate.cpLoss : practicalCpLoss({ rawCpLoss: candidate.cpLoss, beforeCp: bestCp, userCp: candidate.estimatedForMover, mode: preventionMode })
-        if (effectiveLoss <= maxLoss) candidates.push({ ...candidate, effectiveLoss })
+        if (effectiveLoss <= maxLoss) candidates.push({ ...candidate, effectiveLoss, stage1CpLoss: quick.cpLoss, verificationDepth: verifyDepth, source: quick.source === 'root_multipv' ? 'root_multipv_verified' : 'second_pass' })
       }
     } catch (err) {}
   }
   if (!candidates.length) return null
   const targetLoss = humanLikeTargetLoss(maxLoss, chaos)
   candidates.sort((a, b) => scoreTrainingCandidate({ ...a, cpLoss: a.effectiveLoss === undefined ? a.cpLoss : a.effectiveLoss }, targetLoss, chaos) - scoreTrainingCandidate({ ...b, cpLoss: b.effectiveLoss === undefined ? b.cpLoss : b.effectiveLoss }, targetLoss, chaos))
-  return { ...candidates[0], targetLoss, maxLoss, configuredMaxLoss, openingProtected: maxLoss < configuredMaxLoss, sampled: candidates.length }
+  return { ...candidates[0], targetLoss, maxLoss, configuredMaxLoss, openingProtected: maxLoss < configuredMaxLoss || (openingStabilizerSettings && openingStabilizerSettings.enabled), sampled: candidates.length }
 }
 
 function pointLossString (cp) {
@@ -3645,12 +3665,23 @@ export const store = new Vuex.Store({
         let bestmove = sanitizeEngineMove(await bestMovePromise)
         if (requestSeq !== context.state.singleMoveRequestSeq) return
         if (!bestmove) return
-        if (context.state.mistakePrevention && context.state.mistakePrevention.opponentTraining) {
-          const level = MISTAKE_PREVENTION_LEVELS.find(l => l.name === context.state.mistakePrevention.opponentLevelName) || MISTAKE_PREVENTION_LEVELS.find(l => l.name === context.state.mistakePrevention.levelName) || MISTAKE_PREVENTION_LEVELS[2]
-          const selectedTraining = await selectTrainingOpponentMove({ engineInstance: engine, fen: rootFen, variant: context.getters.variant, is960: context.getters.is960, level, chaos: context.state.mistakePrevention.chaosMode !== 'off', chaosMode: context.state.mistakePrevention.chaosMode, chaosValidation: context.state.mistakePrevention.chaosValidation, preventionMode: context.state.mistakePrevention.opponentPreventionMode })
+        const mpSettings = context.state.mistakePrevention || {}
+        const openingStabilizerSettings = normalizeOpeningStabilizerSettings(mpSettings.openingStabilizer)
+        const mpLevel = MISTAKE_PREVENTION_LEVELS.find(l => l.name === mpSettings.opponentLevelName) || MISTAKE_PREVENTION_LEVELS.find(l => l.name === mpSettings.levelName) || MISTAKE_PREVENTION_LEVELS[2]
+        const plies = (context.getters.currentMainlineUci || []).length
+        const engineMoveNumber = Math.floor(plies / 2) + 1
+        if (openingStabilizerSettings.enabled) {
+          const stabilized = selectOpeningStabilizedMove({ rootLines: rootLines.filter(Boolean), bestmove, selectedCp: mpLevel.thresholdCp, engineMoveNumber, settings: openingStabilizerSettings, sideToMove: context.getters.turn })
+          if (stabilized && stabilized.move && context.state.board.legalMoves().includes(stabilized.move) && normalizeFen(context.getters.fen) === normalizeFen(rootFen)) {
+            bestmove = stabilized.move
+            context.commit('personalityDiagnostics', { ...stabilized, selectedAt: Date.now() })
+          }
+        }
+        if (mpSettings && mpSettings.opponentTraining) {
+          const selectedTraining = await selectTrainingOpponentMove({ engineInstance: engine, fen: rootFen, variant: context.getters.variant, is960: context.getters.is960, level: mpLevel, chaos: mpSettings.chaosMode !== 'off', chaosMode: mpSettings.chaosMode, chaosValidation: mpSettings.chaosValidation, preventionMode: mpSettings.opponentPreventionMode, rootLines: rootLines.filter(Boolean), bestmove, sideToMove: context.getters.turn, openingStabilizerSettings, engineMoveNumber })
           if (selectedTraining && selectedTraining.move && context.state.board.legalMoves().includes(selectedTraining.move) && normalizeFen(context.getters.fen) === normalizeFen(rootFen)) {
             bestmove = selectedTraining.move
-            context.commit('humanTrapDiagnostics', { mode: 'Opponent Training Strength', type: level.name, move: bestmove, cpLoss: selectedTraining.cpLoss, pointLoss: Number(pointLossString(selectedTraining.cpLoss)), reason: `${context.state.mistakePrevention.chaosMode !== 'off' ? context.state.mistakePrevention.chaosMode : 'human-like'} sampled legal move within ${selectedTraining.maxLoss}cp${selectedTraining.openingProtected ? ' (opening protected)' : ''}${selectedTraining.fallback ? ' (fallback closest target)' : ''}`, probeStats: { probes: selectedTraining.sampled }, selectedAt: Date.now() })
+            context.commit('humanTrapDiagnostics', { mode: 'Opponent Training Strength', type: mpLevel.name, move: bestmove, cpLoss: selectedTraining.cpLoss, pointLoss: Number(pointLossString(selectedTraining.cpLoss)), reason: `${mpSettings.chaosMode !== 'off' ? mpSettings.chaosMode : 'human-like'} sampled legal move within ${selectedTraining.maxLoss}cp${selectedTraining.openingProtected ? ' (opening protected)' : ''}${selectedTraining.fallback ? ' (fallback closest target)' : ''}`, probeStats: { probes: selectedTraining.sampled, source: selectedTraining.source, verificationDepth: selectedTraining.verificationDepth }, selectedAt: Date.now() })
           }
         }
         if (personality.enabled && (personality.competitiveSettings.pressureMode || personality.competitiveSettings.hunterMode || personality.competitiveSettings.closerMode)) {

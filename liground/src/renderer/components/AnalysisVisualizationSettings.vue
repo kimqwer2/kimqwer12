@@ -4,13 +4,7 @@
     <label><input v-model="local.showMultiPvArrows" type="checkbox" @change="save"> 후보수 화살표</label>
     <label><input v-model="humanTrapMode" type="checkbox"> Human Trap Mode</label>
     <label><input v-model="closeWinMode" type="checkbox"> Controlled Margin Mode</label>
-    <div class="personality-box">
-      <h4>Human Personality</h4>
-      <label><input v-model="pressureMode" type="checkbox"> Pressure Mode</label>
-      <label><input v-model="hunterMode" type="checkbox"> Hunter Mode</label>
-      <label><input v-model="closerMode" type="checkbox"> Closer / Finisher Mode</label>
-    </div>
-    <small>Human Trap은 분석/추천/엔진 선택에 실전 함정 압력을 반영합니다. Controlled Margin은 작은 목표 우세권(+0.7~+1.3) 안에서 승리 마진을 조절합니다. Human Personality는 Pressure/Hunter/Closer 엔진 성향을 영구 설정으로 적용합니다.</small>
+    <small>Human Trap은 분석/추천/엔진 선택에 실전 함정 압력을 반영합니다. Controlled Margin은 작은 목표 우세권(+0.7~+1.3) 안에서 승리 마진을 조절합니다. Pressure/Hunter/Closer는 실수방지 모드 패널로 이동했습니다.</small>
     <label>표시 후보 수 <input v-model.number="local.multiPvCount" min="1" type="number" @change="save"></label>
     <label><input v-model="local.trajectoryEnabled" type="checkbox" @change="save"> 최선 수순 궤적</label>
     <label>표시 방향
