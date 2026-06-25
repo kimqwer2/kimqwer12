@@ -2023,7 +2023,7 @@ export const store = new Vuex.Store({
     PvELimiter: null, // stores the limiter config for the PvE engine
     PvEEngineInstance: null,
     humanTrapDiagnostics: null,
-    mistakePrevention: { enabled: false, levelName: '중급', thresholdCp: 300, opponentTraining: false, opponentLevelName: '중급', evaluationMode: 'practical', verificationDepth: 14, chaosTraining: false, chaosMode: 'off', chaosValidation: DEFAULT_CHAOS_VALIDATION, opponentPreventionMode: 'off', openingStabilizer: OPENING_STABILIZER_DEFAULTS },
+    mistakePrevention: { enabled: false, levelName: '중급', thresholdCp: 300, opponentTraining: false, opponentLevelName: '중급', evaluationMode: 'practical', verificationDepth: 14, chaosTraining: false, chaosMode: 'off', chaosValidation: DEFAULT_CHAOS_VALIDATION, opponentPreventionMode: 'flexible', openingStabilizer: OPENING_STABILIZER_DEFAULTS },
     mistakeNotebook: [],
     mistakePreventionPending: false,
     enginePersonalityDebug: {
@@ -2319,6 +2319,10 @@ export const store = new Vuex.Store({
     viewAnalysis (state, payload) {
       state.viewAnalysis = payload
     },
+    focusMode (state, payload) {
+      state.focusMode = !!payload
+      try { localStorage.setItem('focusMode', state.focusMode ? 'true' : 'false') } catch (err) {}
+    },
     fen (state, payload) {
       state.fen = payload
       state.normalizedFen = normalizeFen(payload)
@@ -2420,7 +2424,7 @@ export const store = new Vuex.Store({
       next.verificationDepth = Math.max(10, Math.min(20, Number(next.verificationDepth) || 14))
       next.chaosMode = CHAOS_MODES.includes(next.chaosMode) ? next.chaosMode : (next.chaosTraining ? 'search' : 'off')
       next.chaosTraining = next.chaosMode !== 'off'
-      next.opponentPreventionMode = ['off'].concat(PREVENTION_MODES).includes(next.opponentPreventionMode) ? next.opponentPreventionMode : 'off'
+      next.opponentPreventionMode = ['off'].concat(PREVENTION_MODES).includes(next.opponentPreventionMode) ? next.opponentPreventionMode : 'flexible'
       next.chaosValidation = normalizeChaosValidationSettings(next.chaosValidation || DEFAULT_CHAOS_VALIDATION)
       next.openingStabilizer = normalizeOpeningStabilizerSettings(next.openingStabilizer || OPENING_STABILIZER_DEFAULTS)
       if (!next.opponentLevelName) next.opponentLevelName = next.levelName
@@ -3159,6 +3163,7 @@ export const store = new Vuex.Store({
         destinations: {},
         variant: 'chess',
         viewAnalysis: true,
+        focusMode: false,
         analysisMode: true,
         darkMode: false,
         muteButton: false,
@@ -3322,6 +3327,9 @@ export const store = new Vuex.Store({
       }
       if (localStorage.reviewMarkerMode && Object.values(REVIEW_MARKER_MODES).includes(localStorage.reviewMarkerMode)) {
         context.commit('reviewMarkerMode', localStorage.reviewMarkerMode)
+      }
+      if (localStorage.focusMode) {
+        context.commit('focusMode', localStorage.focusMode === 'true')
       }
       if (localStorage.engines) {
         try {
@@ -5721,6 +5729,9 @@ export const store = new Vuex.Store({
     viewAnalysis (context, payload) {
       context.commit('viewAnalysis', payload)
     },
+    focusMode (context, payload) {
+      context.commit('focusMode', payload)
+    },
     boardStyle (context, payload) {
       context.commit('boardStyle', payload)
     },
@@ -6859,6 +6870,9 @@ export const store = new Vuex.Store({
     },
     viewAnalysis (state) {
       return state.viewAnalysis
+    },
+    focusMode (state) {
+      return !!state.focusMode
     },
     evalPlotDepth (state) {
       return state.evalPlotDepth

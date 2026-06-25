@@ -50,6 +50,14 @@
       >
         📋 PGN Browser
       </button>
+      <button
+        class="focusModeBtn"
+        :class="{ active: focusMode }"
+        title="Toggle distraction-free board view"
+        @click="toggleFocusMode"
+      >
+        {{ focusMode ? 'Focus Mode ON' : 'Focus Mode OFF' }}
+      </button>
     </div>
 
     <!-- Mode Selection -->
@@ -291,7 +299,7 @@ export default {
     displayVariant () { // retuns the "nice" name of the current variant
       return this.variantOptions.revGet(this.variant)
     },
-    ...mapGetters(['QuickTourIndex', 'gameConfig', 'showGameEndModal']),
+    ...mapGetters(['QuickTourIndex', 'gameConfig', 'showGameEndModal', 'focusMode']),
     showGameEndModal () {
       return this.$store.getters.showGameEndModal
     },
@@ -355,6 +363,10 @@ export default {
 
     openStartModal () {
       this.showStartModal = true
+    },
+
+    toggleFocusMode () {
+      this.$store.dispatch('focusMode', !this.focusMode)
     },
 
     closeStartModal () {
@@ -700,6 +712,15 @@ export default {
   align-items: center;
 }
 
+.focusModeBtn {
+  min-width: 118px;
+}
+
+.focusModeBtn.active {
+  background: #2f855a;
+  color: #fff;
+}
+
 #evalplot-button {
   display: flex;
   gap: 8px;
@@ -709,6 +730,7 @@ export default {
   border: 1px solid var(--main-border-color, #ddd);
   border-radius: 5px;
 }
+
 
 #evalplot-button-qt {
   display: flex;
