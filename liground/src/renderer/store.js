@@ -180,7 +180,7 @@ const HUMAN_COMPETITIVE_DEFAULTS = {
 const RECOVERY_MODE_DEFAULTS = {
   enabled: true,
   recoveryRatio: 0.75,
-  windowRatio: 0.2,
+  windowRatio: 0.6,
   durationPlies: 2,
   thresholdCp: null,
   cpWindow: null
