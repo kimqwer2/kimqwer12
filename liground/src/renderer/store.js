@@ -427,7 +427,7 @@ async function selectTrainingOpponentMove ({ engineInstance, fen, variant, is960
     for (const move of fallbackMoves) {
       try {
         const candidate = await evaluateTrainingCandidate({ engineInstance, fen, variant, is960, move, bestCp, depth: validation.stage2Depth })
-        if (candidate) fallback.push(candidate)
+        if (candidate && candidate.cpLoss <= maxLoss) fallback.push(candidate)
       } catch (err) {}
     }
     if (!fallback.length) return null
@@ -462,6 +462,71 @@ async function selectTrainingOpponentMove ({ engineInstance, fen, variant, is960
   const targetLoss = humanLikeTargetLoss(maxLoss, chaos)
   candidates.sort((a, b) => scoreTrainingCandidate({ ...a, cpLoss: a.effectiveLoss === undefined ? a.cpLoss : a.effectiveLoss }, targetLoss, chaos) - scoreTrainingCandidate({ ...b, cpLoss: b.effectiveLoss === undefined ? b.cpLoss : b.effectiveLoss }, targetLoss, chaos))
   return { ...candidates[0], targetLoss, maxLoss, configuredMaxLoss, openingProtected: maxLoss < configuredMaxLoss || (openingStabilizerSettings && openingStabilizerSettings.enabled), sampled: candidates.length }
+}
+
+
+function moveSelectionCandidateSummary (items = [], bestCp = null) {
+  return (Array.isArray(items) ? items : []).filter(Boolean).map((item, idx) => {
+    const move = item.move || item.ucimove || ''
+    const cp = typeof item.cp === 'number' ? item.cp : (typeof item.selectedCp === 'number' ? item.selectedCp : (typeof item.estimatedForMover === 'number' ? item.estimatedForMover : null))
+    const cpLoss = typeof item.cpLoss === 'number' ? item.cpLoss : (typeof bestCp === 'number' && typeof cp === 'number' ? Math.max(0, bestCp - cp) : null)
+    return {
+      move,
+      evaluation: cp,
+      rawEvaluation: typeof item.rawCp === 'number' ? item.rawCp : undefined,
+      rank: item.multipv || item.rank || idx + 1,
+      cpLoss,
+      effectiveLoss: item.effectiveLoss,
+      source: item.source
+    }
+  })
+}
+
+function createMoveSelectionTrace ({ fen, sideToMove, configuredCpLimit, rootLines, rootBestMove }) {
+  const normalizedRoot = normalizeTrapRootCandidates(rootLines, rootBestMove, sideToMove)
+  const rootBest = normalizedRoot.find(line => line.ucimove === rootBestMove) || normalizedRoot[0] || null
+  const trace = {
+    fen,
+    sideToMove: sideToMove ? 'white' : 'black',
+    configuredCpLimit,
+    rootBestMove: rootBest && rootBest.ucimove ? rootBest.ucimove : rootBestMove,
+    rootBestEvaluation: rootBest && typeof rootBest.cp === 'number' ? rootBest.cp : null,
+    multiPvCandidates: moveSelectionCandidateSummary(normalizedRoot, rootBest && rootBest.cp),
+    stages: []
+  }
+  console.info('[MoveSelectionPipeline] root', trace)
+  return trace
+}
+
+function logMoveSelectionStage (trace, stage, payload = {}) {
+  if (!trace) return
+  const entry = {
+    stage,
+    selectedMove: payload.selectedMove || payload.move || null,
+    cpLimit: payload.cpLimit,
+    cpLoss: payload.cpLoss,
+    baselineMove: payload.baselineMove || trace.rootBestMove,
+    baselineEval: payload.baselineEval === undefined ? trace.rootBestEvaluation : payload.baselineEval,
+    candidates: moveSelectionCandidateSummary(payload.candidates || [], payload.baselineEval === undefined ? trace.rootBestEvaluation : payload.baselineEval),
+    reason: payload.reason
+  }
+  trace.stages.push(entry)
+  console.info(`[MoveSelectionPipeline] ${stage}`, entry)
+}
+
+async function logCommittedMoveEvaluation ({ trace, engineInstance, fen, variant, is960, move, depth = 8 }) {
+  if (!trace || !engineInstance || !fen || !move) return
+  try {
+    const board = boardFromFen(variant, fen, is960)
+    board.push(move)
+    const raw = await engineInstance.evaluate(board.fen(), depth)
+    const afterCp = parseEngineScoreToCp(raw)
+    const payload = { finalMoveCommitted: move, afterFen: board.fen(), engineEvaluationAfterMove: afterCp }
+    trace.final = payload
+    console.info('[MoveSelectionPipeline] final', payload)
+  } catch (err) {
+    console.warn('[MoveSelectionPipeline] final-eval-failed', { move, message: err && err.message })
+  }
 }
 
 function pointLossString (cp) {
@@ -4006,6 +4071,7 @@ export const store = new Vuex.Store({
         }
         if (!bestmove) return
         const engineBestmove = bestmove
+        const selectionTrace = createMoveSelectionTrace({ fen: rootFen, sideToMove: context.getters.turn, configuredCpLimit: rootLevel.thresholdCp, rootLines: rootLines.filter(Boolean), rootBestMove: engineBestmove })
         const mpSettings = rootMpSettings
         const openingStabilizerSettings = rootOpeningStabilizerSettings
         const mpLevel = rootLevel
@@ -4018,13 +4084,15 @@ export const store = new Vuex.Store({
             bestmove = stabilized.move
             context.commit('personalityDiagnostics', { ...stabilized, selectedAt: Date.now() })
           }
+          logMoveSelectionStage(selectionTrace, 'Opening Stabilizer', { selectedMove: bestmove, cpLimit: stabilized && stabilized.effectiveCp, cpLoss: stabilized && stabilized.cpLoss, candidates: rootLines.filter(Boolean), reason: stabilized ? stabilized.reason : 'no replacement' })
         }
         if (mpSettings && mpSettings.opponentTraining) {
-          const selectedTraining = await selectTrainingOpponentMove({ engineInstance: engine, fen: rootFen, variant: context.getters.variant, is960: context.getters.is960, level: mpLevel, chaos: mpSettings.chaosMode !== 'off', chaosMode: mpSettings.chaosMode, chaosValidation: mpSettings.chaosValidation, preventionMode: mpSettings.opponentPreventionMode, rootLines: rootLines.filter(Boolean), bestmove, sideToMove: context.getters.turn, openingStabilizerSettings, engineMoveNumber })
+          const selectedTraining = await selectTrainingOpponentMove({ engineInstance: engine, fen: rootFen, variant: context.getters.variant, is960: context.getters.is960, level: mpLevel, chaos: mpSettings.chaosMode !== 'off', chaosMode: mpSettings.chaosMode, chaosValidation: mpSettings.chaosValidation, preventionMode: mpSettings.opponentPreventionMode, rootLines: rootLines.filter(Boolean), bestmove: engineBestmove, sideToMove: context.getters.turn, openingStabilizerSettings, engineMoveNumber })
           if (selectedTraining && selectedTraining.move && context.state.board.legalMoves().includes(selectedTraining.move) && normalizeFen(context.getters.fen) === normalizeFen(rootFen)) {
             bestmove = selectedTraining.move
             context.commit('humanTrapDiagnostics', { mode: 'Opponent Training Strength', type: mpLevel.name, move: bestmove, cpLoss: selectedTraining.cpLoss, pointLoss: Number(pointLossString(selectedTraining.cpLoss)), reason: `${mpSettings.chaosMode !== 'off' ? mpSettings.chaosMode : 'human-like'} sampled legal move within ${selectedTraining.maxLoss}cp${selectedTraining.openingProtected ? ' (opening protected)' : ''}${selectedTraining.fallback ? ' (fallback closest target)' : ''}`, probeStats: { probes: selectedTraining.sampled, source: selectedTraining.source, verificationDepth: selectedTraining.verificationDepth }, selectedAt: Date.now() })
           }
+          logMoveSelectionStage(selectionTrace, 'Mistake Prevention / Flexible', { selectedMove: bestmove, cpLimit: selectedTraining && selectedTraining.maxLoss, cpLoss: selectedTraining && selectedTraining.cpLoss, candidates: selectedTraining ? [selectedTraining] : [], reason: selectedTraining ? selectedTraining.reason : 'inactive/no replacement' })
         }
         const recoveryPliesKey = autoPlaySelector ? `${autoPlaySide}RecoveryPlies` : 'recoveryPlies'
         const activeRecoveryPlies = Math.max(0, Number(context.state.enginePersonalityDebug[recoveryPliesKey]) || 0)
@@ -4033,7 +4101,7 @@ export const store = new Vuex.Store({
             fen: rootFen,
             variant: context.getters.variant,
             is960: context.getters.is960,
-            bestmove,
+            bestmove: engineBestmove,
             rootLines: rootLines.filter(Boolean),
             settings: recoverySettings,
             difficultyCp: mpLevel.thresholdCp,
@@ -4045,9 +4113,10 @@ export const store = new Vuex.Store({
             bestmove = selectedRecovery.move
             context.commit('personalityDiagnostics', { ...selectedRecovery, recoveryPliesRemaining: Math.max(0, activeRecoveryPlies - 1), selectedAt: Date.now() })
           }
+          logMoveSelectionStage(selectionTrace, 'Recovery', { selectedMove: bestmove, cpLimit: recoverySettings.cpWindow, cpLoss: selectedRecovery && selectedRecovery.cpLoss, candidates: selectedRecovery && selectedRecovery.candidates, reason: selectedRecovery ? selectedRecovery.reason : 'inactive/no replacement' })
         }
         if (personality.enabled && (personality.competitiveSettings.pressureMode || personality.competitiveSettings.hunterMode || personality.competitiveSettings.closerMode)) {
-          const rootCandidates = normalizeTrapRootCandidates(rootLines.filter(Boolean), bestmove, context.getters.turn)
+          const rootCandidates = normalizeTrapRootCandidates(rootLines.filter(Boolean), engineBestmove, context.getters.turn)
           const bestLine = rootCandidates.find(line => line.ucimove === bestmove) || rootCandidates[0]
           const level = MISTAKE_PREVENTION_LEVELS.find(l => l.name === context.state.mistakePrevention.opponentLevelName) || MISTAKE_PREVENTION_LEVELS.find(l => l.name === context.state.mistakePrevention.levelName) || MISTAKE_PREVENTION_LEVELS[2]
           const hunterThreshold = Math.round((Number((autoPlaySelector ? mpLevel : level) && (autoPlaySelector ? mpLevel : level).thresholdCp) || 300) * personality.competitiveSettings.hunterMultiplier)
@@ -4059,7 +4128,7 @@ export const store = new Vuex.Store({
             fen: rootFen,
             variant: context.getters.variant,
             is960: context.getters.is960,
-            bestmove,
+            bestmove: engineBestmove,
             rootLines: rootLines.filter(Boolean),
             settings: personality.competitiveSettings,
             sideToMove: context.getters.turn,
@@ -4076,6 +4145,7 @@ export const store = new Vuex.Store({
           } else if (selectedCompetitive) {
             context.commit('personalityDiagnostics', { ...selectedCompetitive, hunterActive, hunterThreshold, selectedAt: Date.now() })
           }
+          logMoveSelectionStage(selectionTrace, 'Pressure/Hunter/Closer', { selectedMove: bestmove, cpLimit: mpLevel.thresholdCp, cpLoss: selectedCompetitive && selectedCompetitive.cpLoss, candidates: selectedCompetitive && selectedCompetitive.candidates, reason: selectedCompetitive ? selectedCompetitive.reason : 'inactive/no replacement' })
         }
         if (personality.humanTrapSettings.enabled || personality.closeWinSettings.enabled) {
           context.commit('enginePersonalityDebug', { trapAttempts: (context.state.enginePersonalityDebug.trapAttempts || 0) + 1 })
@@ -4084,7 +4154,7 @@ export const store = new Vuex.Store({
             fen: rootFen,
             variant: context.getters.variant,
             is960: context.getters.is960,
-            bestmove,
+            bestmove: engineBestmove,
             rootLines: rootLines.filter(Boolean),
             humanTrapSettings: personality.humanTrapSettings,
             closeWinSettings: personality.closeWinSettings,
@@ -4096,6 +4166,7 @@ export const store = new Vuex.Store({
           } else if (selected) {
             context.commit('personalityDiagnostics', { ...selected, selectedAt: Date.now() })
           }
+          logMoveSelectionStage(selectionTrace, 'Human Trap / Closer', { selectedMove: bestmove, cpLimit: mpLevel.thresholdCp, cpLoss: selected && selected.cpLoss, candidates: selected && selected.candidates, reason: selected ? selected.reason : 'inactive/no replacement' })
         }
         if (recoverySettings.enabled) {
           const recoveryTrigger = rootCpLossForMove({ rootLines: rootLines.filter(Boolean), bestmove: engineBestmove, move: bestmove, sideToMove: context.getters.turn })
@@ -4106,6 +4177,9 @@ export const store = new Vuex.Store({
           }
         }
         if (autoPlaySelector) console.info('[EngineAutoPlay]', { side: autoPlaySide, phase: 'commit', move: bestmove })
+        const finalRootLoss = rootCpLossForMove({ rootLines: rootLines.filter(Boolean), bestmove: engineBestmove, move: bestmove, sideToMove: context.getters.turn })
+        logMoveSelectionStage(selectionTrace, 'Final Commit', { selectedMove: bestmove, cpLimit: mpLevel.thresholdCp, cpLoss: finalRootLoss && finalRootLoss.cpLoss, candidates: rootLines.filter(Boolean), reason: 'committing selected move' })
+        await logCommittedMoveEvaluation({ trace: selectionTrace, engineInstance: engine, fen: rootFen, variant: context.getters.variant, is960: context.getters.is960, move: bestmove })
         await context.dispatch('push', { move: bestmove, prev: context.getters.currentMove[0], skipMistakePrevention: true })
       } catch (err) {
         console.error('[playSingleEngineMove] Failed to apply single engine move:', err)
@@ -4409,6 +4483,8 @@ export const store = new Vuex.Store({
             }
             if (!move) return
             const engineBestmove = move
+            const rootFenForSelection = humanTrapRootFen || context.getters.fen
+            const selectionTrace = createMoveSelectionTrace({ fen: rootFenForSelection, sideToMove: turnIsWhite, configuredCpLimit: context.state.mistakePrevention.thresholdCp, rootLines: humanTrapRootLines.filter(Boolean), rootBestMove: engineBestmove })
             const level = MISTAKE_PREVENTION_LEVELS.find(l => l.name === context.state.mistakePrevention.opponentLevelName) || MISTAKE_PREVENTION_LEVELS.find(l => l.name === context.state.mistakePrevention.levelName) || MISTAKE_PREVENTION_LEVELS[2]
             if (openingStabilizerSettings.enabled) {
               const plies = (context.getters.currentMainlineUci || []).length
@@ -4418,6 +4494,7 @@ export const store = new Vuex.Store({
                 move = stabilized.move
                 context.commit('personalityDiagnostics', { ...stabilized, selectedAt: Date.now() })
               }
+              logMoveSelectionStage(selectionTrace, 'Opening Stabilizer', { selectedMove: move, cpLimit: stabilized && stabilized.effectiveCp, cpLoss: stabilized && stabilized.cpLoss, candidates: humanTrapRootLines.filter(Boolean), reason: stabilized ? stabilized.reason : 'no replacement' })
             }
             const activeRecoveryPlies = Math.max(0, Number(context.state.enginePersonalityDebug.recoveryPlies) || 0)
             if (recoverySettings.enabled && activeRecoveryPlies > 0) {
@@ -4425,7 +4502,7 @@ export const store = new Vuex.Store({
                 fen: humanTrapRootFen || context.getters.fen,
                 variant: context.getters.variant,
                 is960: context.getters.is960,
-                bestmove: move,
+                bestmove: engineBestmove,
                 rootLines: humanTrapRootLines.filter(Boolean),
                 settings: recoverySettings,
                 difficultyCp: level.thresholdCp,
@@ -4439,7 +4516,7 @@ export const store = new Vuex.Store({
               }
             }
             if (competitiveSettings.pressureMode || competitiveSettings.hunterMode || competitiveSettings.closerMode) {
-              const rootCandidates = normalizeTrapRootCandidates(humanTrapRootLines.filter(Boolean), move, turnIsWhite)
+              const rootCandidates = normalizeTrapRootCandidates(humanTrapRootLines.filter(Boolean), engineBestmove, turnIsWhite)
               const bestLine = rootCandidates.find(line => line.ucimove === move) || rootCandidates[0]
               const level = MISTAKE_PREVENTION_LEVELS.find(l => l.name === context.state.mistakePrevention.opponentLevelName) || MISTAKE_PREVENTION_LEVELS.find(l => l.name === context.state.mistakePrevention.levelName) || MISTAKE_PREVENTION_LEVELS[2]
               const hunterThreshold = Math.round((Number(level && level.thresholdCp) || 300) * competitiveSettings.hunterMultiplier)
@@ -4450,7 +4527,7 @@ export const store = new Vuex.Store({
                 fen: humanTrapRootFen || context.getters.fen,
                 variant: context.getters.variant,
                 is960: context.getters.is960,
-                bestmove: move,
+                bestmove: engineBestmove,
                 rootLines: humanTrapRootLines.filter(Boolean),
                 settings: competitiveSettings,
                 sideToMove: turnIsWhite,
@@ -4464,6 +4541,7 @@ export const store = new Vuex.Store({
               } else if (selectedCompetitive) {
                 context.commit('personalityDiagnostics', { ...selectedCompetitive, hunterActive, hunterThreshold, selectedAt: Date.now() })
               }
+              logMoveSelectionStage(selectionTrace, 'Pressure/Hunter/Closer', { selectedMove: move, cpLimit: level.thresholdCp, cpLoss: selectedCompetitive && selectedCompetitive.cpLoss, candidates: selectedCompetitive && selectedCompetitive.candidates, reason: selectedCompetitive ? selectedCompetitive.reason : 'inactive/no replacement' })
             }
             if (humanTrapSettings.enabled || closeWinSettings.enabled) {
               context.commit('enginePersonalityDebug', { trapAttempts: (context.state.enginePersonalityDebug.trapAttempts || 0) + 1 })
@@ -4473,7 +4551,7 @@ export const store = new Vuex.Store({
                 fen: humanTrapRootFen || currentFen,
                 variant: context.getters.variant,
                 is960: context.getters.is960,
-                bestmove: move,
+                bestmove: engineBestmove,
                 rootLines: humanTrapRootLines.filter(Boolean),
                 humanTrapSettings,
                 closeWinSettings,
@@ -4490,6 +4568,7 @@ export const store = new Vuex.Store({
               } else {
                 context.commit('personalityDiagnostics', null)
               }
+              logMoveSelectionStage(selectionTrace, 'Human Trap / Closer', { selectedMove: move, cpLimit: level.thresholdCp, cpLoss: selected && selected.cpLoss, candidates: selected && selected.candidates, reason: selected ? selected.reason : 'inactive/no replacement' })
             }
             if (recoverySettings.enabled) {
               const recoveryTrigger = rootCpLossForMove({ rootLines: humanTrapRootLines.filter(Boolean), bestmove: engineBestmove, move, sideToMove: turnIsWhite })
@@ -4499,6 +4578,8 @@ export const store = new Vuex.Store({
                 console.info('[RecoveryMode]', { entered: true, cpLoss: recoveryTrigger.cpLoss, durationPlies: recoverySettings.durationPlies, thresholdCp: recoverySettings.thresholdCp, recoveryRatio: recoverySettings.recoveryRatio, difficultyCp: recoverySettings.difficultyCp, move })
               }
             }
+            logMoveSelectionStage(selectionTrace, 'Final Commit', { selectedMove: move, cpLimit: level.thresholdCp, cpLoss: rootCpLossForMove({ rootLines: humanTrapRootLines.filter(Boolean), bestmove: engineBestmove, move, sideToMove: turnIsWhite }) && rootCpLossForMove({ rootLines: humanTrapRootLines.filter(Boolean), bestmove: engineBestmove, move, sideToMove: turnIsWhite }).cpLoss, candidates: humanTrapRootLines.filter(Boolean), reason: 'committing selected move' })
+            await logCommittedMoveEvaluation({ trace: selectionTrace, engineInstance: pveEngine, fen: rootFenForSelection, variant: context.getters.variant, is960: context.getters.is960, move })
             await context.dispatch('push', { move, prev: context.getters.currentMove[0] })
           } catch (err) {
             console.error('[PvEMakeMove] Engine provided invalid move:', ucimove, err)
@@ -4640,7 +4721,7 @@ export const store = new Vuex.Store({
               }
             }
             if (selector.trainingSettings && selector.trainingSettings.opponentTraining) {
-              const selectedTraining = await selectTrainingOpponentMove({ engineInstance, fen: rootFen, variant: context.getters.variant, is960: context.getters.is960, level: selector.level, chaos: selector.trainingSettings.chaosMode !== 'off', chaosMode: selector.trainingSettings.chaosMode, chaosValidation: selector.trainingSettings.chaosValidation, preventionMode: selector.trainingSettings.opponentPreventionMode, rootLines, bestmove: move, sideToMove, openingStabilizerSettings: selector.openingStabilizerSettings, engineMoveNumber })
+              const selectedTraining = await selectTrainingOpponentMove({ engineInstance, fen: rootFen, variant: context.getters.variant, is960: context.getters.is960, level: selector.level, chaos: selector.trainingSettings.chaosMode !== 'off', chaosMode: selector.trainingSettings.chaosMode, chaosValidation: selector.trainingSettings.chaosValidation, preventionMode: selector.trainingSettings.opponentPreventionMode, rootLines, bestmove: engineBestmove, sideToMove, openingStabilizerSettings: selector.openingStabilizerSettings, engineMoveNumber })
               if (selectedTraining && selectedTraining.move && context.state.board.legalMoves().includes(selectedTraining.move)) {
                 move = selectedTraining.move
                 context.commit('humanTrapDiagnostics', { mode: `EvE ${side} Mistake Prevention`, type: selector.level.name, move, cpLoss: selectedTraining.cpLoss, pointLoss: Number(pointLossString(selectedTraining.cpLoss)), reason: `${selector.trainingSettings.chaosMode !== 'off' ? selector.trainingSettings.chaosMode : selector.trainingSettings.opponentPreventionMode} selected legal move within ${selectedTraining.maxLoss}cp`, probeStats: { probes: selectedTraining.sampled, source: selectedTraining.source, verificationDepth: selectedTraining.verificationDepth }, selectedAt: Date.now() })
@@ -4648,7 +4729,7 @@ export const store = new Vuex.Store({
             }
             const activeRecoveryPlies = Math.max(0, Number(context.state.enginePersonalityDebug[`${side}RecoveryPlies`]) || 0)
             if (selector.recoverySettings.enabled && activeRecoveryPlies > 0) {
-              const selectedRecovery = selectRecoveryMove({ fen: rootFen, variant: context.getters.variant, is960: context.getters.is960, bestmove: move, rootLines, settings: selector.recoverySettings, difficultyCp: selector.level.thresholdCp, sideToMove })
+              const selectedRecovery = selectRecoveryMove({ fen: rootFen, variant: context.getters.variant, is960: context.getters.is960, bestmove: engineBestmove, rootLines, settings: selector.recoverySettings, difficultyCp: selector.level.thresholdCp, sideToMove })
               context.commit('enginePersonalityDebug', { [`${side}RecoveryPlies`]: Math.max(0, activeRecoveryPlies - 1) })
               context.commit('recoveryMode', activeRecoveryPlies - 1 > 0)
               if (selectedRecovery && selectedRecovery.move && context.state.board.legalMoves().includes(selectedRecovery.move)) {
@@ -4657,14 +4738,14 @@ export const store = new Vuex.Store({
               }
             }
             if (selector.competitiveSettings.pressureMode || selector.competitiveSettings.hunterMode || selector.competitiveSettings.closerMode) {
-              const rootCandidates = normalizeTrapRootCandidates(rootLines, move, sideToMove)
+              const rootCandidates = normalizeTrapRootCandidates(rootLines, engineBestmove, sideToMove)
               const bestLine = rootCandidates.find(line => line.ucimove === move) || rootCandidates[0]
               const hunterThreshold = Math.round((Number(selector.level && selector.level.thresholdCp) || 300) * selector.competitiveSettings.hunterMultiplier)
               const hunterKey = `${side}HunterPlies`
               const currentHunterPlies = Math.max(0, Number(context.state.enginePersonalityDebug[hunterKey]) || 0)
               const triggeredHunter = !!(selector.competitiveSettings.hunterMode && bestLine && typeof bestLine.cp === 'number' && bestLine.cp >= hunterThreshold)
               const hunterActive = triggeredHunter || currentHunterPlies > 0
-              const selectedCompetitive = selectHumanCompetitiveMove({ fen: rootFen, variant: context.getters.variant, is960: context.getters.is960, bestmove: move, rootLines, settings: selector.competitiveSettings, sideToMove, hunterActive })
+              const selectedCompetitive = selectHumanCompetitiveMove({ fen: rootFen, variant: context.getters.variant, is960: context.getters.is960, bestmove: engineBestmove, rootLines, settings: selector.competitiveSettings, sideToMove, hunterActive })
               if (triggeredHunter) context.commit('enginePersonalityDebug', { [hunterKey]: selector.competitiveSettings.hunterMoves })
               else if (currentHunterPlies > 0) context.commit('enginePersonalityDebug', { [hunterKey]: currentHunterPlies - 1 })
               if (selectedCompetitive && selectedCompetitive.move && context.state.board.legalMoves().includes(selectedCompetitive.move)) {
@@ -4674,7 +4755,7 @@ export const store = new Vuex.Store({
             }
             if (selector.humanTrapSettings.enabled || selector.closeWinSettings.enabled) {
               context.commit('enginePersonalityDebug', { trapAttempts: (context.state.enginePersonalityDebug.trapAttempts || 0) + 1 })
-              const selected = await selectPersonalityMove({ engineInstance, fen: rootFen, variant: context.getters.variant, is960: context.getters.is960, bestmove: move, rootLines, humanTrapSettings: selector.humanTrapSettings, closeWinSettings: selector.closeWinSettings, sideToMove })
+              const selected = await selectPersonalityMove({ engineInstance, fen: rootFen, variant: context.getters.variant, is960: context.getters.is960, bestmove: engineBestmove, rootLines, humanTrapSettings: selector.humanTrapSettings, closeWinSettings: selector.closeWinSettings, sideToMove })
               if (selected && selected.move && context.state.board.legalMoves().includes(selected.move)) {
                 move = selected.move
                 context.commit('personalityDiagnostics', { ...selected, side, selectedAt: Date.now() })
