@@ -4432,11 +4432,29 @@ export const store = new Vuex.Store({
         const variantCmd = `setoption name UCI_Variant value ${gameMode}`
         const chess960Cmd = `setoption name UCI_Chess960 value ${context.getters.is960}`
 
+        const personality = personalityFlagsFromState(context.state)
+        const mpSettings = context.state.mistakePrevention || {}
+        const openingStabilizerSettings = normalizeOpeningStabilizerSettings(mpSettings.openingStabilizer)
+        const level = MISTAKE_PREVENTION_LEVELS.find(l => l.name === mpSettings.opponentLevelName) || MISTAKE_PREVENTION_LEVELS.find(l => l.name === mpSettings.levelName) || MISTAKE_PREVENTION_LEVELS[2]
+        const recoverySettings = recoveryModeEffectiveSettings(mpSettings.recoveryMode, level.thresholdCp)
+        const selectorEnabled = personality.enabled || openingStabilizerSettings.enabled || recoverySettings.enabled
+        const eveMultiPv = Math.max(
+          personality.humanTrapSettings.multiPv,
+          personality.closeWinSettings.maxCandidates,
+          personality.competitiveSettings.pressureMultiPv,
+          recoverySettings.enabled ? 5 : 1,
+          openingStabilizerSettings.enabled ? 3 : 1
+        )
+
         try {
           white.send(variantCmd)
           white.send(chess960Cmd)
           black.send(variantCmd)
           black.send(chess960Cmd)
+          if (selectorEnabled) {
+            white.send(`setoption name MultiPV value ${eveMultiPv}`)
+            black.send(`setoption name MultiPV value ${eveMultiPv}`)
+          }
         } catch (err) {
           console.warn('[EvEtrue] Failed to send variant/960 to Eve engines:', err)
         }
@@ -4448,9 +4466,18 @@ export const store = new Vuex.Store({
         context.commit('enginesActive', [true, true])
         context.commit('active', true)
 
+        const eveRoot = { white: { fen: '', lines: [] }, black: { fen: '', lines: [] } }
+        const collectEveInfo = side => info => {
+          if (!selectorEnabled) return
+          collectRootInfoLine(eveRoot[side].lines, info)
+        }
+
         // send position and go to a specific engine instance
-        const sendPositionAndGo = (inst, lim) => {
+        const sendPositionAndGo = (inst, lim, side) => {
           try {
+            eveRoot[side].fen = context.getters.fen
+            eveRoot[side].lines = []
+            if (selectorEnabled) inst.send(`setoption name MultiPV value ${eveMultiPv}`)
             inst.send(buildPositionCommand(context.getters.gameState))
             inst.send(limiterToGo(lim))
           } catch (err) {
@@ -4458,23 +4485,91 @@ export const store = new Vuex.Store({
           }
         }
 
+        const selectEveMove = async ({ side, engineInstance, ucimove }) => {
+          let move = sanitizeEngineMove(ucimove)
+          if (!move) return ''
+          const rootFen = eveRoot[side].fen || context.getters.fen
+          const rootLines = eveRoot[side].lines.filter(Boolean)
+          const sideToMove = context.getters.turn
+          const engineBestmove = move
+          const forcedCheckMove = selectForcedCheckMove({
+            board: context.state.board,
+            fen: rootFen,
+            variant: context.getters.variant,
+            is960: context.getters.is960,
+            bestmove: move,
+            rootLines
+          })
+          if (forcedCheckMove && forcedCheckMove.move && context.state.board.legalMoves().includes(forcedCheckMove.move)) {
+            context.commit('personalityDiagnostics', { ...forcedCheckMove, selectedAt: Date.now() })
+            return forcedCheckMove.move
+          }
+          const plies = (context.getters.currentMainlineUci || []).length
+          const engineMoveNumber = side === 'white' ? Math.ceil(plies / 2) + 1 : Math.floor(plies / 2) + 1
+          if (openingStabilizerSettings.enabled) {
+            const stabilized = selectOpeningStabilizedMove({ rootLines, bestmove: move, selectedCp: level.thresholdCp, engineMoveNumber, settings: openingStabilizerSettings, sideToMove })
+            if (stabilized && stabilized.move && context.state.board.legalMoves().includes(stabilized.move)) {
+              move = stabilized.move
+              context.commit('personalityDiagnostics', { ...stabilized, selectedAt: Date.now() })
+            }
+          }
+          const activeRecoveryPlies = Math.max(0, Number(context.state.enginePersonalityDebug.recoveryPlies) || 0)
+          if (recoverySettings.enabled && activeRecoveryPlies > 0) {
+            const selectedRecovery = selectRecoveryMove({ fen: rootFen, variant: context.getters.variant, is960: context.getters.is960, bestmove: move, rootLines, settings: recoverySettings, difficultyCp: level.thresholdCp, sideToMove })
+            context.commit('enginePersonalityDebug', { recoveryPlies: Math.max(0, activeRecoveryPlies - 1) })
+            context.commit('recoveryMode', activeRecoveryPlies - 1 > 0)
+            if (selectedRecovery && selectedRecovery.move && context.state.board.legalMoves().includes(selectedRecovery.move)) {
+              move = selectedRecovery.move
+              context.commit('personalityDiagnostics', { ...selectedRecovery, recoveryPliesRemaining: Math.max(0, activeRecoveryPlies - 1), selectedAt: Date.now() })
+            }
+          }
+          if (personality.competitiveSettings.pressureMode || personality.competitiveSettings.hunterMode || personality.competitiveSettings.closerMode) {
+            const rootCandidates = normalizeTrapRootCandidates(rootLines, move, sideToMove)
+            const bestLine = rootCandidates.find(line => line.ucimove === move) || rootCandidates[0]
+            const hunterThreshold = Math.round((Number(level && level.thresholdCp) || 300) * personality.competitiveSettings.hunterMultiplier)
+            const currentHunterPlies = Math.max(0, Number(context.state.enginePersonalityDebug.hunterPlies) || 0)
+            const triggeredHunter = !!(personality.competitiveSettings.hunterMode && bestLine && typeof bestLine.cp === 'number' && bestLine.cp >= hunterThreshold)
+            const hunterActive = triggeredHunter || currentHunterPlies > 0
+            const selectedCompetitive = selectHumanCompetitiveMove({ fen: rootFen, variant: context.getters.variant, is960: context.getters.is960, bestmove: move, rootLines, settings: personality.competitiveSettings, sideToMove, hunterActive })
+            if (triggeredHunter) context.commit('enginePersonalityDebug', { hunterPlies: personality.competitiveSettings.hunterMoves })
+            else if (currentHunterPlies > 0) context.commit('enginePersonalityDebug', { hunterPlies: currentHunterPlies - 1 })
+            if (selectedCompetitive && selectedCompetitive.move && context.state.board.legalMoves().includes(selectedCompetitive.move)) {
+              move = selectedCompetitive.move
+              context.commit('personalityDiagnostics', { ...selectedCompetitive, hunterActive, hunterThreshold, selectedAt: Date.now() })
+            } else if (selectedCompetitive) context.commit('personalityDiagnostics', { ...selectedCompetitive, hunterActive, hunterThreshold, selectedAt: Date.now() })
+          }
+          if (personality.humanTrapSettings.enabled || personality.closeWinSettings.enabled) {
+            context.commit('enginePersonalityDebug', { trapAttempts: (context.state.enginePersonalityDebug.trapAttempts || 0) + 1 })
+            const selected = await selectPersonalityMove({ engineInstance, fen: rootFen, variant: context.getters.variant, is960: context.getters.is960, bestmove: move, rootLines, humanTrapSettings: personality.humanTrapSettings, closeWinSettings: personality.closeWinSettings, sideToMove })
+            if (selected && selected.move && context.state.board.legalMoves().includes(selected.move)) {
+              move = selected.move
+              context.commit('personalityDiagnostics', { ...selected, selectedAt: Date.now() })
+            } else if (selected) context.commit('personalityDiagnostics', { ...selected, selectedAt: Date.now() })
+          }
+          if (recoverySettings.enabled) {
+            const recoveryTrigger = rootCpLossForMove({ rootLines, bestmove: engineBestmove, move, sideToMove })
+            if (recoveryTrigger && recoveryTrigger.cpLoss >= recoverySettings.thresholdCp) {
+              context.commit('enginePersonalityDebug', { recoveryPlies: recoverySettings.durationPlies, recoveryLastCpLoss: recoveryTrigger.cpLoss, recoveryLastMove: move })
+              context.commit('recoveryMode', true)
+            }
+          }
+          return move
+        }
+
         // bestmove handlers
         const whiteHandler = async ucimove => {
-          // only apply if it's White to move
           const turnIsWhite = context.getters.turn
           if (!context.state.EvE || !turnIsWhite) return
           try {
-            let move = sanitizeEngineMove(ucimove)
-            if (!move) return
-            await context.dispatch('push', { move, prev: context.getters.currentMove[0] })
-            // after white move, trigger black
+            const rootFen = eveRoot.white.fen || context.getters.fen
+            const move = await selectEveMove({ side: 'white', engineInstance: white, ucimove })
+            if (!context.state.EvE || !move || !context.getters.turn || normalizeFen(context.getters.fen) !== normalizeFen(rootFen)) return
+            await context.dispatch('push', { move, prev: context.getters.currentMove[0], skipMistakePrevention: true })
             const cfg = context.state.EvEConfig || {}
-            sendPositionAndGo(context.state.engineBlackInstance, cfg.blackLimiter)
+            if (context.state.EvE && !context.getters.turn) sendPositionAndGo(context.state.engineBlackInstance, cfg.blackLimiter, 'black')
           } catch (err) {
             console.error('[EvEMakeMove] White provided invalid move:', ucimove, err)
-            // try to restart the black engine calculation on current position
-            context.dispatch('position')
-            sendPositionAndGo(context.state.engineBlackInstance, context.state.EvEConfig && context.state.EvEConfig.blackLimiter)
+            if (context.state.EvE) sendPositionAndGo(context.state.engineWhiteInstance, context.state.EvEConfig && context.state.EvEConfig.whiteLimiter, 'white')
           }
         }
 
@@ -4482,29 +4577,34 @@ export const store = new Vuex.Store({
           const turnIsWhite = context.getters.turn
           if (!context.state.EvE || turnIsWhite) return
           try {
-            let move = sanitizeEngineMove(ucimove)
-            if (!move) return
-            await context.dispatch('push', { move, prev: context.getters.currentMove[0] })
-            // after black move, trigger white
+            const rootFen = eveRoot.black.fen || context.getters.fen
+            const move = await selectEveMove({ side: 'black', engineInstance: black, ucimove })
+            if (!context.state.EvE || !move || context.getters.turn || normalizeFen(context.getters.fen) !== normalizeFen(rootFen)) return
+            await context.dispatch('push', { move, prev: context.getters.currentMove[0], skipMistakePrevention: true })
             const cfg = context.state.EvEConfig || {}
-            sendPositionAndGo(context.state.engineWhiteInstance, cfg.whiteLimiter)
+            if (context.state.EvE && context.getters.turn) sendPositionAndGo(context.state.engineWhiteInstance, cfg.whiteLimiter, 'white')
           } catch (err) {
             console.error('[EvEMakeMove] Black provided invalid move:', ucimove, err)
-            context.dispatch('position')
-            sendPositionAndGo(context.state.engineWhiteInstance, context.state.EvEConfig && context.state.EvEConfig.whiteLimiter)
+            if (context.state.EvE) sendPositionAndGo(context.state.engineBlackInstance, context.state.EvEConfig && context.state.EvEConfig.blackLimiter, 'black')
           }
         }
 
         // attach listeners
+        const whiteInfoHandler = collectEveInfo('white')
+        const blackInfoHandler = collectEveInfo('black')
+        if (selectorEnabled) {
+          white.on('info', whiteInfoHandler)
+          black.on('info', blackInfoHandler)
+        }
         white.on('bestmove', whiteHandler)
         black.on('bestmove', blackHandler)
 
         // kick off the side to move now
         const turnIsWhiteNow = context.getters.turn
         if (turnIsWhiteNow) {
-          sendPositionAndGo(white, payload.whiteLimiter)
+          sendPositionAndGo(white, payload.whiteLimiter, 'white')
         } else {
-          sendPositionAndGo(black, payload.blackLimiter)
+          sendPositionAndGo(black, payload.blackLimiter, 'black')
         }
       } catch (err) {
         console.error('[EvEtrue] Could not start EvE match:', err)
