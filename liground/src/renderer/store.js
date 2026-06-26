@@ -1704,6 +1704,113 @@ async function selectPersonalityMove ({ engineInstance, fen, variant, is960, bes
 }
 
 
+
+function defaultEngineVsEngineSideSettings (base = {}) {
+  return {
+    levelName: base.opponentLevelName || base.levelName || '중급',
+    thresholdCp: Number(base.thresholdCp) || 300,
+    opponentPreventionMode: base.opponentPreventionMode || 'flexible',
+    chaosMode: base.chaosMode || (base.chaosTraining ? 'search' : 'off'),
+    openingStabilizer: normalizeOpeningStabilizerSettings(base.openingStabilizer || OPENING_STABILIZER_DEFAULTS),
+    recoveryMode: normalizeRecoveryModeSettings(base.recoveryMode || RECOVERY_MODE_DEFAULTS),
+    pressureMode: false,
+    hunterMode: false,
+    closerMode: false,
+    humanTrapMode: false,
+    closeWinMode: false,
+    humanTrapSettings: {},
+    closeWinSettings: {},
+    humanCompetitiveSettings: {},
+    chaosValidation: normalizeChaosValidationSettings(base.chaosValidation || DEFAULT_CHAOS_VALIDATION)
+  }
+}
+
+function normalizeEngineVsEngineSideSettings (settings = {}, fallback = {}) {
+  const merged = { ...defaultEngineVsEngineSideSettings(fallback), ...(settings || {}) }
+  const level = MISTAKE_PREVENTION_LEVELS.find(l => l.name === merged.levelName) || MISTAKE_PREVENTION_LEVELS.find(l => l.thresholdCp === Number(merged.thresholdCp)) || MISTAKE_PREVENTION_LEVELS[2]
+  return {
+    ...merged,
+    levelName: level.name,
+    thresholdCp: level.thresholdCp,
+    opponentPreventionMode: ['off'].concat(PREVENTION_MODES).includes(merged.opponentPreventionMode) ? merged.opponentPreventionMode : 'flexible',
+    chaosMode: CHAOS_MODES.includes(merged.chaosMode) ? merged.chaosMode : 'off',
+    openingStabilizer: normalizeOpeningStabilizerSettings(merged.openingStabilizer || OPENING_STABILIZER_DEFAULTS),
+    recoveryMode: normalizeRecoveryModeSettings(merged.recoveryMode || RECOVERY_MODE_DEFAULTS),
+    pressureMode: !!merged.pressureMode,
+    hunterMode: !!merged.hunterMode,
+    closerMode: !!merged.closerMode,
+    humanTrapMode: !!merged.humanTrapMode,
+    closeWinMode: !!merged.closeWinMode,
+    chaosValidation: normalizeChaosValidationSettings(merged.chaosValidation || DEFAULT_CHAOS_VALIDATION)
+  }
+}
+
+function normalizeEngineVsEngineSettings (settings = {}, globalSettings = {}) {
+  const useGlobal = settings.useGlobal !== false
+  return {
+    useGlobal,
+    white: normalizeEngineVsEngineSideSettings(settings.white, globalSettings),
+    black: normalizeEngineVsEngineSideSettings(settings.black, globalSettings)
+  }
+}
+
+function engineVsEngineSelectorConfig ({ state, sideSettings, useGlobal }) {
+  const modal = state.startGameModal || {}
+  const debug = state.enginePersonalityDebug || {}
+  const mpSettings = state.mistakePrevention || {}
+  const levelName = useGlobal ? (mpSettings.opponentLevelName || mpSettings.levelName) : sideSettings.levelName
+  const level = MISTAKE_PREVENTION_LEVELS.find(l => l.name === levelName) || MISTAKE_PREVENTION_LEVELS[2]
+  const openingStabilizerSettings = normalizeOpeningStabilizerSettings(useGlobal ? mpSettings.openingStabilizer : sideSettings.openingStabilizer)
+  const recoverySettings = recoveryModeEffectiveSettings(useGlobal ? mpSettings.recoveryMode : sideSettings.recoveryMode, level.thresholdCp)
+  const humanTrapSettings = normalizeTrapSettings({
+    ...(debug.humanTrapSettings || {}),
+    ...(sideSettings.humanTrapSettings || {}),
+    enabled: useGlobal ? !!modal.humanTrapMode : !!sideSettings.humanTrapMode
+  })
+  const closeWinSettings = normalizeCloseWinSettings({
+    ...(debug.closeWinSettings || {}),
+    ...(sideSettings.closeWinSettings || {}),
+    enabled: useGlobal ? !!modal.closeWinMode : !!sideSettings.closeWinMode
+  })
+  const competitiveSettings = normalizeHumanCompetitiveSettings({
+    ...(debug.humanCompetitiveSettings || {}),
+    ...(sideSettings.humanCompetitiveSettings || {}),
+    pressureMode: useGlobal ? !!modal.pressureMode : !!sideSettings.pressureMode,
+    hunterMode: useGlobal ? !!modal.hunterMode : !!sideSettings.hunterMode,
+    closerMode: useGlobal ? !!modal.closerMode : !!sideSettings.closerMode
+  })
+  const trainingSettings = {
+    ...mpSettings,
+    opponentTraining: true,
+    opponentLevelName: level.name,
+    opponentPreventionMode: useGlobal ? (mpSettings.opponentPreventionMode || 'flexible') : sideSettings.opponentPreventionMode,
+    chaosMode: useGlobal ? (mpSettings.chaosMode || 'off') : sideSettings.chaosMode,
+    chaosValidation: useGlobal ? (mpSettings.chaosValidation || DEFAULT_CHAOS_VALIDATION) : sideSettings.chaosValidation
+  }
+  const personalityEnabled = humanTrapSettings.enabled || closeWinSettings.enabled || competitiveSettings.pressureMode || competitiveSettings.hunterMode || competitiveSettings.closerMode
+  return {
+    level,
+    openingStabilizerSettings,
+    recoverySettings,
+    humanTrapSettings,
+    closeWinSettings,
+    competitiveSettings,
+    trainingSettings,
+    enabled: personalityEnabled || openingStabilizerSettings.enabled || recoverySettings.enabled || trainingSettings.opponentTraining,
+    multiPv: Math.max(humanTrapSettings.multiPv, closeWinSettings.maxCandidates, competitiveSettings.pressureMultiPv, recoverySettings.enabled ? 5 : 1, openingStabilizerSettings.enabled ? 3 : 1, trainingSettings.opponentTraining ? 5 : 1)
+  }
+}
+
+
+function engineAutoPlaySelectorConfig (state, sideToMove) {
+  const eveSettings = normalizeEngineVsEngineSettings(state.mistakePrevention && state.mistakePrevention.engineVsEngine, state.mistakePrevention || {})
+  return engineVsEngineSelectorConfig({
+    state,
+    sideSettings: sideToMove ? eveSettings.white : eveSettings.black,
+    useGlobal: eveSettings.useGlobal
+  })
+}
+
 function personalityFlagsFromState (state) {
   const modal = state.startGameModal || {}
   const debug = state.enginePersonalityDebug || {}
@@ -2207,7 +2314,7 @@ export const store = new Vuex.Store({
     PvELimiter: null, // stores the limiter config for the PvE engine
     PvEEngineInstance: null,
     humanTrapDiagnostics: null,
-    mistakePrevention: { enabled: false, levelName: '중급', thresholdCp: 300, opponentTraining: false, opponentLevelName: '중급', evaluationMode: 'practical', verificationDepth: 14, chaosTraining: false, chaosMode: 'off', chaosValidation: DEFAULT_CHAOS_VALIDATION, opponentPreventionMode: 'flexible', openingStabilizer: OPENING_STABILIZER_DEFAULTS, recoveryMode: RECOVERY_MODE_DEFAULTS },
+    mistakePrevention: { enabled: false, levelName: '중급', thresholdCp: 300, opponentTraining: false, opponentLevelName: '중급', evaluationMode: 'practical', verificationDepth: 14, chaosTraining: false, chaosMode: 'off', chaosValidation: DEFAULT_CHAOS_VALIDATION, opponentPreventionMode: 'flexible', openingStabilizer: OPENING_STABILIZER_DEFAULTS, recoveryMode: RECOVERY_MODE_DEFAULTS, engineVsEngine: normalizeEngineVsEngineSettings({}, { levelName: '중급', thresholdCp: 300, openingStabilizer: OPENING_STABILIZER_DEFAULTS, recoveryMode: RECOVERY_MODE_DEFAULTS, chaosValidation: DEFAULT_CHAOS_VALIDATION }) },
     recoveryMode: false,
     mistakeNotebook: [],
     mistakePreventionPending: false,
@@ -2617,6 +2724,7 @@ export const store = new Vuex.Store({
       next.chaosValidation = normalizeChaosValidationSettings(next.chaosValidation || DEFAULT_CHAOS_VALIDATION)
       next.openingStabilizer = normalizeOpeningStabilizerSettings(next.openingStabilizer || OPENING_STABILIZER_DEFAULTS)
       next.recoveryMode = normalizeRecoveryModeSettings(next.recoveryMode || RECOVERY_MODE_DEFAULTS)
+      next.engineVsEngine = normalizeEngineVsEngineSettings(next.engineVsEngine || {}, next)
       if (!next.opponentLevelName) next.opponentLevelName = next.levelName
       state.mistakePrevention = next
       try { localStorage.setItem('mistakePreventionSettings', JSON.stringify(next)) } catch (err) {}
@@ -3848,12 +3956,18 @@ export const store = new Vuex.Store({
 
       context.commit('nextSingleMoveRequestSeq')
       const requestSeq = context.state.singleMoveRequestSeq
-      const personality = personalityFlagsFromState(context.state)
-      const rootMpSettings = context.state.mistakePrevention || {}
-      const rootOpeningStabilizerSettings = normalizeOpeningStabilizerSettings(rootMpSettings.openingStabilizer)
-      const rootLevel = MISTAKE_PREVENTION_LEVELS.find(l => l.name === rootMpSettings.opponentLevelName) || MISTAKE_PREVENTION_LEVELS.find(l => l.name === rootMpSettings.levelName) || MISTAKE_PREVENTION_LEVELS[2]
-      const rootRecoverySettings = recoveryModeEffectiveSettings(rootMpSettings.recoveryMode, rootLevel.thresholdCp)
-      const rootInfoNeeded = personality.enabled || rootOpeningStabilizerSettings.enabled || rootRecoverySettings.enabled
+      const autoPlaySideToMove = context.getters.turn
+      const autoPlaySide = autoPlaySideToMove ? 'white' : 'black'
+      const autoPlaySelector = payload && payload.engineAutoPlay ? engineAutoPlaySelectorConfig(context.state, autoPlaySideToMove) : null
+      const statePersonality = personalityFlagsFromState(context.state)
+      const personality = autoPlaySelector
+        ? { humanTrapSettings: autoPlaySelector.humanTrapSettings, closeWinSettings: autoPlaySelector.closeWinSettings, competitiveSettings: autoPlaySelector.competitiveSettings, enabled: autoPlaySelector.humanTrapSettings.enabled || autoPlaySelector.closeWinSettings.enabled || autoPlaySelector.competitiveSettings.pressureMode || autoPlaySelector.competitiveSettings.hunterMode || autoPlaySelector.competitiveSettings.closerMode }
+        : statePersonality
+      const rootMpSettings = autoPlaySelector ? autoPlaySelector.trainingSettings : (context.state.mistakePrevention || {})
+      const rootOpeningStabilizerSettings = autoPlaySelector ? autoPlaySelector.openingStabilizerSettings : normalizeOpeningStabilizerSettings(rootMpSettings.openingStabilizer)
+      const rootLevel = autoPlaySelector ? autoPlaySelector.level : (MISTAKE_PREVENTION_LEVELS.find(l => l.name === rootMpSettings.opponentLevelName) || MISTAKE_PREVENTION_LEVELS.find(l => l.name === rootMpSettings.levelName) || MISTAKE_PREVENTION_LEVELS[2])
+      const rootRecoverySettings = autoPlaySelector ? autoPlaySelector.recoverySettings : recoveryModeEffectiveSettings(rootMpSettings.recoveryMode, rootLevel.thresholdCp)
+      const rootInfoNeeded = personality.enabled || rootOpeningStabilizerSettings.enabled || rootRecoverySettings.enabled || !!(rootMpSettings && rootMpSettings.opponentTraining)
       const rootFen = context.getters.fen
       let rootLines = []
       let handleBestMove
@@ -3865,11 +3979,12 @@ export const store = new Vuex.Store({
       if (rootInfoNeeded) {
         handleInfo = info => collectRootInfoLine(rootLines, info)
         engine.on('info', handleInfo)
-        if (!personality.enabled) {
-          engine.send(`setoption name MultiPV value ${Math.max(1, rootRecoverySettings.enabled ? 5 : 3)}`)
+        if (!personality.enabled || autoPlaySelector) {
+          engine.send(`setoption name MultiPV value ${autoPlaySelector ? autoPlaySelector.multiPv : Math.max(1, rootRecoverySettings.enabled ? 5 : 3)}`)
         }
       }
 
+      if (autoPlaySelector) console.info('[EngineAutoPlay]', { side: autoPlaySide, phase: 'search-start', level: rootLevel.name, multiPv: autoPlaySelector.multiPv, useGlobal: normalizeEngineVsEngineSettings(context.state.mistakePrevention && context.state.mistakePrevention.engineVsEngine, context.state.mistakePrevention || {}).useGlobal })
       context.dispatch('goEngine', payload)
 
       try {
@@ -3891,12 +4006,12 @@ export const store = new Vuex.Store({
         }
         if (!bestmove) return
         const engineBestmove = bestmove
-        const mpSettings = context.state.mistakePrevention || {}
-        const openingStabilizerSettings = normalizeOpeningStabilizerSettings(mpSettings.openingStabilizer)
-        const mpLevel = MISTAKE_PREVENTION_LEVELS.find(l => l.name === mpSettings.opponentLevelName) || MISTAKE_PREVENTION_LEVELS.find(l => l.name === mpSettings.levelName) || MISTAKE_PREVENTION_LEVELS[2]
-        const recoverySettings = recoveryModeEffectiveSettings(mpSettings.recoveryMode, mpLevel.thresholdCp)
+        const mpSettings = rootMpSettings
+        const openingStabilizerSettings = rootOpeningStabilizerSettings
+        const mpLevel = rootLevel
+        const recoverySettings = rootRecoverySettings
         const plies = (context.getters.currentMainlineUci || []).length
-        const engineMoveNumber = Math.floor(plies / 2) + 1
+        const engineMoveNumber = autoPlaySelector ? (autoPlaySide === 'white' ? Math.ceil(plies / 2) + 1 : Math.floor(plies / 2) + 1) : Math.floor(plies / 2) + 1
         if (openingStabilizerSettings.enabled) {
           const stabilized = selectOpeningStabilizedMove({ rootLines: rootLines.filter(Boolean), bestmove, selectedCp: mpLevel.thresholdCp, engineMoveNumber, settings: openingStabilizerSettings, sideToMove: context.getters.turn })
           if (stabilized && stabilized.move && context.state.board.legalMoves().includes(stabilized.move) && normalizeFen(context.getters.fen) === normalizeFen(rootFen)) {
@@ -3911,7 +4026,8 @@ export const store = new Vuex.Store({
             context.commit('humanTrapDiagnostics', { mode: 'Opponent Training Strength', type: mpLevel.name, move: bestmove, cpLoss: selectedTraining.cpLoss, pointLoss: Number(pointLossString(selectedTraining.cpLoss)), reason: `${mpSettings.chaosMode !== 'off' ? mpSettings.chaosMode : 'human-like'} sampled legal move within ${selectedTraining.maxLoss}cp${selectedTraining.openingProtected ? ' (opening protected)' : ''}${selectedTraining.fallback ? ' (fallback closest target)' : ''}`, probeStats: { probes: selectedTraining.sampled, source: selectedTraining.source, verificationDepth: selectedTraining.verificationDepth }, selectedAt: Date.now() })
           }
         }
-        const activeRecoveryPlies = Math.max(0, Number(context.state.enginePersonalityDebug.recoveryPlies) || 0)
+        const recoveryPliesKey = autoPlaySelector ? `${autoPlaySide}RecoveryPlies` : 'recoveryPlies'
+        const activeRecoveryPlies = Math.max(0, Number(context.state.enginePersonalityDebug[recoveryPliesKey]) || 0)
         if (recoverySettings.enabled && activeRecoveryPlies > 0) {
           const selectedRecovery = selectRecoveryMove({
             fen: rootFen,
@@ -3923,7 +4039,7 @@ export const store = new Vuex.Store({
             difficultyCp: mpLevel.thresholdCp,
             sideToMove: context.getters.turn
           })
-          context.commit('enginePersonalityDebug', { recoveryPlies: Math.max(0, activeRecoveryPlies - 1) })
+          context.commit('enginePersonalityDebug', { [recoveryPliesKey]: Math.max(0, activeRecoveryPlies - 1) })
           context.commit('recoveryMode', activeRecoveryPlies - 1 > 0)
           if (selectedRecovery && selectedRecovery.move && context.state.board.legalMoves().includes(selectedRecovery.move) && normalizeFen(context.getters.fen) === normalizeFen(rootFen)) {
             bestmove = selectedRecovery.move
@@ -3934,8 +4050,9 @@ export const store = new Vuex.Store({
           const rootCandidates = normalizeTrapRootCandidates(rootLines.filter(Boolean), bestmove, context.getters.turn)
           const bestLine = rootCandidates.find(line => line.ucimove === bestmove) || rootCandidates[0]
           const level = MISTAKE_PREVENTION_LEVELS.find(l => l.name === context.state.mistakePrevention.opponentLevelName) || MISTAKE_PREVENTION_LEVELS.find(l => l.name === context.state.mistakePrevention.levelName) || MISTAKE_PREVENTION_LEVELS[2]
-          const hunterThreshold = Math.round((Number(level && level.thresholdCp) || 300) * personality.competitiveSettings.hunterMultiplier)
-          const currentHunterPlies = Math.max(0, Number(context.state.enginePersonalityDebug.hunterPlies) || 0)
+          const hunterThreshold = Math.round((Number((autoPlaySelector ? mpLevel : level) && (autoPlaySelector ? mpLevel : level).thresholdCp) || 300) * personality.competitiveSettings.hunterMultiplier)
+          const hunterPliesKey = autoPlaySelector ? `${autoPlaySide}HunterPlies` : 'hunterPlies'
+          const currentHunterPlies = Math.max(0, Number(context.state.enginePersonalityDebug[hunterPliesKey]) || 0)
           const triggeredHunter = !!(personality.competitiveSettings.hunterMode && bestLine && typeof bestLine.cp === 'number' && bestLine.cp >= hunterThreshold)
           const hunterActive = triggeredHunter || currentHunterPlies > 0
           const selectedCompetitive = selectHumanCompetitiveMove({
@@ -3949,9 +4066,9 @@ export const store = new Vuex.Store({
             hunterActive
           })
           if (triggeredHunter) {
-            context.commit('enginePersonalityDebug', { hunterPlies: personality.competitiveSettings.hunterMoves })
+            context.commit('enginePersonalityDebug', { [hunterPliesKey]: personality.competitiveSettings.hunterMoves })
           } else if (currentHunterPlies > 0) {
-            context.commit('enginePersonalityDebug', { hunterPlies: currentHunterPlies - 1 })
+            context.commit('enginePersonalityDebug', { [hunterPliesKey]: currentHunterPlies - 1 })
           }
           if (selectedCompetitive && selectedCompetitive.move && context.state.board.legalMoves().includes(selectedCompetitive.move) && normalizeFen(context.getters.fen) === normalizeFen(rootFen)) {
             bestmove = selectedCompetitive.move
@@ -3983,11 +4100,12 @@ export const store = new Vuex.Store({
         if (recoverySettings.enabled) {
           const recoveryTrigger = rootCpLossForMove({ rootLines: rootLines.filter(Boolean), bestmove: engineBestmove, move: bestmove, sideToMove: context.getters.turn })
           if (recoveryTrigger && recoveryTrigger.cpLoss >= recoverySettings.thresholdCp) {
-            context.commit('enginePersonalityDebug', { recoveryPlies: recoverySettings.durationPlies, recoveryLastCpLoss: recoveryTrigger.cpLoss, recoveryLastMove: bestmove })
+            context.commit('enginePersonalityDebug', { [recoveryPliesKey]: recoverySettings.durationPlies, recoveryLastCpLoss: recoveryTrigger.cpLoss, recoveryLastMove: bestmove })
             context.commit('recoveryMode', true)
             console.info('[RecoveryMode]', { entered: true, cpLoss: recoveryTrigger.cpLoss, durationPlies: recoverySettings.durationPlies, thresholdCp: recoverySettings.thresholdCp, recoveryRatio: recoverySettings.recoveryRatio, difficultyCp: recoverySettings.difficultyCp, move: bestmove })
           }
         }
+        if (autoPlaySelector) console.info('[EngineAutoPlay]', { side: autoPlaySide, phase: 'commit', move: bestmove })
         await context.dispatch('push', { move: bestmove, prev: context.getters.currentMove[0], skipMistakePrevention: true })
       } catch (err) {
         console.error('[playSingleEngineMove] Failed to apply single engine move:', err)
@@ -4006,12 +4124,16 @@ export const store = new Vuex.Store({
         return
       }
       const { goCmd } = await context.dispatch('computeEngineSearchLimits', payload)
-      const personality = personalityFlagsFromState(context.state)
-      const mpSettings = context.state.mistakePrevention || {}
-      const goLevel = MISTAKE_PREVENTION_LEVELS.find(l => l.name === mpSettings.opponentLevelName) || MISTAKE_PREVENTION_LEVELS.find(l => l.name === mpSettings.levelName) || MISTAKE_PREVENTION_LEVELS[2]
-      const recoverySettings = recoveryModeEffectiveSettings(mpSettings.recoveryMode, goLevel.thresholdCp)
-      const openingStabilizerSettings = normalizeOpeningStabilizerSettings(mpSettings.openingStabilizer)
-      if (personality.enabled) {
+      const autoPlaySelector = payload && payload.engineAutoPlay ? engineAutoPlaySelectorConfig(context.state, context.getters.turn) : null
+      const statePersonality = personalityFlagsFromState(context.state)
+      const personality = autoPlaySelector
+        ? { humanTrapSettings: autoPlaySelector.humanTrapSettings, closeWinSettings: autoPlaySelector.closeWinSettings, competitiveSettings: autoPlaySelector.competitiveSettings, enabled: autoPlaySelector.humanTrapSettings.enabled || autoPlaySelector.closeWinSettings.enabled || autoPlaySelector.competitiveSettings.pressureMode || autoPlaySelector.competitiveSettings.hunterMode || autoPlaySelector.competitiveSettings.closerMode }
+        : statePersonality
+      const mpSettings = autoPlaySelector ? autoPlaySelector.trainingSettings : (context.state.mistakePrevention || {})
+      const goLevel = autoPlaySelector ? autoPlaySelector.level : (MISTAKE_PREVENTION_LEVELS.find(l => l.name === mpSettings.opponentLevelName) || MISTAKE_PREVENTION_LEVELS.find(l => l.name === mpSettings.levelName) || MISTAKE_PREVENTION_LEVELS[2])
+      const recoverySettings = autoPlaySelector ? autoPlaySelector.recoverySettings : recoveryModeEffectiveSettings(mpSettings.recoveryMode, goLevel.thresholdCp)
+      const openingStabilizerSettings = autoPlaySelector ? autoPlaySelector.openingStabilizerSettings : normalizeOpeningStabilizerSettings(mpSettings.openingStabilizer)
+      if (personality.enabled || autoPlaySelector) {
         console.info('[Personality]', {
           humanTrap: personality.humanTrapSettings.enabled,
           controlledMargin: personality.closeWinSettings.enabled,
@@ -4040,7 +4162,7 @@ export const store = new Vuex.Store({
           reason: 'analysis_root_search_started',
           selectedAt: Date.now()
         })
-        engine.send(`setoption name MultiPV value ${Math.max(personality.humanTrapSettings.multiPv, personality.closeWinSettings.maxCandidates, personality.competitiveSettings.pressureMultiPv, recoverySettings.enabled ? 5 : 1, openingStabilizerSettings.enabled ? 3 : 1)}`)
+        engine.send(`setoption name MultiPV value ${autoPlaySelector ? autoPlaySelector.multiPv : Math.max(personality.humanTrapSettings.multiPv, personality.closeWinSettings.maxCandidates, personality.competitiveSettings.pressureMultiPv, recoverySettings.enabled ? 5 : 1, openingStabilizerSettings.enabled ? 3 : 1)}`)
       }
       console.log('[engine-order] cmd:', goCmd)
       engine.send(goCmd)
@@ -4432,11 +4554,21 @@ export const store = new Vuex.Store({
         const variantCmd = `setoption name UCI_Variant value ${gameMode}`
         const chess960Cmd = `setoption name UCI_Chess960 value ${context.getters.is960}`
 
+        const eveSettings = normalizeEngineVsEngineSettings(context.state.mistakePrevention && context.state.mistakePrevention.engineVsEngine, context.state.mistakePrevention || {})
+        const whiteSelector = engineVsEngineSelectorConfig({ state: context.state, sideSettings: eveSettings.white, useGlobal: eveSettings.useGlobal })
+        const blackSelector = engineVsEngineSelectorConfig({ state: context.state, sideSettings: eveSettings.black, useGlobal: eveSettings.useGlobal })
+        const selectorEnabled = whiteSelector.enabled || blackSelector.enabled
+        const eveMultiPv = Math.max(whiteSelector.multiPv, blackSelector.multiPv)
+
         try {
           white.send(variantCmd)
           white.send(chess960Cmd)
           black.send(variantCmd)
           black.send(chess960Cmd)
+          if (selectorEnabled) {
+            white.send(`setoption name MultiPV value ${whiteSelector.multiPv}`)
+            black.send(`setoption name MultiPV value ${blackSelector.multiPv}`)
+          }
         } catch (err) {
           console.warn('[EvEtrue] Failed to send variant/960 to Eve engines:', err)
         }
@@ -4448,63 +4580,173 @@ export const store = new Vuex.Store({
         context.commit('enginesActive', [true, true])
         context.commit('active', true)
 
+        const eveRoot = { white: { fen: '', lines: [], searching: false, selecting: false }, black: { fen: '', lines: [], searching: false, selecting: false } }
+        const selectorForSide = side => side === 'white' ? whiteSelector : blackSelector
+        const collectEveInfo = side => info => {
+          const root = eveRoot[side]
+          if (!selectorForSide(side).enabled || !root.searching || root.selecting) return
+          collectRootInfoLine(root.lines, info)
+        }
+
         // send position and go to a specific engine instance
-        const sendPositionAndGo = (inst, lim) => {
+        const sendPositionAndGo = (inst, lim, side) => {
           try {
+            const selector = selectorForSide(side)
+            eveRoot[side].fen = context.getters.fen
+            eveRoot[side].lines = []
+            eveRoot[side].searching = true
+            eveRoot[side].selecting = false
+            if (selector.enabled) inst.send(`setoption name MultiPV value ${selector.multiPv || eveMultiPv}`)
             inst.send(buildPositionCommand(context.getters.gameState))
             inst.send(limiterToGo(lim))
+            console.info('[EvE]', { side, phase: 'search-start', fen: eveRoot[side].fen, multiPv: selector.multiPv || 1 })
           } catch (err) {
             console.error('[EvE] Failed to send position/go:', err)
           }
         }
 
+        const selectEveMove = async ({ side, engineInstance, ucimove }) => {
+          const selector = selectorForSide(side)
+          const root = eveRoot[side]
+          root.searching = false
+          root.selecting = true
+          let move = sanitizeEngineMove(ucimove)
+          if (!move) return ''
+          const rootFen = root.fen || context.getters.fen
+          const rootLines = root.lines.filter(Boolean)
+          const sideToMove = context.getters.turn
+          const engineBestmove = move
+          console.info('[EvE]', { side, phase: 'selection-start', bestmove: move, rootCandidates: rootLines.length })
+          try {
+            const forcedCheckMove = selectForcedCheckMove({
+              board: context.state.board,
+              fen: rootFen,
+              variant: context.getters.variant,
+              is960: context.getters.is960,
+              bestmove: move,
+              rootLines
+            })
+            if (forcedCheckMove && forcedCheckMove.move && context.state.board.legalMoves().includes(forcedCheckMove.move)) {
+              context.commit('personalityDiagnostics', { ...forcedCheckMove, selectedAt: Date.now() })
+              return forcedCheckMove.move
+            }
+            const plies = (context.getters.currentMainlineUci || []).length
+            const engineMoveNumber = side === 'white' ? Math.ceil(plies / 2) + 1 : Math.floor(plies / 2) + 1
+            if (selector.openingStabilizerSettings.enabled) {
+              const stabilized = selectOpeningStabilizedMove({ rootLines, bestmove: move, selectedCp: selector.level.thresholdCp, engineMoveNumber, settings: selector.openingStabilizerSettings, sideToMove })
+              if (stabilized && stabilized.move && context.state.board.legalMoves().includes(stabilized.move)) {
+                move = stabilized.move
+                context.commit('personalityDiagnostics', { ...stabilized, side, selectedAt: Date.now() })
+              }
+            }
+            if (selector.trainingSettings && selector.trainingSettings.opponentTraining) {
+              const selectedTraining = await selectTrainingOpponentMove({ engineInstance, fen: rootFen, variant: context.getters.variant, is960: context.getters.is960, level: selector.level, chaos: selector.trainingSettings.chaosMode !== 'off', chaosMode: selector.trainingSettings.chaosMode, chaosValidation: selector.trainingSettings.chaosValidation, preventionMode: selector.trainingSettings.opponentPreventionMode, rootLines, bestmove: move, sideToMove, openingStabilizerSettings: selector.openingStabilizerSettings, engineMoveNumber })
+              if (selectedTraining && selectedTraining.move && context.state.board.legalMoves().includes(selectedTraining.move)) {
+                move = selectedTraining.move
+                context.commit('humanTrapDiagnostics', { mode: `EvE ${side} Mistake Prevention`, type: selector.level.name, move, cpLoss: selectedTraining.cpLoss, pointLoss: Number(pointLossString(selectedTraining.cpLoss)), reason: `${selector.trainingSettings.chaosMode !== 'off' ? selector.trainingSettings.chaosMode : selector.trainingSettings.opponentPreventionMode} selected legal move within ${selectedTraining.maxLoss}cp`, probeStats: { probes: selectedTraining.sampled, source: selectedTraining.source, verificationDepth: selectedTraining.verificationDepth }, selectedAt: Date.now() })
+              }
+            }
+            const activeRecoveryPlies = Math.max(0, Number(context.state.enginePersonalityDebug[`${side}RecoveryPlies`]) || 0)
+            if (selector.recoverySettings.enabled && activeRecoveryPlies > 0) {
+              const selectedRecovery = selectRecoveryMove({ fen: rootFen, variant: context.getters.variant, is960: context.getters.is960, bestmove: move, rootLines, settings: selector.recoverySettings, difficultyCp: selector.level.thresholdCp, sideToMove })
+              context.commit('enginePersonalityDebug', { [`${side}RecoveryPlies`]: Math.max(0, activeRecoveryPlies - 1) })
+              context.commit('recoveryMode', activeRecoveryPlies - 1 > 0)
+              if (selectedRecovery && selectedRecovery.move && context.state.board.legalMoves().includes(selectedRecovery.move)) {
+                move = selectedRecovery.move
+                context.commit('personalityDiagnostics', { ...selectedRecovery, side, recoveryPliesRemaining: Math.max(0, activeRecoveryPlies - 1), selectedAt: Date.now() })
+              }
+            }
+            if (selector.competitiveSettings.pressureMode || selector.competitiveSettings.hunterMode || selector.competitiveSettings.closerMode) {
+              const rootCandidates = normalizeTrapRootCandidates(rootLines, move, sideToMove)
+              const bestLine = rootCandidates.find(line => line.ucimove === move) || rootCandidates[0]
+              const hunterThreshold = Math.round((Number(selector.level && selector.level.thresholdCp) || 300) * selector.competitiveSettings.hunterMultiplier)
+              const hunterKey = `${side}HunterPlies`
+              const currentHunterPlies = Math.max(0, Number(context.state.enginePersonalityDebug[hunterKey]) || 0)
+              const triggeredHunter = !!(selector.competitiveSettings.hunterMode && bestLine && typeof bestLine.cp === 'number' && bestLine.cp >= hunterThreshold)
+              const hunterActive = triggeredHunter || currentHunterPlies > 0
+              const selectedCompetitive = selectHumanCompetitiveMove({ fen: rootFen, variant: context.getters.variant, is960: context.getters.is960, bestmove: move, rootLines, settings: selector.competitiveSettings, sideToMove, hunterActive })
+              if (triggeredHunter) context.commit('enginePersonalityDebug', { [hunterKey]: selector.competitiveSettings.hunterMoves })
+              else if (currentHunterPlies > 0) context.commit('enginePersonalityDebug', { [hunterKey]: currentHunterPlies - 1 })
+              if (selectedCompetitive && selectedCompetitive.move && context.state.board.legalMoves().includes(selectedCompetitive.move)) {
+                move = selectedCompetitive.move
+                context.commit('personalityDiagnostics', { ...selectedCompetitive, side, hunterActive, hunterThreshold, selectedAt: Date.now() })
+              } else if (selectedCompetitive) context.commit('personalityDiagnostics', { ...selectedCompetitive, side, hunterActive, hunterThreshold, selectedAt: Date.now() })
+            }
+            if (selector.humanTrapSettings.enabled || selector.closeWinSettings.enabled) {
+              context.commit('enginePersonalityDebug', { trapAttempts: (context.state.enginePersonalityDebug.trapAttempts || 0) + 1 })
+              const selected = await selectPersonalityMove({ engineInstance, fen: rootFen, variant: context.getters.variant, is960: context.getters.is960, bestmove: move, rootLines, humanTrapSettings: selector.humanTrapSettings, closeWinSettings: selector.closeWinSettings, sideToMove })
+              if (selected && selected.move && context.state.board.legalMoves().includes(selected.move)) {
+                move = selected.move
+                context.commit('personalityDiagnostics', { ...selected, side, selectedAt: Date.now() })
+              } else if (selected) context.commit('personalityDiagnostics', { ...selected, side, selectedAt: Date.now() })
+            }
+            if (selector.recoverySettings.enabled) {
+              const recoveryTrigger = rootCpLossForMove({ rootLines, bestmove: engineBestmove, move, sideToMove })
+              if (recoveryTrigger && recoveryTrigger.cpLoss >= selector.recoverySettings.thresholdCp) {
+                context.commit('enginePersonalityDebug', { [`${side}RecoveryPlies`]: selector.recoverySettings.durationPlies, recoveryLastCpLoss: recoveryTrigger.cpLoss, recoveryLastMove: move })
+                context.commit('recoveryMode', true)
+              }
+            }
+            console.info('[EvE]', { side, phase: 'selection-complete', bestmove: engineBestmove, selected: move })
+            return move
+          } finally {
+            root.selecting = false
+          }
+        }
+
         // bestmove handlers
         const whiteHandler = async ucimove => {
-          // only apply if it's White to move
           const turnIsWhite = context.getters.turn
+          if (eveRoot.white.selecting) return
           if (!context.state.EvE || !turnIsWhite) return
           try {
-            let move = sanitizeEngineMove(ucimove)
-            if (!move) return
-            await context.dispatch('push', { move, prev: context.getters.currentMove[0] })
-            // after white move, trigger black
+            const rootFen = eveRoot.white.fen || context.getters.fen
+            const move = await selectEveMove({ side: 'white', engineInstance: white, ucimove })
+            if (!context.state.EvE || !move || !context.getters.turn || normalizeFen(context.getters.fen) !== normalizeFen(rootFen)) return
+            console.info('[EvE]', { side: 'white', phase: 'commit', move })
+            await context.dispatch('push', { move, prev: context.getters.currentMove[0], skipMistakePrevention: true })
             const cfg = context.state.EvEConfig || {}
-            sendPositionAndGo(context.state.engineBlackInstance, cfg.blackLimiter)
+            if (context.state.EvE && !context.getters.turn) sendPositionAndGo(context.state.engineBlackInstance, cfg.blackLimiter, 'black')
           } catch (err) {
             console.error('[EvEMakeMove] White provided invalid move:', ucimove, err)
-            // try to restart the black engine calculation on current position
-            context.dispatch('position')
-            sendPositionAndGo(context.state.engineBlackInstance, context.state.EvEConfig && context.state.EvEConfig.blackLimiter)
+            if (context.state.EvE) sendPositionAndGo(context.state.engineWhiteInstance, context.state.EvEConfig && context.state.EvEConfig.whiteLimiter, 'white')
           }
         }
 
         const blackHandler = async ucimove => {
           const turnIsWhite = context.getters.turn
+          if (eveRoot.black.selecting) return
           if (!context.state.EvE || turnIsWhite) return
           try {
-            let move = sanitizeEngineMove(ucimove)
-            if (!move) return
-            await context.dispatch('push', { move, prev: context.getters.currentMove[0] })
-            // after black move, trigger white
+            const rootFen = eveRoot.black.fen || context.getters.fen
+            const move = await selectEveMove({ side: 'black', engineInstance: black, ucimove })
+            if (!context.state.EvE || !move || context.getters.turn || normalizeFen(context.getters.fen) !== normalizeFen(rootFen)) return
+            console.info('[EvE]', { side: 'black', phase: 'commit', move })
+            await context.dispatch('push', { move, prev: context.getters.currentMove[0], skipMistakePrevention: true })
             const cfg = context.state.EvEConfig || {}
-            sendPositionAndGo(context.state.engineWhiteInstance, cfg.whiteLimiter)
+            if (context.state.EvE && context.getters.turn) sendPositionAndGo(context.state.engineWhiteInstance, cfg.whiteLimiter, 'white')
           } catch (err) {
             console.error('[EvEMakeMove] Black provided invalid move:', ucimove, err)
-            context.dispatch('position')
-            sendPositionAndGo(context.state.engineWhiteInstance, context.state.EvEConfig && context.state.EvEConfig.whiteLimiter)
+            if (context.state.EvE) sendPositionAndGo(context.state.engineBlackInstance, context.state.EvEConfig && context.state.EvEConfig.blackLimiter, 'black')
           }
         }
 
         // attach listeners
+        const whiteInfoHandler = collectEveInfo('white')
+        const blackInfoHandler = collectEveInfo('black')
+        if (selectorEnabled) {
+          white.on('info', whiteInfoHandler)
+          black.on('info', blackInfoHandler)
+        }
         white.on('bestmove', whiteHandler)
         black.on('bestmove', blackHandler)
 
         // kick off the side to move now
         const turnIsWhiteNow = context.getters.turn
         if (turnIsWhiteNow) {
-          sendPositionAndGo(white, payload.whiteLimiter)
+          sendPositionAndGo(white, payload.whiteLimiter, 'white')
         } else {
-          sendPositionAndGo(black, payload.blackLimiter)
+          sendPositionAndGo(black, payload.blackLimiter, 'black')
         }
       } catch (err) {
         console.error('[EvEtrue] Could not start EvE match:', err)

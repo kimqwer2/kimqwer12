@@ -81,6 +81,71 @@
         <label>2차 검증 깊이 <input class="small-input" :value="chaosValidation.stage2Depth" min="1" max="24" type="number" @change="updateChaosValidation({ stage2Depth: Number($event.target.value) })"></label>
         <label>최대 시도 횟수 <input class="small-input" :value="chaosValidation.maxAttempts" min="1" max="80" type="number" @change="updateChaosValidation({ maxAttempts: Number($event.target.value) })"></label>
       </template>
+      <div class="section-head" @click="toggleSection('eve')"><span>{{ sectionArrow('eve') }}</span> Engine vs Engine <b>[{{ engineVsEngine.useGlobal !== false ? 'Global' : 'Independent' }}]</b></div>
+      <template v-if="expandedSections.eve">
+        <label class="eve-global"><input :checked="engineVsEngine.useGlobal !== false" type="checkbox" @change="updateEngineVsEngine({ useGlobal: $event.target.checked })"> Use global settings for both engines</label>
+        <div v-if="engineVsEngine.useGlobal !== false" class="eve-note">Both engines use the current global Mistake Prevention, Opening Stabilizer, Recovery, and Pressure/Hunter/Closer settings.</div>
+        <div v-else class="eve-grid">
+          <fieldset class="eve-side">
+            <legend>White Engine</legend>
+            <label>Difficulty
+              <select :value="eveSide('white').levelName" @change="updateEngineVsEngineSide('white', { levelName: $event.target.value })">
+                <option v-for="level in levels" :key="`eve-white-${level.name}`" :value="level.name">{{ level.name }} · {{ level.thresholdCp }}CP</option>
+              </select>
+            </label>
+            <label>CP limit <input class="small-input" :value="eveSideCp('white')" type="number" readonly></label>
+            <label>Flexible mode
+              <select :value="eveSide('white').opponentPreventionMode || 'flexible'" @change="updateEngineVsEngineSide('white', { opponentPreventionMode: $event.target.value })">
+                <option value="off">CP sampling</option>
+                <option value="flexible">Flexible</option>
+                <option value="practical">Practical</option>
+                <option value="perfect">Force best</option>
+              </select>
+            </label>
+            <label><input :checked="eveSide('white').openingStabilizer.enabled !== false" type="checkbox" @change="updateEngineVsEngineSideNested('white', 'openingStabilizer', { enabled: $event.target.checked })"> Opening Stabilizer</label>
+            <label><input :checked="eveSide('white').recoveryMode.enabled !== false" type="checkbox" @change="updateEngineVsEngineSideNested('white', 'recoveryMode', { enabled: $event.target.checked })"> Recovery Mode</label>
+            <label><input :checked="eveSide('white').pressureMode" type="checkbox" @change="updateEngineVsEngineSide('white', { pressureMode: $event.target.checked })"> Pressure</label>
+            <label><input :checked="eveSide('white').hunterMode" type="checkbox" @change="updateEngineVsEngineSide('white', { hunterMode: $event.target.checked })"> Hunter</label>
+            <label><input :checked="eveSide('white').closerMode" type="checkbox" @change="updateEngineVsEngineSide('white', { closerMode: $event.target.checked })"> Closer</label>
+            <label v-if="chaosAvailable">Chaos
+              <select :value="eveSide('white').chaosMode || 'off'" @change="updateEngineVsEngineSide('white', { chaosMode: $event.target.value })">
+                <option value="off">Off</option>
+                <option value="fast">Chaos Fast</option>
+                <option value="search">Chaos Search</option>
+              </select>
+            </label>
+          </fieldset>
+          <fieldset class="eve-side">
+            <legend>Black Engine</legend>
+            <label>Difficulty
+              <select :value="eveSide('black').levelName" @change="updateEngineVsEngineSide('black', { levelName: $event.target.value })">
+                <option v-for="level in levels" :key="`eve-black-${level.name}`" :value="level.name">{{ level.name }} · {{ level.thresholdCp }}CP</option>
+              </select>
+            </label>
+            <label>CP limit <input class="small-input" :value="eveSideCp('black')" type="number" readonly></label>
+            <label>Flexible mode
+              <select :value="eveSide('black').opponentPreventionMode || 'flexible'" @change="updateEngineVsEngineSide('black', { opponentPreventionMode: $event.target.value })">
+                <option value="off">CP sampling</option>
+                <option value="flexible">Flexible</option>
+                <option value="practical">Practical</option>
+                <option value="perfect">Force best</option>
+              </select>
+            </label>
+            <label><input :checked="eveSide('black').openingStabilizer.enabled !== false" type="checkbox" @change="updateEngineVsEngineSideNested('black', 'openingStabilizer', { enabled: $event.target.checked })"> Opening Stabilizer</label>
+            <label><input :checked="eveSide('black').recoveryMode.enabled !== false" type="checkbox" @change="updateEngineVsEngineSideNested('black', 'recoveryMode', { enabled: $event.target.checked })"> Recovery Mode</label>
+            <label><input :checked="eveSide('black').pressureMode" type="checkbox" @change="updateEngineVsEngineSide('black', { pressureMode: $event.target.checked })"> Pressure</label>
+            <label><input :checked="eveSide('black').hunterMode" type="checkbox" @change="updateEngineVsEngineSide('black', { hunterMode: $event.target.checked })"> Hunter</label>
+            <label><input :checked="eveSide('black').closerMode" type="checkbox" @change="updateEngineVsEngineSide('black', { closerMode: $event.target.checked })"> Closer</label>
+            <label v-if="chaosAvailable">Chaos
+              <select :value="eveSide('black').chaosMode || 'off'" @change="updateEngineVsEngineSide('black', { chaosMode: $event.target.value })">
+                <option value="off">Off</option>
+                <option value="fast">Chaos Fast</option>
+                <option value="search">Chaos Search</option>
+              </select>
+            </label>
+          </fieldset>
+        </div>
+      </template>
       <span v-if="pending" class="pending">코치가 수를 확인 중…</span>
     </div>
     <div v-if="latest" class="lesson" :class="latest.moveQualityColor" @mouseenter="previewEntry(latest)" @mouseleave="clearPreview">
@@ -132,6 +197,8 @@ export default {
     chaosValidation () { return this.settings.chaosValidation || { preset: 'Normal', stage1Depth: 4, stage2Depth: 10, maxAttempts: 24 } },
     openingStabilizer () { return this.settings.openingStabilizer || { enabled: true, phase1Moves: 5, phase1Cp: 25, phase2Moves: 10, phase2Cp: 75, phase3Moves: 20 } },
     recoveryMode () { return { enabled: true, recoveryRatio: 0.75, windowRatio: 0.2, windowRatioUserOverride: false, durationPlies: 2, thresholdCp: null, cpWindow: null, ...(this.settings.recoveryMode || {}) } },
+    engineVsEngine () { return this.settings.engineVsEngine || { useGlobal: true, white: {}, black: {} } },
+    chaosAvailable () { return !!(this.settings.chaosTraining || (this.settings.chaosMode && this.settings.chaosMode !== 'off') || (this.engineVsEngine.white && this.engineVsEngine.white.chaosMode && this.engineVsEngine.white.chaosMode !== 'off') || (this.engineVsEngine.black && this.engineVsEngine.black.chaosMode && this.engineVsEngine.black.chaosMode !== 'off')) },
     currentDifficultyCp () {
       const selectedName = this.settings.opponentTraining ? (this.settings.opponentLevelName || this.settings.levelName) : this.settings.levelName
       const selected = this.levels.find(level => level.name === selectedName)
@@ -163,6 +230,11 @@ export default {
   },
   methods: {
     update (payload) { this.$store.dispatch('setMistakePreventionSettings', payload) },
+    eveSide (side) { return { levelName: this.settings.opponentLevelName || this.settings.levelName || '중급', opponentPreventionMode: this.settings.opponentPreventionMode || 'flexible', openingStabilizer: this.openingStabilizer, recoveryMode: this.recoveryMode, chaosMode: this.settings.chaosMode || 'off', ...((this.engineVsEngine && this.engineVsEngine[side]) || {}) } },
+    eveSideCp (side) { const selected = this.levels.find(level => level.name === this.eveSide(side).levelName); return Number((selected && selected.thresholdCp) || 300) },
+    updateEngineVsEngine (payload) { this.update({ engineVsEngine: { ...this.engineVsEngine, ...payload } }) },
+    updateEngineVsEngineSide (side, payload) { this.updateEngineVsEngine({ [side]: { ...this.eveSide(side), ...payload } }) },
+    updateEngineVsEngineSideNested (side, key, payload) { const currentSide = this.eveSide(side); this.updateEngineVsEngineSide(side, { [key]: { ...(currentSide[key] || {}), ...payload } }) },
     toggleSection (key) { this.$set(this.expandedSections, key, !this.expandedSections[key]) },
     sectionArrow (key) { return this.expandedSections[key] ? '▼' : '▶' },
     updateOpeningStabilizer (payload) { this.update({ openingStabilizer: { ...this.openingStabilizer, ...payload } }) },
@@ -210,6 +282,11 @@ select { margin-left: 6px; }
 .section-head { flex-basis: 100%; padding: 7px 9px; border-radius: 6px; background: rgba(127,127,127,.16); cursor: pointer; font-weight: 700; }
 .inline-toggle { margin-left: 10px; font-weight: 400; }
 .inline-toggle label { margin-left: 8px; }
+.eve-global, .eve-note { flex-basis: 100%; }
+.eve-note { opacity: .75; }
+.eve-grid { flex-basis: 100%; display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; }
+.eve-side { display: flex; flex-direction: column; gap: 6px; border: 1px solid rgba(127,127,127,.28); border-radius: 6px; padding: 8px; }
+.eve-side legend { font-weight: 700; }
 .pending { color: #c28500; font-weight: bold; }
 .lesson, .entry { border-left: 5px solid #888; margin: 8px 0; padding: 8px; background: rgba(0,0,0,.06); }
 .review-move:hover, .lesson:hover { outline: 2px solid rgba(114, 137, 218, .55); cursor: pointer; }
