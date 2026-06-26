@@ -870,6 +870,11 @@ function detectPoisonedCaptureReplies ({ variant, is960, fen, candidateUci, sett
 }
 
 function normalizeTrapRootCandidates (lines, fallbackBestmove, sideToMove = true) {
+  // UCI root scores are already reported from the engine's current side-to-move
+  // perspective. Do not convert them to a white-centric score here: Engine Auto
+  // Play and Mistake Prevention compare candidate moves for the side that is
+  // about to move, so flipping Black's scores makes losing moves look good and
+  // can bypass the configured CP limit for Engine 2 / Black.
   const byMove = new Map()
   const ordered = (Array.isArray(lines) ? lines : [])
     .filter(line => line && line.ucimove && typeof line.cp === 'number' && Number.isFinite(line.cp) && typeof line.mate !== 'number')
@@ -879,7 +884,7 @@ function normalizeTrapRootCandidates (lines, fallbackBestmove, sideToMove = true
       byMove.set(line.ucimove, {
         ...line,
         rawCp: line.cp,
-        cp: calcForSide(line.cp, sideToMove)
+        cp: line.cp
       })
     }
   }
