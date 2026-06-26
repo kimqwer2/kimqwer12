@@ -273,6 +273,7 @@ export default {
       showPgnModal: false, // controls visibility of the PGN browser modal
       autoPlayEnabled: false,
       autoPlayTimer: null,
+      autoPlayInFlight: false,
       playVsEngineEnabled: false,
       playVsEngineHumanSide: 'white',
       engineTimeControlsEnabled: false,
@@ -349,6 +350,7 @@ export default {
           await this.$store.dispatch('EvEfalse')
         } catch (e) {}
         try {
+          this.autoPlayInFlight = false
           await this.$store.dispatch('stopEngine')
         } catch (e) {}
 
@@ -440,10 +442,10 @@ export default {
       await this.$store.dispatch('PvEfalse')
       await this.$store.dispatch('analyzePosition')
     },
-    async engineMove () {
+    async engineMove (payload = {}) {
       await this.$store.dispatch('EvEfalse')
       await this.$store.dispatch('PvEfalse')
-      await this.$store.dispatch('playSingleEngineMove')
+      await this.$store.dispatch('playSingleEngineMove', payload)
     },
     async toggleEngineAutoPlay () {
       this.autoPlayEnabled = !this.autoPlayEnabled
@@ -452,12 +454,18 @@ export default {
           clearInterval(this.autoPlayTimer)
           this.autoPlayTimer = null
         }
+        this.autoPlayInFlight = false
         await this.$store.dispatch('stopEngine')
         return
       }
       this.autoPlayTimer = setInterval(async () => {
-        if (!this.autoPlayEnabled) return
-        await this.engineMove()
+        if (!this.autoPlayEnabled || this.autoPlayInFlight) return
+        this.autoPlayInFlight = true
+        try {
+          await this.engineMove({ engineAutoPlay: true })
+        } finally {
+          this.autoPlayInFlight = false
+        }
       }, 250)
     },
     togglePlayVsEngine () {
