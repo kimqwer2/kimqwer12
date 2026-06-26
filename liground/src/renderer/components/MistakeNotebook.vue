@@ -67,6 +67,7 @@
         <small class="mode-help">실수 유도/압박형 엔진 성향입니다. Recovery는 난이도 CP × {{ recoveryMode.recoveryRatio }} 비율로 자동 계산되는 수동 튜닝 없는 안정화 레이어입니다.</small>
         <label>Recovery Trigger CP <input class="small-input" :value="computedRecoveryTriggerCp" type="number" readonly> <small>난이도 {{ currentDifficultyCp }}CP × {{ recoveryMode.recoveryRatio }}</small></label>
         <label>Recovery Duration <input class="small-input" :value="recoveryMode.durationPlies" min="1" max="4" type="number" @change="updateRecoveryMode({ durationPlies: Number($event.target.value) })"> plies</label>
+        <label>Recovery Window Ratio <input class="small-input" :value="recoveryMode.windowRatio" min="0.1" max="2" step="0.05" type="number" @input="updateRecoveryMode({ windowRatio: Number($event.target.value) })"></label>
         <label>Recovery CP Window <input class="small-input" :value="computedRecoveryCpWindow" type="number" readonly> <small>Trigger × {{ recoveryMode.windowRatio }}</small></label>
       </template>
       <div v-if="settings.opponentTraining && (settings.chaosMode || (settings.chaosTraining ? 'search' : 'off')) !== 'off'" class="section-head" @click="toggleSection('chaos')"><span>{{ sectionArrow('chaos') }}</span> Chaos Validation <b>[ON]</b></div>
@@ -130,14 +131,14 @@ export default {
     settings () { return this.mistakePrevention || {} },
     chaosValidation () { return this.settings.chaosValidation || { preset: 'Normal', stage1Depth: 4, stage2Depth: 10, maxAttempts: 24 } },
     openingStabilizer () { return this.settings.openingStabilizer || { enabled: true, phase1Moves: 5, phase1Cp: 25, phase2Moves: 10, phase2Cp: 75, phase3Moves: 20 } },
-    recoveryMode () { return { enabled: true, recoveryRatio: 0.75, windowRatio: 0.6, durationPlies: 2, thresholdCp: null, cpWindow: null, ...(this.settings.recoveryMode || {}) } },
+    recoveryMode () { return { enabled: true, recoveryRatio: 0.75, windowRatio: 0.2, windowRatioUserOverride: false, durationPlies: 2, thresholdCp: null, cpWindow: null, ...(this.settings.recoveryMode || {}) } },
     currentDifficultyCp () {
       const selectedName = this.settings.opponentTraining ? (this.settings.opponentLevelName || this.settings.levelName) : this.settings.levelName
       const selected = this.levels.find(level => level.name === selectedName)
       return Number((selected && selected.thresholdCp) || this.settings.thresholdCp || 300)
     },
     computedRecoveryTriggerCp () { return Math.round(this.currentDifficultyCp * (Number(this.recoveryMode.recoveryRatio) || 0.75)) },
-    computedRecoveryCpWindow () { return Math.round(this.computedRecoveryTriggerCp * (Number(this.recoveryMode.windowRatio) || 0.6)) },
+    computedRecoveryCpWindow () { return Math.round(this.computedRecoveryTriggerCp * (Number(this.recoveryMode.windowRatio) || 0.2)) },
     levels () { return this.mistakePreventionLevels || [] },
     notebook () { return this.mistakeNotebook || [] },
     stats () { return this.mistakeStatistics || {} },
@@ -165,7 +166,11 @@ export default {
     toggleSection (key) { this.$set(this.expandedSections, key, !this.expandedSections[key]) },
     sectionArrow (key) { return this.expandedSections[key] ? '▼' : '▶' },
     updateOpeningStabilizer (payload) { this.update({ openingStabilizer: { ...this.openingStabilizer, ...payload } }) },
-    updateRecoveryMode (payload) { this.update({ recoveryMode: { ...this.recoveryMode, ...payload } }) },
+    updateRecoveryMode (payload) {
+      const next = { ...this.recoveryMode, ...payload }
+      if (Object.prototype.hasOwnProperty.call(payload, 'windowRatio')) next.windowRatioUserOverride = true
+      this.update({ recoveryMode: next })
+    },
     updateChaosValidation (payload) { this.update({ chaosValidation: { ...this.chaosValidation, ...payload } }) },
     updateChaosPreset (name) {
       const preset = (this.chaosValidationPresets || []).find(p => p.name === name)
