@@ -2611,8 +2611,8 @@ export const store = new Vuex.Store({
     },
     openingStartPool: [],
     analysisVisualization: {
-      showMultiPvArrows: true,
-      multiPvCount: 3,
+      showMultiPvArrows: false,
+      multiPvCount: 1,
       trajectoryEnabled: false,
       trajectorySideMode: 'both',
       trajectoryDepth: 12,
