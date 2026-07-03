@@ -2559,6 +2559,7 @@ export const store = new Vuex.Store({
     viewAnalysis: true,
     analysisMode: true,
     editorMode: false,
+    gameEditMode: false,
     review: emptyReviewState(),
     openingGraph: createOpeningGraph(),
     openingBook: {
@@ -3199,6 +3200,18 @@ export const store = new Vuex.Store({
       }
       state.lastFen = state.board.fen()
     },
+    replaceMainContinuation (state, payload) {
+      const prev = payload && payload.prev
+      const move = payload && payload.move
+      if (!move) return
+      if (prev) {
+        prev.main = move
+        prev.next = [move]
+      } else {
+        state.mainFirstMove = move
+        state.firstMoves = [move]
+      }
+    },
     playAudio (state, move) { // Sounds from lichess https://github.com/ornicar/lila
       if (state.openedPGN) {
         return
@@ -3241,6 +3254,9 @@ export const store = new Vuex.Store({
     },
     editorMode (state, payload) {
       state.editorMode = payload
+    },
+    gameEditMode (state, payload) {
+      state.gameEditMode = payload
     },
     analysisVisualization (state, payload) {
       state.analysisVisualization = { ...state.analysisVisualization, ...payload }
@@ -3831,7 +3847,14 @@ export const store = new Vuex.Store({
           context.commit('mistakePreventionPending', false)
         }
       }
+      if (context.state.board && context.state.fen && context.state.board.fen && context.state.board.fen() !== context.state.fen) {
+        context.state.board.setFen(context.state.fen)
+      }
       context.commit('appendMoves', payload)
+      if (context.state.gameEditMode) {
+        const edited = context.getters.getMoveByUCIAndPrev(String(payload.move || '').split(' ')[0], payload.prev)[0]
+        context.commit('replaceMainContinuation', { prev: payload.prev, move: edited })
+      }
       return context.dispatch('fen', context.state.board.fen()).then(() => {
         // Only check for game end if a game was started via the new game modal
         if (context.state.gameConfig) {
@@ -5023,6 +5046,11 @@ export const store = new Vuex.Store({
     },
     fen (context, payload) {
       if (context.state.fen !== payload) {
+        if (context.state.board && context.state.board.setFen) {
+          context.state.board.setFen(payload)
+          context.commit('turn', context.state.board.turn())
+          context.commit('legalMoves', context.state.board.legalMoves())
+        }
         context.commit('fen', payload)
         context.dispatch('updateBoard')
         context.dispatch('restartEngine')
@@ -6388,6 +6416,7 @@ export const store = new Vuex.Store({
         context.dispatch('stopEngine')
       }
       context.commit('editorMode', enteringEditor)
+      context.commit('gameEditMode', false)
       if (enteringEditor) {
         context.commit('analysisMode', false)
       } else {
@@ -6398,6 +6427,17 @@ export const store = new Vuex.Store({
         if (context.state.analysisMode) {
           context.dispatch('goEngine')
         }
+      }
+    },
+    toggleGameEditMode (context) {
+      const entering = !context.state.gameEditMode
+      if (entering && context.state.active) {
+        context.dispatch('stopEngine')
+      }
+      context.commit('gameEditMode', entering)
+      if (entering) {
+        context.commit('editorMode', false)
+        context.commit('analysisMode', true)
       }
     },
     analysisVisualization (context, payload) {
@@ -6439,6 +6479,11 @@ export const store = new Vuex.Store({
     },
     clearDeepAnalysis (context) {
       context.commit('deepAnalysisClear')
+    },
+    jumpToReviewMove (context, move) {
+      if (!move || !move.previewFen) return
+      context.commit('reviewPreviewClear')
+      return context.dispatch('fen', move.previewFen)
     },
     setReviewMarkerMode (context, payload) {
       context.commit('reviewMarkerMode', payload)
@@ -7513,6 +7558,9 @@ export const store = new Vuex.Store({
     },
     editorMode (state) {
       return state.editorMode
+    },
+    gameEditMode (state) {
+      return state.gameEditMode
     },
     analysisVisualization (state) {
       return state.analysisVisualization

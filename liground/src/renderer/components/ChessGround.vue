@@ -286,7 +286,7 @@ export default {
       }
     },
     isPlayerTurn () {
-      if (this.boardInteractionMode === BOARD_INTERACTION_MODES.REVIEW_PREVIEW || this.boardInteractionMode === BOARD_INTERACTION_MODES.REVIEW_SEQUENCE || this.boardInteractionMode === BOARD_INTERACTION_MODES.BOARD_EDITOR || this.boardInteractionMode === BOARD_INTERACTION_MODES.ANALYSIS) {
+      if (this.boardInteractionMode === BOARD_INTERACTION_MODES.REVIEW_PREVIEW || this.boardInteractionMode === BOARD_INTERACTION_MODES.REVIEW_SEQUENCE || this.boardInteractionMode === BOARD_INTERACTION_MODES.BOARD_EDITOR || this.boardInteractionMode === BOARD_INTERACTION_MODES.ANALYSIS || this.gameEditMode) {
         return true
       }
       // In PvE: allow moves only when it's the player's turn
@@ -305,7 +305,7 @@ export default {
       // Block mouse input completely when not player's turn
       return this.isPlayerTurn ? 'auto' : 'none'
     },
-    ...mapGetters(['initialized', 'variant', 'multipv', 'hoveredpv', 'redraw', 'pieceStyle', 'boardStyle', 'fen', 'lastFen', 'orientation', 'moves', 'isPast', 'dimensionNumber', 'analysisMode', 'editorMode', 'analysisVisualization', 'reviewSequence', 'reviewSequenceActive', 'reviewPreview', 'reviewPreviewActive', 'reviewOverlays', 'active', 'PvE', 'PvEPlayerIsWhite', 'EvE', 'enginetime', 'resized', 'resized9x9width', 'resized9x9height', 'resized9x10width', 'resized9x10height', 'dimNumber', 'openingCandidates', 'openingBook'])
+    ...mapGetters(['initialized', 'variant', 'multipv', 'hoveredpv', 'redraw', 'pieceStyle', 'boardStyle', 'fen', 'lastFen', 'orientation', 'moves', 'isPast', 'dimensionNumber', 'analysisMode', 'editorMode', 'gameEditMode', 'analysisVisualization', 'reviewSequence', 'reviewSequenceActive', 'reviewPreview', 'reviewPreviewActive', 'reviewOverlays', 'active', 'PvE', 'PvEPlayerIsWhite', 'EvE', 'enginetime', 'resized', 'resized9x9width', 'resized9x9height', 'resized9x10width', 'resized9x10height', 'dimNumber', 'openingCandidates', 'openingBook'])
   },
   watch: {
     dimensionNumber () {
@@ -388,6 +388,10 @@ export default {
     resized9x10width () { this.scheduleBoardInteractionSync('resized9x10width') },
     resized9x10height () { this.scheduleBoardInteractionSync('resized9x10height') },
     editorMode () {
+      this.updateBoard()
+      this.renderAnalysisVisualization()
+    },
+    gameEditMode () {
       this.updateBoard()
       this.renderAnalysisVisualization()
     },

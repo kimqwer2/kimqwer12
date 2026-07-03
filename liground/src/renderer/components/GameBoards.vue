@@ -102,6 +102,22 @@
             </button>
             <button
               class="mini-btn"
+              :class="{ active: editorMode }"
+              title="Free piece/FEN editing. Leaving this mode makes the current board the new start position."
+              @click="togglePositionEdit"
+            >
+              {{ editorMode ? 'Edit Position 종료' : 'Edit Position' }}
+            </button>
+            <button
+              class="mini-btn"
+              :class="{ active: gameEditMode }"
+              title="Legal-move game editing. A new move replaces the main continuation from the current ply."
+              @click="toggleGameEdit"
+            >
+              {{ gameEditMode ? 'Edit Game 종료' : 'Edit Game' }}
+            </button>
+            <button
+              class="mini-btn"
               @click="pasteSequence"
             >
               수순 붙여넣기
@@ -325,6 +341,12 @@ export default {
     focusMode () {
       return this.$store.getters.focusMode
     },
+    editorMode () {
+      return this.$store.getters.editorMode
+    },
+    gameEditMode () {
+      return this.$store.getters.gameEditMode
+    },
     ...mapGetters(['QuickTourIndex'])
   },
   mounted () { // EventListener für Keyboardinput, ruft direkt die jeweilige Methode auf
@@ -368,7 +390,10 @@ export default {
           event.preventDefault()
           this.$store.dispatch('toggleAnalysisMode')
         }
-        if (event.ctrlKey && keyName.toLowerCase() === 'e') {
+        if (event.ctrlKey && event.shiftKey && keyName.toLowerCase() === 'e') {
+          event.preventDefault()
+          this.$store.dispatch('toggleGameEditMode')
+        } else if (event.ctrlKey && keyName.toLowerCase() === 'e') {
           event.preventDefault()
           this.$store.dispatch('toggleEditorMode')
         }
@@ -624,6 +649,12 @@ export default {
       }
       this.tryAutoOpeningResponse()
     },
+    togglePositionEdit () {
+      this.$store.dispatch('toggleEditorMode')
+    },
+    toggleGameEdit () {
+      this.$store.dispatch('toggleGameEditMode')
+    },
     addCurrentToOpeningBook () {
       this.$store.dispatch('addCurrentGameToOpeningBook')
       alert('현재 기보를 오프닝북에 추가했습니다.')
@@ -840,6 +871,11 @@ input {
   display: flex;
   gap: 8px;
 }
+.mini-btn.active {
+  background: #7289da;
+  color: #fff;
+}
+
 .mini-btn {
   font-size: 11px;
   border: 1px solid var(--main-border-color);
