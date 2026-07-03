@@ -148,7 +148,8 @@ export default {
         game.originalPGN = pgn
         games.push(game)
         this.$store.dispatch('loadedGames', games)
-        const saveToFile = confirm('Do you want to save this game to a file on your computer?')
+        await this.saveToLibrary()
+        const saveToFile = confirm('Do you also want to export this game to a PGN file on your computer?')
         if (saveToFile) {
           await this.saveToFile(pgn)
         } else {
@@ -159,6 +160,26 @@ export default {
         console.error('Error saving game:', error)
         alert('Error saving game: ' + error.message)
       }
+    },
+    async saveToLibrary () {
+      const { ipcRenderer } = require('electron')
+      const snapshot = JSON.parse(JSON.stringify(this.$store.getters.savedGameSnapshot || {}))
+      const now = new Date().toISOString()
+      snapshot.metadata = {
+        ...(snapshot.metadata || {}),
+        name: this.gameName,
+        event: this.eventName || this.gameInfo.Event || 'My Game',
+        site: this.siteName || this.gameInfo.Site || '?',
+        round: this.roundName || this.gameInfo.Round || '?',
+        white: this.whiteName || this.gameInfo.White || 'Player1',
+        black: this.blackName || this.gameInfo.Black || 'Player2',
+        result: this.gameInfo.Result || '*',
+        savedAt: now,
+        updatedAt: now
+      }
+      const result = await ipcRenderer.invoke('saved-games-library-save', snapshot)
+      if (!result.success) throw new Error(result.error || 'Could not save to library')
+      document.dispatchEvent(new CustomEvent('liground-saved-games-refresh'))
     },
     async saveToFile (pgn) {
       const { ipcRenderer } = require('electron')

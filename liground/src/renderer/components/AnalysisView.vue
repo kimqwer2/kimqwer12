@@ -14,6 +14,7 @@
       @move-forward-one="$emit('move-forward-one', 0)"
       @move-to-end="$emit('move-to-end', 0)"
     />
+    <SavedGamesLibrary />
     <ReviewPanel />
     <MistakeNotebook />
     <GameAnalysisPanel />
@@ -40,6 +41,7 @@ import AnalysisContainer from './AnalysisContainer.vue'
 import ReviewPanel from './ReviewPanel.vue'
 import GameAnalysisPanel from './GameAnalysisPanel.vue'
 import MistakeNotebook from './MistakeNotebook.vue'
+import SavedGamesLibrary from './SavedGamesLibrary.vue'
 
 export default {
   name: 'AnalysisView',
@@ -48,6 +50,7 @@ export default {
     AnalysisContainer,
     ReviewPanel,
     MistakeNotebook,
+    SavedGamesLibrary,
     GameAnalysisPanel
   },
   data () {
