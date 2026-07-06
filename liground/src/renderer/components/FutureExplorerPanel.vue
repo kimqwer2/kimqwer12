@@ -100,12 +100,24 @@
         <div v-if="pieceActivityExpanded(opening.key)" class="piece-activity-panel">
           <div v-if="pieceActivityLoading[opening.key]" class="piece-activity-loading">Calculating piece activity…</div>
           <div v-else-if="pieceActivityFor(opening)" class="piece-activity-body">
-            <p class="piece-activity-note">Top Destinations are based on each piece's first move in every analyzed position for this Opening.</p>
-            <div class="piece-tabs" role="tablist" aria-label="Piece activity side">
+            <p class="piece-activity-note">Top Destinations are first-move destinations for each piece in every analyzed position for this Opening.</p>
+            <button type="button" class="piece-scan-button" @click="scanPieceActivity(opening)">Rescan Positions</button>
+            <div v-if="pieceActivityEmpty(opening)" class="piece-activity-empty">No piece activity data could be generated for this Opening.</div>
+            <div v-if="pieceActivityDiagnostics(opening)" class="piece-diagnostics">
+              <strong>Scanned Opening</strong>
+              <span>Expected positions: {{ pieceActivityDiagnostics(opening).expectedPositions }}</span>
+              <span>Visited positions: {{ pieceActivityDiagnostics(opening).visitedPositions }}</span>
+              <span>PVs found: {{ pieceActivityDiagnostics(opening).pvsFound }}</span>
+              <span>Moves extracted: {{ pieceActivityDiagnostics(opening).movesExtracted }}</span>
+              <span>Pieces detected: Cho {{ pieceActivityDiagnostics(opening).choPieces }} / Han {{ pieceActivityDiagnostics(opening).hanPieces }}</span>
+              <span>Individual pieces matched: {{ pieceActivityDiagnostics(opening).piecesMatched }}</span>
+              <span>Statistics generated: {{ pieceActivityDiagnostics(opening).statisticsGenerated }}</span>
+            </div>
+            <div v-if="!pieceActivityEmpty(opening)" class="piece-tabs" role="tablist" aria-label="Piece activity side">
               <button type="button" :class="{ active: pieceActivitySide(opening.key) === 'cho' }" @click="setPieceActivitySide(opening.key, 'cho')">Cho</button>
               <button type="button" :class="{ active: pieceActivitySide(opening.key) === 'han' }" @click="setPieceActivitySide(opening.key, 'han')">Han</button>
             </div>
-            <div class="piece-activity-grid">
+            <div v-if="!pieceActivityEmpty(opening)" class="piece-activity-grid">
               <article
                 v-for="piece in pieceActivityPieces(opening)"
                 :key="piece.id"
@@ -117,7 +129,7 @@
                 <h4>{{ piece.label }}</h4>
                 <dl>
                   <div><dt>Starting Square</dt><dd>{{ piece.square }}</dd></div>
-                  <div><dt>Move Rate</dt><dd>{{ piece.moveRate }}%</dd></div>
+                  <div><dt>Move Rate</dt><dd>{{ piece.moveRate }}%</dd><dd class="rate-count">{{ piece.moved }} / {{ piece.total }} positions</dd></div>
                   <div><dt>Average First Move</dt><dd>{{ piece.averageFirstMove }}</dd></div>
                 </dl>
                 <div class="top-moves">
@@ -194,11 +206,14 @@ export default {
       if (nextOpen) this.ensurePieceActivity(opening)
       else this.clearPieceStartHighlight()
     },
-    ensurePieceActivity (opening) {
+    scanPieceActivity (opening) {
+      this.ensurePieceActivity(opening, true)
+    },
+    ensurePieceActivity (opening, force = false) {
       if (!opening || !opening.key) return
       const signature = this.openingActivitySignature(opening)
       const cached = this.pieceActivityCache[opening.key]
-      if (cached && cached.signature === signature) return
+      if (!force && cached && cached.signature === signature) return
       if (this.pieceActivityTimers[opening.key]) clearTimeout(this.pieceActivityTimers[opening.key])
       this.$set(this.pieceActivityLoading, opening.key, true)
       const timer = setTimeout(() => {
@@ -224,32 +239,57 @@ export default {
       const activity = this.pieceActivityFor(opening)
       return activity ? activity[this.pieceActivitySide(opening.key)] || [] : []
     },
+    pieceActivityDiagnostics (opening) {
+      const activity = this.pieceActivityFor(opening)
+      return activity ? activity.diagnostics : null
+    },
+    pieceActivityEmpty (opening) {
+      const activity = this.pieceActivityFor(opening)
+      return !!(activity && activity.diagnostics && activity.diagnostics.statisticsGenerated === 0)
+    },
     calculatePieceActivity (opening, signature = this.openingActivitySignature(opening)) {
       const pieces = this.initialPieces(opening.rootFen)
       const byId = pieces.reduce((acc, piece) => {
         acc[piece.id] = { ...piece, moved: 0, firstMoveTotal: 0, destinations: {} }
         return acc
       }, {})
-      const positions = (opening.allItems || []).filter(item => item && item.pvUCI)
+      const sourcePositions = opening.allItems || []
+      const positions = sourcePositions.filter(item => item && item.pvUCI)
+      const diagnostics = {
+        expectedPositions: opening.positionCount || sourcePositions.length || 0,
+        visitedPositions: sourcePositions.length,
+        pvsFound: positions.length,
+        movesExtracted: 0,
+        choPieces: pieces.filter(piece => piece.side === 'cho').length,
+        hanPieces: pieces.filter(piece => piece.side === 'han').length,
+        piecesMatched: 0,
+        statisticsGenerated: 0,
+        scopeKey: opening.key || ''
+      }
       positions.forEach(item => {
         const firstMoves = this.firstMovesByPiece(opening.rootFen, item.pvUCI)
+        diagnostics.movesExtracted += String(item.pvUCI || '').split(/\s+/).filter(Boolean).length
         Object.keys(firstMoves).forEach(id => {
           if (!byId[id]) return
           const first = firstMoves[id]
           byId[id].moved += 1
           byId[id].firstMoveTotal += first.ply
           byId[id].destinations[first.to] = (byId[id].destinations[first.to] || 0) + 1
+          diagnostics.piecesMatched += 1
         })
       })
       const total = Math.max(1, positions.length)
       const activity = ['cho', 'han'].reduce((acc, side) => {
         acc[side] = Object.values(byId)
           .filter(piece => piece.side === side)
+          .sort((a, b) => a.order - b.order)
           .map(piece => this.pieceActivitySummary(piece, total))
+        diagnostics.statisticsGenerated += acc[side].length
         return acc
       }, { cho: [], han: [] })
       activity.signature = signature
       activity.positionCount = positions.length
+      activity.diagnostics = diagnostics
       return activity
     },
     pieceActivitySummary (piece, total) {
@@ -262,20 +302,51 @@ export default {
         id: piece.id,
         label: piece.label,
         square: piece.square,
-        moveRate: Math.round((moved / total) * 100),
+        moved,
+        total,
+        moveRate: ((moved / total) * 100).toFixed(1),
         averageFirstMove: moved ? (piece.firstMoveTotal / moved).toFixed(1) : '—',
         topMoves
       }
     },
     initialPieces (fen) {
       const board = this.parseFenBoard(fen)
-      const counts = { cho: {}, han: {} }
-      return board.flatMap((row, rank) => row.map((piece, file) => ({ piece, file, rank })).filter(x => x.piece)).map(({ piece, file, rank }) => {
-        const side = piece === piece.toUpperCase() ? 'cho' : 'han'
-        const type = this.pieceTypeName(piece)
-        counts[side][type] = (counts[side][type] || 0) + 1
-        const square = this.squareName(file, rank, board.length)
-        return { id: `${side}:${square}:${piece}`, side, square, label: `${side === 'cho' ? 'Cho' : 'Han'} ${type} ${counts[side][type]}` }
+      const rawPieces = board.flatMap((row, rank) => row
+        .map((piece, file) => ({ piece, file, rank, square: this.squareName(file, rank, board.length) }))
+        .filter(item => item.piece))
+      const sidePieces = { cho: rawPieces.filter(item => item.piece === item.piece.toUpperCase()), han: rawPieces.filter(item => item.piece !== item.piece.toUpperCase()) }
+      return ['cho', 'han'].flatMap(side => this.nameStartingPieces(sidePieces[side], side, board.length))
+    },
+    nameStartingPieces (pieces, side, height) {
+      const backRank = side === 'cho'
+        ? Math.max(...pieces.map(piece => piece.rank), 0)
+        : Math.min(...pieces.map(piece => piece.rank), height - 1)
+      const typeOrder = { Chariot: 0, Horse: 1, Elephant: 2, Advisor: 3, King: 4, Cannon: 5, Pawn: 6 }
+      const byType = pieces.reduce((acc, piece) => {
+        const type = this.pieceTypeName(piece.piece)
+        if (!acc[type]) acc[type] = []
+        acc[type].push(piece)
+        return acc
+      }, {})
+      Object.values(byType).forEach(list => list.sort((a, b) => a.file - b.file || a.rank - b.rank))
+      return pieces.map(piece => {
+        const type = this.pieceTypeName(piece.piece)
+        const typed = byType[type] || []
+        const typeIndex = typed.findIndex(item => item.square === piece.square)
+        const sideName = side === 'cho' ? 'Cho' : 'Han'
+        const pairName = typed.length === 2 ? (typeIndex === 0 ? `Left ${type}` : `Right ${type}`) : type
+        const label = type === 'Pawn'
+          ? `${sideName} Pawn${typeIndex + 1}`
+          : (typed.length === 2 ? `${sideName} ${pairName}` : `${sideName} ${type}`)
+        const rankGroup = type === 'Pawn' ? 2 : (type === 'Cannon' ? 1 : 0)
+        const homeOffset = Math.abs(piece.rank - backRank)
+        return {
+          id: `${side}:${piece.square}:${piece.piece}`,
+          side,
+          square: piece.square,
+          label,
+          order: (rankGroup * 100) + ((typeOrder[type] || 9) * 10) + homeOffset + piece.file / 10
+        }
       })
     },
     firstMovesByPiece (fen, pvUCI) {
@@ -372,6 +443,7 @@ export default {
       if (!moveGroups.length) return null
       return {
         key: openingKey,
+        rootFen: opening && opening.rootFen,
         label: openingLabel,
         fallbackLabel,
         customName: opening && opening.name,
@@ -607,6 +679,9 @@ export default {
 .piece-activity-panel { margin-top: 0.35rem; }
 .piece-activity-loading, .muted, .piece-activity-note { opacity: 0.7; font-size: 0.78rem; }
 .piece-activity-note { margin: 0 0 0.35rem; }
+.piece-scan-button { border: 1px solid rgba(128,128,128,0.25); border-radius: 999px; background: rgba(128,128,128,0.06); color: inherit; cursor: pointer; font-size: 0.72rem; padding: 0.16rem 0.5rem; margin: 0 0 0.4rem; }
+.piece-activity-empty { margin: 0.35rem 0; opacity: 0.85; font-size: 0.82rem; }
+.piece-diagnostics { display: grid; gap: 0.1rem; margin: 0.35rem 0; padding: 0.4rem; border: 1px solid rgba(128,128,128,0.16); border-radius: 8px; background: rgba(128,128,128,0.04); font-size: 0.72rem; opacity: 0.82; }
 .piece-activity-body { margin-top: 0.4rem; }
 .piece-tabs { display: flex; gap: 0.25rem; margin-bottom: 0.4rem; }
 .piece-tabs button { border: 1px solid rgba(128,128,128,0.25); border-radius: 999px; background: rgba(128,128,128,0.06); color: inherit; cursor: pointer; font-size: 0.76rem; padding: 0.18rem 0.55rem; }
@@ -617,6 +692,7 @@ export default {
 .piece-card dl { display: grid; grid-template-columns: 1fr 1fr; gap: 0.35rem; margin: 0 0 0.35rem; }
 .piece-card dt { font-size: 0.68rem; opacity: 0.68; }
 .piece-card dd { margin: 0; font-size: 0.88rem; font-weight: 700; }
+.piece-card dd.rate-count { grid-column: 1 / -1; font-size: 0.68rem; font-weight: 400; opacity: 0.72; }
 .top-moves strong { display: block; margin-bottom: 0.15rem; font-size: 0.7rem; opacity: 0.78; }
 .top-move-row { display: flex; justify-content: space-between; gap: 0.35rem; font-size: 0.74rem; }
 .top-move-row code { font-family: monospace; }
