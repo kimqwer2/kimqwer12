@@ -9,6 +9,7 @@
       <div class="future-controls">
         <button type="button" @click="setAllOpen(true)">Expand All</button>
         <button type="button" @click="setAllOpen(false)">Collapse All</button>
+        <button type="button" class="danger" @click="clearExplorer">Clear Future Explorer</button>
         <select v-model="sortMode" @change="saveSort">
           <option value="depth">Depth</option>
           <option value="appearances">Appearances</option>
@@ -60,9 +61,23 @@ export default {
       set (value) { this.$store.dispatch('analysisVisualization', { futureExplorerSortMode: value }) }
     },
     openings () {
-      const groups = (this.futureExplorer && this.futureExplorer.groups) || {}
-      const openingKey = (this.futureExplorer && this.futureExplorer.rootKey) || 'current'
-      const openingLabel = this.openingLabel(this.futureExplorer && this.futureExplorer.rootFen)
+      const explorer = this.futureExplorer || {}
+      const openings = explorer.openings && Object.keys(explorer.openings).length
+        ? explorer.openings
+        : { [explorer.rootKey || 'current']: { rootKey: explorer.rootKey || 'current', rootFen: explorer.rootFen, groups: explorer.groups || {} } }
+      return Object.keys(openings).map(openingKey => this.openingGroup(openingKey, openings[openingKey]))
+        .filter(Boolean)
+        .sort((a, b) => a.label.localeCompare(b.label))
+    },
+    totalPositions () {
+      return this.openings.reduce((sum, opening) => sum + opening.positionCount, 0)
+    }
+  },
+  methods: {
+    saveSort () {},
+    openingGroup (openingKey, opening) {
+      const groups = (opening && opening.groups) || {}
+      const openingLabel = this.openingLabel(opening && opening.rootFen)
       const moveGroups = Object.keys(groups).map(moveNumber => {
         const items = Object.values(groups[moveNumber] || {})
         const byAppearances = this.sortMode === 'appearances'
@@ -71,20 +86,14 @@ export default {
           : ((b.deepestDepth || 0) - (a.deepestDepth || 0)) || ((b.appearances || 0) - (a.appearances || 0)))
         return { moveNumber, items: items.slice(0, 12) }
       }).sort((a, b) => Number(a.moveNumber) - Number(b.moveNumber))
-      if (!moveGroups.length) return []
-      return [{
+      if (!moveGroups.length) return null
+      return {
         key: openingKey,
         label: openingLabel,
         moveGroups,
         positionCount: moveGroups.reduce((sum, group) => sum + group.items.length, 0)
-      }]
+      }
     },
-    totalPositions () {
-      return this.openings.reduce((sum, opening) => sum + opening.positionCount, 0)
-    }
-  },
-  methods: {
-    saveSort () {},
     openingLabel (fen) {
       if (!fen) return 'Current opening'
       const parts = String(fen).split(/\s+/)
@@ -92,6 +101,10 @@ export default {
     },
     setAllOpen (open) {
       this.openingDetailRefs().forEach(el => { el.open = open })
+    },
+    clearExplorer () {
+      if (!confirm('Clear all stored Future Explorer positions?')) return
+      this.$store.dispatch('clearFutureExplorer')
     },
     openingDetailRefs () {
       const details = this.$refs.openingDetails || []
@@ -130,6 +143,7 @@ export default {
 .future-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-top: 0.5rem; }
 .future-controls { display: flex; align-items: center; gap: 0.35rem; }
 .future-controls button { border: 1px solid rgba(128,128,128,0.25); border-radius: 4px; background: rgba(128,128,128,0.08); color: inherit; cursor: pointer; font-size: 0.78rem; padding: 0.2rem 0.4rem; }
+.future-controls button.danger { border-color: rgba(190,70,70,0.35); color: #d66; }
 .empty { opacity: 0.75; font-size: 0.85rem; }
 .opening-group { margin-top: 0.5rem; }
 .opening-group > summary { cursor: pointer; font-weight: 600; }

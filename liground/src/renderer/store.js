@@ -27,10 +27,12 @@ let lastFocusModeGetterLog = null
 
 function emptyFutureExplorerState () {
   return {
+    schemaVersion: 1,
     enabled: true,
     sortMode: 'depth',
     rootFen: '',
     rootKey: '',
+    openings: {},
     groups: {},
     lastSignature: ''
   }
@@ -38,6 +40,45 @@ function emptyFutureExplorerState () {
 
 function boardFenKey (fen) {
   return String(fen || '').split(/\s+/).slice(0, 4).join(' ')
+}
+
+function normalizeFutureExplorerState (input) {
+  const next = emptyFutureExplorerState()
+  if (!input || typeof input !== 'object') return next
+  next.rootFen = input.rootFen || ''
+  next.rootKey = input.rootKey || (input.rootFen ? boardFenKey(input.rootFen) : '')
+  next.lastSignature = input.lastSignature || ''
+  const sourceOpenings = input.openings && typeof input.openings === 'object' ? input.openings : {}
+  for (const key of Object.keys(sourceOpenings)) {
+    const opening = sourceOpenings[key]
+    if (!opening || typeof opening !== 'object') continue
+    const rootKey = opening.rootKey || key
+    next.openings[rootKey] = {
+      rootKey,
+      rootFen: opening.rootFen || '',
+      groups: opening.groups && typeof opening.groups === 'object' ? opening.groups : {},
+      lastSignature: opening.lastSignature || ''
+    }
+  }
+  if (input.groups && typeof input.groups === 'object') {
+    const rootKey = next.rootKey || 'current'
+    if (!next.openings[rootKey]) {
+      next.openings[rootKey] = {
+        rootKey,
+        rootFen: next.rootFen,
+        groups: input.groups,
+        lastSignature: input.lastSignature || ''
+      }
+    }
+  }
+  const active = next.openings[next.rootKey] || next.openings[Object.keys(next.openings)[0]]
+  if (active) {
+    next.rootKey = active.rootKey
+    next.rootFen = active.rootFen
+    next.groups = active.groups || {}
+    next.lastSignature = active.lastSignature || ''
+  }
+  return next
 }
 
 function futureExplorerEntryFromPv (state, payload) {
@@ -3176,17 +3217,33 @@ export const store = new Vuex.Store({
     futureExplorerReset (state) {
       state.futureExplorer = emptyFutureExplorerState()
     },
+    futureExplorerLoad (state, payload) {
+      state.futureExplorer = normalizeFutureExplorerState(payload)
+    },
     futureExplorerRecord (state, payload) {
       const rootKey = boardFenKey(state.fen)
-      if (!state.futureExplorer || state.futureExplorer.rootKey !== rootKey) {
-        state.futureExplorer = { ...emptyFutureExplorerState(), rootFen: state.fen, rootKey }
+      if (!state.futureExplorer) state.futureExplorer = emptyFutureExplorerState()
+      if (!state.futureExplorer.openings) Vue.set(state.futureExplorer, 'openings', {})
+      if (!state.futureExplorer.openings[rootKey]) {
+        Vue.set(state.futureExplorer.openings, rootKey, {
+          rootKey,
+          rootFen: state.fen,
+          groups: {},
+          lastSignature: ''
+        })
       }
+      const opening = state.futureExplorer.openings[rootKey]
+      opening.rootFen = opening.rootFen || state.fen
+      state.futureExplorer.rootFen = opening.rootFen
+      state.futureExplorer.rootKey = rootKey
+      state.futureExplorer.groups = opening.groups
       for (const entry of payload || []) {
-        if (!entry || !entry.key || entry.signature === state.futureExplorer.lastSignature) continue
+        if (!entry || !entry.key || entry.signature === opening.lastSignature) continue
+        opening.lastSignature = entry.signature
         state.futureExplorer.lastSignature = entry.signature
         const groupKey = String(entry.moveNumber)
-        if (!state.futureExplorer.groups[groupKey]) Vue.set(state.futureExplorer.groups, groupKey, {})
-        const group = state.futureExplorer.groups[groupKey]
+        if (!opening.groups[groupKey]) Vue.set(opening.groups, groupKey, {})
+        const group = opening.groups[groupKey]
         const current = group[entry.key]
         const score = scoreToCpForStore(entry)
         if (!current) {
@@ -3203,7 +3260,7 @@ export const store = new Vuex.Store({
             averageEval: typeof score === 'number' ? score : null
           })
         } else {
-          current.appearances += 1
+          current.appearances = (current.appearances || 0) + 1
           current.lastDepth = Math.max(current.lastDepth || 0, entry.depth)
           current.deepestDepth = Math.max(current.deepestDepth || 0, entry.depth)
           current.firstDepth = Math.min(current.firstDepth || entry.depth, entry.depth)
@@ -3218,6 +3275,7 @@ export const store = new Vuex.Store({
           current.mate = entry.mate
           current.pvUCI = entry.pvUCI
           current.continuationUCI = entry.continuationUCI
+          current.rootFen = entry.rootFen || opening.rootFen
         }
       }
     },
@@ -3864,6 +3922,7 @@ export const store = new Vuex.Store({
         localStorage.removeItem('mistakeNotebook')
       }
       context.dispatch('loadOpeningBookFromStorage')
+      context.dispatch('loadFutureExplorerFromStorage')
       context.commit('newBoard')
       context.dispatch('updateBoard')
       context.dispatch('changeEngine', context.getters.availableEngines[0].name)
@@ -5506,7 +5565,10 @@ export const store = new Vuex.Store({
       // speculative/personality candidates remain internal diagnostics and must not move the eval bar.
       if ('pv' in payload) {
         const futureEntries = futureExplorerEntryFromPv(context.state, payload)
-        if (futureEntries.length) context.commit('futureExplorerRecord', futureEntries)
+        if (futureEntries.length) {
+          context.commit('futureExplorerRecord', futureEntries)
+          context.dispatch('persistFutureExplorer')
+        }
         const rootRank = Number(payload.multipv) || 1
         if (rootRank === 1) {
           const rootEval = typeof payload.cp === 'number' ? payload.cp : context.state.lastAnalysisResult.cp
@@ -6625,6 +6687,45 @@ export const store = new Vuex.Store({
     },
     clearFuturePreview (context) {
       context.commit('reviewPreviewClear')
+    },
+    async loadFutureExplorerFromStorage (context) {
+      try {
+        if (ipcRenderer) {
+          const result = await ipcRenderer.invoke('future-explorer-load')
+          if (result && result.success) {
+            context.commit('futureExplorerLoad', result.data)
+            return
+          }
+        }
+        const raw = localStorage.getItem('futureExplorer')
+        if (raw) context.commit('futureExplorerLoad', JSON.parse(raw))
+      } catch (err) {
+        console.warn('[future-explorer] load failed', err)
+      }
+    },
+    async persistFutureExplorer (context) {
+      const data = normalizeFutureExplorerState(context.state.futureExplorer)
+      try {
+        if (ipcRenderer) {
+          await ipcRenderer.invoke('future-explorer-save', data)
+          return
+        }
+        localStorage.setItem('futureExplorer', JSON.stringify(data))
+      } catch (err) {
+        console.warn('[future-explorer] persist failed', err)
+      }
+    },
+    async clearFutureExplorer (context) {
+      context.commit('futureExplorerReset')
+      try {
+        if (ipcRenderer) {
+          await ipcRenderer.invoke('future-explorer-clear')
+        } else {
+          localStorage.removeItem('futureExplorer')
+        }
+      } catch (err) {
+        console.warn('[future-explorer] clear failed', err)
+      }
     },
     jumpToFuturePosition (context, payload) {
       if (!payload || !payload.fen) return
