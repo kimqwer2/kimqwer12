@@ -9,8 +9,8 @@
       <div class="future-controls">
         <button type="button" @click="setAllOpen(true)">Expand All</button>
         <button type="button" @click="setAllOpen(false)">Collapse All</button>
-        <button type="button" @click="setAllEntryDetails('details')">Expand Details</button>
-        <button type="button" @click="setAllEntryDetails('full')">Expand Full</button>
+        <button type="button" @click="toggleAllEntryDetails('details')">Expand Details</button>
+        <button type="button" @click="toggleAllEntryDetails('full')">Expand Full</button>
         <button type="button" class="danger" @click="clearExplorer">Clear Future Explorer</button>
         <select v-model="sortMode" @change="saveSort">
           <option value="depth">Depth</option>
@@ -25,7 +25,11 @@
       ref="openingDetails"
       class="opening-group"
     >
-      <summary>{{ opening.label }} <span>{{ opening.positionCount }} positions</span></summary>
+      <summary class="opening-summary">
+        <span class="opening-title">{{ opening.label }}</span>
+        <span>{{ opening.positionCount }} positions</span>
+        <button type="button" class="rename-opening" @click.prevent.stop="renameOpening(opening)">Rename</button>
+      </summary>
       <div v-for="group in opening.moveGroups" :key="group.moveNumber" class="move-group">
         <div class="move-heading">Move {{ group.moveNumber }} <span>({{ group.items.length }})</span></div>
         <div class="future-chip-row">
@@ -36,27 +40,15 @@
               :title="chipTitle(item)"
               @mouseenter="preview(item)"
               @mouseleave="clearPreview"
-              @click="jump(item)"
+              @click="handleChipClick($event, item)"
               @dblclick.stop="analyze(item)"
             >
               <span class="main">D{{ item.deepestDepth }}</span>
               <span class="score">{{ score(item) }}</span>
               <span class="meta">{{ item.appearances }}×</span>
             </button>
-            <div class="entry-actions">
-              <button type="button" @click.stop="toggleEntryMode(item, 'details')">Details</button>
-              <button type="button" @click.stop="toggleEntryMode(item, 'full')">Expand</button>
-            </div>
             <div v-if="entryMode(item)" class="entry-detail">
-              <dl>
-                <div><dt>Evaluation</dt><dd>{{ score(item) }}</dd></div>
-                <div><dt>Rank</dt><dd>{{ rank(item) }}</dd></div>
-                <div><dt>Appearances</dt><dd>{{ item.appearances || 0 }}×</dd></div>
-                <div><dt>First depth</dt><dd>D{{ item.firstDepth || '—' }}</dd></div>
-                <div><dt>Deepest depth</dt><dd>D{{ item.deepestDepth || '—' }}</dd></div>
-                <div><dt>Average evaluation</dt><dd>{{ averageEval(item) }}</dd></div>
-                <div><dt>Average rank</dt><dd>{{ rank(item) }}</dd></div>
-              </dl>
+              <div class="entry-summary">{{ compactSummary(item) }}</div>
               <div v-if="entryMode(item) === 'full'" class="entry-lines">
                 <p><strong>Reached by</strong> <code>{{ item.pvUCI || '—' }}</code></p>
                 <p><strong>Continuation PV</strong> <code>{{ item.continuationUCI || '—' }}</code></p>
@@ -75,7 +67,8 @@ import { mapGetters } from 'vuex'
 export default {
   name: 'FutureExplorerPanel',
   data: () => ({
-    expandedEntries: {}
+    expandedEntries: {},
+    previewClearTimer: null
   }),
   computed: {
     ...mapGetters(['futureExplorer', 'analysisVisualization']),
@@ -104,7 +97,7 @@ export default {
     saveSort () {},
     openingGroup (openingKey, opening) {
       const groups = (opening && opening.groups) || {}
-      const openingLabel = this.openingLabel(opening && opening.rootFen)
+      const openingLabel = (opening && opening.name) || this.openingLabel(opening && opening.rootFen)
       const moveGroups = Object.keys(groups).map(moveNumber => {
         const items = Object.values(groups[moveNumber] || {}).map(item => ({ ...item, moveNumber }))
         const byAppearances = this.sortMode === 'appearances'
@@ -117,6 +110,7 @@ export default {
       return {
         key: openingKey,
         label: openingLabel,
+        customName: opening && opening.name,
         moveGroups,
         positionCount: moveGroups.reduce((sum, group) => sum + group.items.length, 0)
       }
@@ -134,6 +128,15 @@ export default {
       this.allItems.forEach(item => { next[this.entryKey(item)] = mode })
       this.expandedEntries = next
     },
+    toggleAllEntryDetails (mode) {
+      const items = this.allItems
+      const allInMode = items.length > 0 && items.every(item => this.entryMode(item) === mode)
+      if (allInMode) {
+        this.expandedEntries = {}
+        return
+      }
+      this.setAllEntryDetails(mode)
+    },
     entryKey (item) {
       return `${item.moveNumber || ''}|${item.key || item.fen || item.pvUCI || ''}`
     },
@@ -144,6 +147,22 @@ export default {
       const key = this.entryKey(item)
       const next = this.entryMode(item) === mode ? '' : mode
       this.$set(this.expandedEntries, key, next)
+    },
+    handleChipClick (event, item) {
+      if (event && event.ctrlKey) {
+        this.toggleEntryMode(item, 'full')
+        return
+      }
+      this.jump(item)
+    },
+    renameOpening (opening) {
+      if (!opening || !opening.key) return
+      const nextName = prompt('Opening name', opening.customName || opening.label || '')
+      if (nextName === null) return
+      this.$store.dispatch('renameFutureExplorerOpening', {
+        rootKey: opening.key,
+        name: nextName.trim()
+      })
     },
     clearExplorer () {
       if (!confirm('Clear all stored Future Explorer positions?')) return
@@ -171,13 +190,37 @@ export default {
     averageEval (item) {
       return typeof item.averageEval === 'number' ? (item.averageEval / 100).toFixed(2) : '—'
     },
+    compactSummary (item) {
+      return [`D${item.deepestDepth || '—'}`, this.score(item), `${item.appearances || 0}×`, `D${item.firstDepth || '—'}–D${item.lastDepth || item.deepestDepth || '—'}`].join(' · ')
+    },
     rank (item) {
       return typeof item.averageRank === 'number' ? item.averageRank.toFixed(1) : '—'
     },
-    preview (item) { this.$store.dispatch('previewFuturePosition', item) },
-    clearPreview () { this.$store.dispatch('clearFuturePreview') },
-    jump (item) { this.$store.dispatch('jumpToFuturePosition', item) },
-    analyze (item) { this.$store.dispatch('analyzeFuturePosition', item) }
+    preview (item) {
+      if (this.previewClearTimer) clearTimeout(this.previewClearTimer)
+      this.previewClearTimer = null
+      this.$store.dispatch('previewFuturePosition', item)
+    },
+    clearPreview () {
+      if (this.previewClearTimer) clearTimeout(this.previewClearTimer)
+      this.previewClearTimer = setTimeout(() => {
+        this.$store.dispatch('clearFuturePreview')
+        this.previewClearTimer = null
+      }, 400)
+    },
+    jump (item) {
+      if (this.previewClearTimer) clearTimeout(this.previewClearTimer)
+      this.previewClearTimer = null
+      this.$store.dispatch('jumpToFuturePosition', item)
+    },
+    analyze (item) {
+      if (this.previewClearTimer) clearTimeout(this.previewClearTimer)
+      this.previewClearTimer = null
+      this.$store.dispatch('analyzeFuturePosition', item)
+    }
+  },
+  beforeDestroy () {
+    if (this.previewClearTimer) clearTimeout(this.previewClearTimer)
   }
 }
 </script>
@@ -193,7 +236,11 @@ export default {
 .empty { opacity: 0.75; font-size: 0.85rem; }
 .opening-group { margin-top: 0.5rem; }
 .opening-group > summary { cursor: pointer; font-weight: 600; }
+.opening-summary { display: flex; align-items: center; gap: 0.35rem; }
+.opening-summary .opening-title { opacity: 1; font-weight: 600; margin-left: 0; }
 .opening-group > summary span { opacity: 0.65; font-weight: 400; margin-left: 0.35rem; }
+.rename-opening { border: 1px solid rgba(128,128,128,0.2); border-radius: 999px; background: transparent; color: inherit; cursor: pointer; font-size: 0.68rem; padding: 0.1rem 0.32rem; opacity: 0.72; }
+.rename-opening:hover { opacity: 1; background: rgba(128,128,128,0.12); }
 .move-group { margin-top: 0.35rem; }
 .move-heading { opacity: 0.85; font-size: 0.82rem; font-weight: 700; margin: 0.25rem 0 0.15rem; }
 .move-heading span { opacity: 0.65; font-weight: 400; }
@@ -202,14 +249,8 @@ export default {
 .future-entry.expanded { display: block; width: 100%; margin: 0.15rem 0; padding: 0.35rem; border: 1px solid rgba(128,128,128,0.18); border-radius: 8px; background: rgba(128,128,128,0.05); }
 .future-chip { display: inline-flex; align-items: center; gap: 0.25rem; max-width: 100%; padding: 0.28rem 0.45rem; text-align: left; border: 1px solid rgba(128,128,128,0.25); border-radius: 999px; background: rgba(128,128,128,0.08); color: inherit; cursor: pointer; font-size: 0.78rem; }
 .future-chip:hover { background: rgba(128,128,128,0.18); }
-.entry-actions { display: inline-flex; gap: 0.15rem; }
-.entry-actions button { border: 1px solid rgba(128,128,128,0.2); border-radius: 999px; background: transparent; color: inherit; cursor: pointer; font-size: 0.68rem; padding: 0.12rem 0.32rem; opacity: 0.72; }
-.entry-actions button:hover { opacity: 1; background: rgba(128,128,128,0.12); }
 .entry-detail { margin-top: 0.35rem; font-size: 0.78rem; }
-.entry-detail dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr)); gap: 0.25rem 0.5rem; margin: 0; }
-.entry-detail dl div { min-width: 0; }
-.entry-detail dt { opacity: 0.62; }
-.entry-detail dd { margin: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.entry-summary { font-weight: 600; opacity: 0.9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .entry-lines { margin-top: 0.35rem; }
 .entry-lines p { margin: 0.15rem 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .entry-lines code { font-family: monospace; font-size: 0.76rem; }

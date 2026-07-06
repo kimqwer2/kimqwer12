@@ -56,6 +56,7 @@ function normalizeFutureExplorerState (input) {
     next.openings[rootKey] = {
       rootKey,
       rootFen: opening.rootFen || '',
+      name: opening.name || '',
       groups: opening.groups && typeof opening.groups === 'object' ? opening.groups : {},
       lastSignature: opening.lastSignature || ''
     }
@@ -66,6 +67,7 @@ function normalizeFutureExplorerState (input) {
       next.openings[rootKey] = {
         rootKey,
         rootFen: next.rootFen,
+        name: input.name || '',
         groups: input.groups,
         lastSignature: input.lastSignature || ''
       }
@@ -3228,6 +3230,7 @@ export const store = new Vuex.Store({
         Vue.set(state.futureExplorer.openings, rootKey, {
           rootKey,
           rootFen: state.fen,
+          name: '',
           groups: {},
           lastSignature: ''
         })
@@ -3278,6 +3281,12 @@ export const store = new Vuex.Store({
           current.rootFen = entry.rootFen || opening.rootFen
         }
       }
+    },
+    futureExplorerRenameOpening (state, payload) {
+      if (!payload || !payload.rootKey || !state.futureExplorer || !state.futureExplorer.openings) return
+      const opening = state.futureExplorer.openings[payload.rootKey]
+      if (!opening) return
+      Vue.set(opening, 'name', payload.name || '')
     },
     pieceStyle (state, payload) {
       state.pieceStyle = payload
@@ -6702,6 +6711,10 @@ export const store = new Vuex.Store({
       } catch (err) {
         console.warn('[future-explorer] load failed', err)
       }
+    },
+    renameFutureExplorerOpening (context, payload) {
+      context.commit('futureExplorerRenameOpening', payload)
+      return context.dispatch('persistFutureExplorer')
     },
     async persistFutureExplorer (context) {
       const data = normalizeFutureExplorerState(context.state.futureExplorer)
