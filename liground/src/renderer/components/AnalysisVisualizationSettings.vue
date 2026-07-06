@@ -48,6 +48,9 @@
       </label>
       <label><input v-model="local.realtimeGameCommentary" type="checkbox" @change="save"> 실시간 전략 해설</label>
       <label><input v-model="local.realtimeCommentaryArrows" type="checkbox" @change="save"> 실시간 전략 화살표 표시</label>
+      <label><input v-model="local.futureExplorerEnabled" type="checkbox" @change="save"> Engine Future Explorer</label>
+      <label>Future 시작 깊이 <input v-model.number="local.futureExplorerStartDepth" min="1" max="80" type="number" @change="save"></label>
+      <label>Future 시작 수 <input v-model.number="local.futureExplorerStartMove" min="1" max="120" type="number" @change="save"></label>
       <small>켜면 임시 수순이나 현재 기보 흐름이 잠시 멈춘 뒤 자동으로 엔진 리뷰를 반영합니다. 화살표 옵션은 실시간 전략 해설이 만든 표시만 조절하며 일반 엔진/수순 리뷰 표시는 유지됩니다.</small>
       <small>깊게/전문가 모드는 느리지만 지연 전술, 장기 압박, 응징 수순을 더 오래 추적합니다.</small>
     </details>

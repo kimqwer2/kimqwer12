@@ -1109,10 +1109,20 @@ export default {
       return (orig, dest, metadata) => {
         const mode = this.boardInteractionMode
         if (mode === BOARD_INTERACTION_MODES.BOARD_EDITOR) {
+          if (!dest) {
+            const pieces = { ...(this.board.state.pieces || {}) }
+            delete pieces[orig]
+            this.board.set({ pieces })
+          } else if (metadata && metadata.ctrlKey && orig && dest && orig !== dest) {
+            const pieces = { ...(this.board.state.pieces || {}) }
+            const movedPiece = pieces[dest]
+            if (movedPiece) pieces[orig] = { ...movedPiece }
+            this.board.set({ pieces })
+          }
           const editedFen = this.board.getFen()
           this.$store.dispatch('fen', editedFen)
           this.$store.dispatch('lastFen', editedFen)
-          this.board.state.lastMove = [orig, dest]
+          this.board.state.lastMove = dest ? [orig, dest] : undefined
           this.drawShapes()
           return
         }
