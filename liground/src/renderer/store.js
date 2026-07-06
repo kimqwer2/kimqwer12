@@ -6646,14 +6646,16 @@ export const store = new Vuex.Store({
         return context.dispatch('fen', payload.fen)
       }
 
-      const board = new ffish.Board(context.state.variant, rootFen, context.getters.is960)
+      const board = context.getters.is960
+        ? new ffish.Board(context.state.variant, rootFen, true)
+        : new ffish.Board(context.state.variant, rootFen)
       const legalMoves = []
       for (const move of moves) {
         if (!board.legalMoves().includes(move)) break
         legalMoves.push(move)
         board.push(move)
       }
-      if (!legalMoves.length) {
+      if (legalMoves.length !== moves.length) {
         return context.dispatch('fen', payload.fen)
       }
 
@@ -6670,11 +6672,20 @@ export const store = new Vuex.Store({
       })
       await context.dispatch('fen', finalFen)
       if (then) {
+        let continuationSan = then
+        try {
+          const continuationBoard = context.getters.is960
+            ? new ffish.Board(context.state.variant, finalFen, true)
+            : new ffish.Board(context.state.variant, finalFen)
+          continuationSan = continuationBoard.variationSan(then)
+        } catch (err) {
+          continuationSan = then
+        }
         context.commit('multipv', [{
           cp: payload.cp,
           mate: payload.mate,
           pvUCI: then,
-          pv: then,
+          pv: continuationSan,
           ucimove: then.split(/\s+/)[0] || ''
         }])
       }

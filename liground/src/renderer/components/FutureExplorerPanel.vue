@@ -25,20 +25,23 @@
       <summary>{{ opening.label }} <span>{{ opening.positionCount }} positions</span></summary>
       <div v-for="group in opening.moveGroups" :key="group.moveNumber" class="move-group">
         <div class="move-heading">Move {{ group.moveNumber }} <span>({{ group.items.length }})</span></div>
-        <button
-          v-for="item in group.items"
-          :key="item.key"
-          type="button"
-          class="future-row"
-          @mouseenter="preview(item)"
-          @mouseleave="clearPreview"
-          @click="jump(item)"
-          @dblclick.stop="analyze(item)"
-        >
-          <span class="main">D{{ item.deepestDepth }} · {{ score(item) }} · {{ item.appearances }}×</span>
-          <span class="meta">rank {{ rank(item) }} · seen {{ item.firstDepth }}–{{ item.lastDepth }}</span>
-          <span class="pv">{{ item.pvUCI }}</span>
-        </button>
+        <div class="future-chip-row">
+          <button
+            v-for="item in group.items"
+            :key="item.key"
+            type="button"
+            class="future-chip"
+            :title="chipTitle(item)"
+            @mouseenter="preview(item)"
+            @mouseleave="clearPreview"
+            @click="jump(item)"
+            @dblclick.stop="analyze(item)"
+          >
+            <span class="main">D{{ item.deepestDepth }}</span>
+            <span class="score">{{ score(item) }}</span>
+            <span class="meta">{{ item.appearances }}×</span>
+          </button>
+        </div>
       </div>
     </details>
   </details>
@@ -84,11 +87,25 @@ export default {
     saveSort () {},
     openingLabel (fen) {
       if (!fen) return 'Current opening'
-      return String(fen).split(/\s+/).slice(0, 2).join(' ')
+      const parts = String(fen).split(/\s+/)
+      return `Opening · ${parts.slice(0, 2).join(' ')}`
     },
     setAllOpen (open) {
+      this.openingDetailRefs().forEach(el => { el.open = open })
+    },
+    openingDetailRefs () {
       const details = this.$refs.openingDetails || []
-      ;(Array.isArray(details) ? details : [details]).forEach(el => { if (el) el.open = open })
+      return Array.isArray(details) ? details.filter(Boolean) : [details].filter(Boolean)
+    },
+    chipTitle (item) {
+      const continuation = item.continuationUCI ? `\nThen: ${item.continuationUCI}` : ''
+      return [
+        `Depth ${item.deepestDepth}`,
+        `Score ${this.score(item)}`,
+        `Rank ${this.rank(item)}`,
+        `Seen ${item.firstDepth}–${item.lastDepth}`,
+        `Reached by: ${item.pvUCI}${continuation}`
+      ].join('\n')
     },
     score (item) {
       if (typeof item.mate === 'number') return `#${item.mate}`
@@ -120,10 +137,11 @@ export default {
 .move-group { margin-top: 0.35rem; }
 .move-heading { opacity: 0.85; font-size: 0.82rem; font-weight: 700; margin: 0.25rem 0 0.15rem; }
 .move-heading span { opacity: 0.65; font-weight: 400; }
-.future-row { display: block; width: 100%; margin: 0.16rem 0; padding: 0.35rem 0.45rem; text-align: left; border: 1px solid rgba(128,128,128,0.25); border-radius: 6px; background: rgba(128,128,128,0.08); color: inherit; cursor: pointer; }
-.future-row:hover { background: rgba(128,128,128,0.18); }
-.main, .meta, .pv { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.future-chip-row { display: flex; flex-wrap: wrap; gap: 0.25rem; }
+.future-chip { display: inline-flex; align-items: center; gap: 0.25rem; max-width: 100%; padding: 0.28rem 0.45rem; text-align: left; border: 1px solid rgba(128,128,128,0.25); border-radius: 999px; background: rgba(128,128,128,0.08); color: inherit; cursor: pointer; font-size: 0.78rem; }
+.future-chip:hover { background: rgba(128,128,128,0.18); }
+.main, .score, .meta { display: inline-block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .main { font-weight: 600; }
-.meta { opacity: 0.7; font-size: 0.8rem; }
-.pv { font-family: monospace; font-size: 0.78rem; margin-top: 0.1rem; }
+.score { max-width: 4rem; }
+.meta { opacity: 0.7; }
 </style>
