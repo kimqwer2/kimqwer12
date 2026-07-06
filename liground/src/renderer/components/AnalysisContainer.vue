@@ -70,6 +70,7 @@
         class="panel-qt"
       />
       <AnalysisVisualizationSettings />
+      <FutureExplorerPanel />
       <div
         v-if="QuickTourIndex !== 13"
         class="game-window panel noselect"
@@ -128,6 +129,7 @@ import MoveHistoryNode from './MoveHistoryNode'
 import RoundedSwitch from './RoundedSwitch'
 import EngineSelect from './EngineSelect'
 import AnalysisVisualizationSettings from './AnalysisVisualizationSettings.vue'
+import FutureExplorerPanel from './FutureExplorerPanel.vue'
 import ffish from 'ffish'
 
 export default {
@@ -140,7 +142,8 @@ export default {
     MoveHistoryNode,
     RoundedSwitch,
     EngineSelect,
-    AnalysisVisualizationSettings
+    AnalysisVisualizationSettings,
+    FutureExplorerPanel
   },
   data () {
     return {
