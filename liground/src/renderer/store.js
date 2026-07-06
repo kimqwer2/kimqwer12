@@ -25,6 +25,69 @@ const MIN_CACHE_DEPTH = 20
 let lastCacheKey = null
 let lastFocusModeGetterLog = null
 
+function emptyFutureExplorerState () {
+  return {
+    enabled: true,
+    sortMode: 'depth',
+    rootFen: '',
+    rootKey: '',
+    groups: {},
+    lastSignature: ''
+  }
+}
+
+function boardFenKey (fen) {
+  return String(fen || '').split(/\s+/).slice(0, 4).join(' ')
+}
+
+function futureExplorerEntryFromPv (state, payload) {
+  const cfg = state.analysisVisualization || {}
+  if (!payload || !cfg.futureExplorerEnabled || typeof payload.pv !== 'string') return []
+  const depth = Number(payload.depth) || 0
+  const startDepth = Math.max(1, Number(cfg.futureExplorerStartDepth) || 20)
+  if (depth < startDepth) return []
+  const startMove = Math.max(1, Number(cfg.futureExplorerStartMove) || 15)
+  const maxMove = Math.max(startMove, Number(cfg.futureExplorerMaxMove) || 60)
+  const pvMoves = payload.pv.split(/\s+/).filter(Boolean)
+  if (!pvMoves.length) return []
+  const limit = Math.min(pvMoves.length, depth, maxMove)
+  if (limit < startMove) return []
+  const board = state.board
+  if (!board) return []
+  const savedFen = board.fen()
+  const entries = []
+  try {
+    board.setFen(state.fen)
+    for (let idx = 0; idx < limit; idx++) {
+      const move = pvMoves[idx]
+      if (!move || !board.legalMoves().includes(move)) break
+      board.push(move)
+      const moveNumber = idx + 1
+      if (moveNumber >= startMove) {
+        entries.push({
+          key: boardFenKey(board.fen()),
+          fen: board.fen(),
+          moveNumber,
+          depth,
+          rank: Number(payload.multipv) || 1,
+          cp: payload.cp,
+          mate: payload.mate,
+          pvUCI: pvMoves.slice(0, moveNumber).join(' '),
+          continuationUCI: pvMoves.slice(moveNumber).join(' '),
+          firstMove: pvMoves[0],
+          lastMove: move,
+          signature: `${depth}|${Number(payload.multipv) || 1}|${moveNumber}|${boardFenKey(board.fen())}|${payload.pv}`
+        })
+      }
+    }
+  } catch (err) {
+    // Ignore transient PVs that are no longer legal for the currently displayed root.
+  } finally {
+    try { board.setFen(savedFen) } catch (err) {}
+  }
+  return entries
+}
+
 function logFocusMode (stage, payload) {
   console.log(`[FocusMode] ${stage}`, payload)
 }
@@ -2642,8 +2705,14 @@ export const store = new Vuex.Store({
       reviewDetailLevel: 'balanced',
       realtimeGameCommentary: false,
       realtimeCommentaryArrows: false,
-      debugReviewPipeline: false
+      debugReviewPipeline: false,
+      futureExplorerEnabled: true,
+      futureExplorerStartDepth: 20,
+      futureExplorerStartMove: 15,
+      futureExplorerMaxMove: 60,
+      futureExplorerSortMode: 'depth'
     },
+    futureExplorer: emptyFutureExplorerState(),
     deepAnalysis: {
       running: false,
       error: null,
@@ -3102,6 +3171,54 @@ export const store = new Vuex.Store({
           ucimove: ''
         }
       ]
+    },
+    futureExplorerReset (state) {
+      state.futureExplorer = emptyFutureExplorerState()
+    },
+    futureExplorerRecord (state, payload) {
+      const rootKey = boardFenKey(state.fen)
+      if (!state.futureExplorer || state.futureExplorer.rootKey !== rootKey) {
+        state.futureExplorer = { ...emptyFutureExplorerState(), rootFen: state.fen, rootKey }
+      }
+      for (const entry of payload || []) {
+        if (!entry || !entry.key || entry.signature === state.futureExplorer.lastSignature) continue
+        state.futureExplorer.lastSignature = entry.signature
+        const groupKey = String(entry.moveNumber)
+        if (!state.futureExplorer.groups[groupKey]) Vue.set(state.futureExplorer.groups, groupKey, {})
+        const group = state.futureExplorer.groups[groupKey]
+        const current = group[entry.key]
+        const score = scoreToCpForStore(entry)
+        if (!current) {
+          Vue.set(group, entry.key, {
+            ...entry,
+            appearances: 1,
+            firstDepth: entry.depth,
+            lastDepth: entry.depth,
+            deepestDepth: entry.depth,
+            rankTotal: entry.rank,
+            evalTotal: typeof score === 'number' ? score : 0,
+            evalSamples: typeof score === 'number' ? 1 : 0,
+            averageRank: entry.rank,
+            averageEval: typeof score === 'number' ? score : null
+          })
+        } else {
+          current.appearances += 1
+          current.lastDepth = Math.max(current.lastDepth || 0, entry.depth)
+          current.deepestDepth = Math.max(current.deepestDepth || 0, entry.depth)
+          current.firstDepth = Math.min(current.firstDepth || entry.depth, entry.depth)
+          current.rankTotal = (current.rankTotal || 0) + entry.rank
+          if (typeof score === 'number') {
+            current.evalTotal = (current.evalTotal || 0) + score
+            current.evalSamples = (current.evalSamples || 0) + 1
+            current.averageEval = current.evalTotal / current.evalSamples
+          }
+          current.averageRank = current.rankTotal / current.appearances
+          current.cp = entry.cp
+          current.mate = entry.mate
+          current.pvUCI = entry.pvUCI
+          current.continuationUCI = entry.continuationUCI
+        }
+      }
     },
     pieceStyle (state, payload) {
       state.pieceStyle = payload
@@ -5387,6 +5504,8 @@ export const store = new Vuex.Store({
       // update pvline. Display eval is deliberately anchored to root MultiPV #1 only;
       // speculative/personality candidates remain internal diagnostics and must not move the eval bar.
       if ('pv' in payload) {
+        const futureEntries = futureExplorerEntryFromPv(context.state, payload)
+        if (futureEntries.length) context.commit('futureExplorerRecord', futureEntries)
         const rootRank = Number(payload.multipv) || 1
         if (rootRank === 1) {
           const rootEval = typeof payload.cp === 'number' ? payload.cp : context.state.lastAnalysisResult.cp
@@ -6492,6 +6611,31 @@ export const store = new Vuex.Store({
     },
     clearDeepAnalysis (context) {
       context.commit('deepAnalysisClear')
+    },
+    previewFuturePosition (context, payload) {
+      if (!payload || !payload.fen) return
+      context.commit('reviewPreviewSet', {
+        previewFen: payload.fen,
+        ply: payload.moveNumber,
+        move: payload.lastMove,
+        bestResponse: payload.continuationUCI ? payload.continuationUCI.split(/\s+/)[0] : '',
+        overlays: []
+      })
+    },
+    clearFuturePreview (context) {
+      context.commit('reviewPreviewClear')
+    },
+    jumpToFuturePosition (context, payload) {
+      if (!payload || !payload.fen) return
+      context.commit('reviewPreviewClear')
+      return context.dispatch('fen', payload.fen)
+    },
+    analyzeFuturePosition (context, payload) {
+      if (!payload || !payload.fen) return
+      context.commit('reviewPreviewClear')
+      context.dispatch('fen', payload.fen)
+      context.commit('analysisMode', true)
+      context.dispatch('startEngine')
     },
     jumpToReviewMove (context, move) {
       if (!move || !move.previewFen) return
@@ -7631,6 +7775,9 @@ export const store = new Vuex.Store({
     },
     reviewResult (state) {
       return state.review.currentResult
+    },
+    futureExplorer (state) {
+      return state.futureExplorer || emptyFutureExplorerState()
     },
     reviewSequence (state) {
       return state.review.sequence
