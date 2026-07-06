@@ -2,7 +2,7 @@
 
 import { app, BrowserWindow, dialog, ipcMain, Menu } from 'electron'
 import path from 'path'
-import { addGamePath, removeGamePath, getAllSavedGamePaths, clearAllGamePaths } from './gameStorage'
+import { addGamePath, removeGamePath, getAllSavedGamePaths, clearAllGamePaths, listSavedGameLibrary, saveGameToLibrary, readSavedGame, renameSavedGame, deleteSavedGame, savedGamesDirectory } from './gameStorage'
 import { createSchema, insertEval, getEvals } from './evalCache'
 import { createReviewSchema, getReviewResult, insertReviewResult } from './reviewCache'
 import { analyzeReviewRequest, buildReviewCacheKey } from '../shared/review/reviewService'
@@ -208,6 +208,48 @@ ipcMain.handle('show-context-menu', async (event, template) => {
     return true
   } catch (err) {
     return false
+  }
+})
+
+
+// IPC handlers for the built-in Saved Games library
+ipcMain.handle('saved-games-library-list', async () => {
+  try {
+    return { success: true, games: listSavedGameLibrary(), directory: savedGamesDirectory() }
+  } catch (err) {
+    return { success: false, error: err.message, games: [] }
+  }
+})
+
+ipcMain.handle('saved-games-library-save', async (_event, payload) => {
+  try {
+    return { success: true, game: saveGameToLibrary(payload || {}) }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+
+ipcMain.handle('saved-games-library-read', async (_event, filePath) => {
+  try {
+    return { success: true, game: readSavedGame(filePath) }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+
+ipcMain.handle('saved-games-library-rename', async (_event, payload) => {
+  try {
+    return { success: true, game: renameSavedGame(payload.filePath, payload.name) }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+
+ipcMain.handle('saved-games-library-delete', async (_event, filePath) => {
+  try {
+    return { success: true, deleted: deleteSavedGame(filePath) }
+  } catch (err) {
+    return { success: false, error: err.message }
   }
 })
 

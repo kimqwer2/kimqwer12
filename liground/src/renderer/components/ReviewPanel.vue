@@ -419,7 +419,11 @@ export default {
     },
     selectMove (move) {
       this.selectedPly = move && move.ply
-      this.previewMove(move)
+      if (move && move.previewFen) {
+        this.$store.dispatch('jumpToReviewMove', move)
+      } else {
+        this.previewMove(move)
+      }
     },
     previewMove (move) {
       this.hoveredMove = move
@@ -542,7 +546,7 @@ export default {
   flex: 0 0 auto;
   flex-direction: column;
   min-height: 0;
-  max-height: min(52vh, 660px);
+  max-height: min(72vh, 860px);
   margin: 10px 0;
   padding: 0;
   background: var(--second-bg-color);
@@ -634,7 +638,11 @@ h3, h4, p {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+  max-height: 28vh;
   margin-top: 6px;
+  padding-right: 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .move-chip {
   display: inline-flex;

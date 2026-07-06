@@ -2559,6 +2559,7 @@ export const store = new Vuex.Store({
     viewAnalysis: true,
     analysisMode: true,
     editorMode: false,
+    gameEditMode: false,
     review: emptyReviewState(),
     openingGraph: createOpeningGraph(),
     openingBook: {
@@ -3199,6 +3200,18 @@ export const store = new Vuex.Store({
       }
       state.lastFen = state.board.fen()
     },
+    replaceMainContinuation (state, payload) {
+      const prev = payload && payload.prev
+      const move = payload && payload.move
+      if (!move) return
+      if (prev) {
+        prev.main = move
+        prev.next = [move]
+      } else {
+        state.mainFirstMove = move
+        state.firstMoves = [move]
+      }
+    },
     playAudio (state, move) { // Sounds from lichess https://github.com/ornicar/lila
       if (state.openedPGN) {
         return
@@ -3241,6 +3254,9 @@ export const store = new Vuex.Store({
     },
     editorMode (state, payload) {
       state.editorMode = payload
+    },
+    gameEditMode (state, payload) {
+      state.gameEditMode = payload
     },
     analysisVisualization (state, payload) {
       state.analysisVisualization = { ...state.analysisVisualization, ...payload }
@@ -3382,6 +3398,16 @@ export const store = new Vuex.Store({
     },
     reviewPreviewClear (state) {
       state.review.preview = { active: false, fen: '', move: null, overlays: [] }
+    },
+    reviewRestoreSession (state, payload) {
+      if (!payload) return
+      state.review.currentResult = payload.currentResult || null
+      state.review.overlays = payload.overlays || []
+      state.review.markerMode = payload.markerMode || state.review.markerMode
+      state.review.resultsById = payload.resultsById || {}
+      state.review.recheckByPly = {}
+      state.review.preview = { active: false, fen: '', move: null, overlays: [] }
+      state.review.sequence = { ...state.review.sequence, active: false }
     },
     reviewSetError (state, payload) {
       state.review.loading = false
@@ -3831,7 +3857,14 @@ export const store = new Vuex.Store({
           context.commit('mistakePreventionPending', false)
         }
       }
+      if (context.state.board && context.state.fen && context.state.board.fen && context.state.board.fen() !== context.state.fen) {
+        context.state.board.setFen(context.state.fen)
+      }
       context.commit('appendMoves', payload)
+      if (context.state.gameEditMode) {
+        const edited = context.getters.getMoveByUCIAndPrev(String(payload.move || '').split(' ')[0], payload.prev)[0]
+        context.commit('replaceMainContinuation', { prev: payload.prev, move: edited })
+      }
       return context.dispatch('fen', context.state.board.fen()).then(() => {
         // Only check for game end if a game was started via the new game modal
         if (context.state.gameConfig) {
@@ -5023,6 +5056,11 @@ export const store = new Vuex.Store({
     },
     fen (context, payload) {
       if (context.state.fen !== payload) {
+        if (context.state.board && context.state.board.setFen) {
+          context.state.board.setFen(payload)
+          context.commit('turn', context.state.board.turn())
+          context.commit('legalMoves', context.state.board.legalMoves())
+        }
         context.commit('fen', payload)
         context.dispatch('updateBoard')
         context.dispatch('restartEngine')
@@ -6336,10 +6374,13 @@ export const store = new Vuex.Store({
       }
       await context.dispatch('fen', context.state.startFen)
       let prev
-      for (const move of moves) {
-        context.commit('appendMoves', { move, prev })
+      const comments = payload && payload.comments ? payload.comments : {}
+      for (const [idx, move] of moves.entries()) {
+        context.commit('appendMoves', { move, prev, comment: comments[String(idx)] || comments[idx] })
         prev = context.state.moves[context.state.moves.length - 1]
       }
+      if (payload && payload.gameInfo) context.commit('gameInfo', payload.gameInfo)
+      if (payload && payload.review) context.commit('reviewRestoreSession', payload.review)
       context.dispatch('updateBoard')
       context.dispatch('position')
     },
@@ -6388,6 +6429,7 @@ export const store = new Vuex.Store({
         context.dispatch('stopEngine')
       }
       context.commit('editorMode', enteringEditor)
+      context.commit('gameEditMode', false)
       if (enteringEditor) {
         context.commit('analysisMode', false)
       } else {
@@ -6398,6 +6440,17 @@ export const store = new Vuex.Store({
         if (context.state.analysisMode) {
           context.dispatch('goEngine')
         }
+      }
+    },
+    toggleGameEditMode (context) {
+      const entering = !context.state.gameEditMode
+      if (entering && context.state.active) {
+        context.dispatch('stopEngine')
+      }
+      context.commit('gameEditMode', entering)
+      if (entering) {
+        context.commit('editorMode', false)
+        context.commit('analysisMode', true)
       }
     },
     analysisVisualization (context, payload) {
@@ -6439,6 +6492,11 @@ export const store = new Vuex.Store({
     },
     clearDeepAnalysis (context) {
       context.commit('deepAnalysisClear')
+    },
+    jumpToReviewMove (context, move) {
+      if (!move || !move.previewFen) return
+      context.commit('reviewPreviewClear')
+      return context.dispatch('fen', move.previewFen)
     },
     setReviewMarkerMode (context, payload) {
       context.commit('reviewMarkerMode', payload)
@@ -7098,6 +7156,45 @@ export const store = new Vuex.Store({
       const anchor = current || state.moves[state.moves.length - 1]
       return buildMainlineFromMove(anchor).map(move => move.uci)
     },
+    savedGameSnapshot (state, getters) {
+      const current = state.moves.find(m => m.fen === state.fen)
+      const anchor = current || state.moves[state.moves.length - 1]
+      const line = buildMainlineFromMove(anchor)
+      const comments = {}
+      line.forEach((move, idx) => {
+        if (move.comment) comments[String(idx)] = move.comment
+      })
+      return {
+        variant: state.variant,
+        startFen: state.startFen,
+        moves: line.map(move => move.uci),
+        comments,
+        gameInfo: state.gameInfo || {},
+        review: {
+          currentResult: state.review && state.review.currentResult,
+          overlays: state.review && state.review.overlays,
+          markerMode: state.review && state.review.markerMode,
+          resultsById: state.review && state.review.resultsById
+        },
+        analysis: {
+          review: {
+            currentResult: state.review && state.review.currentResult,
+            overlays: state.review && state.review.overlays,
+            markerMode: state.review && state.review.markerMode,
+            resultsById: state.review && state.review.resultsById
+          },
+          lastAnalysisResult: state.lastAnalysisResult,
+          multipv: state.multipv,
+          analysisVisualization: state.analysisVisualization
+        },
+        metadata: {
+          name: (state.gameInfo && (state.gameInfo.Event || state.gameInfo.WhiteTitle)) || 'Untitled Game',
+          result: (state.gameInfo && state.gameInfo.Result) || '*',
+          moveCount: line.length,
+          variant: state.variant
+        }
+      }
+    },
     openingCandidates (state) {
       if (!state.openingBook || !state.openingBook.enabled) return []
       const recommendationCount = Math.max(1, Math.min(8, Number(state.openingBook.recommendationCount) || 3))
@@ -7513,6 +7610,9 @@ export const store = new Vuex.Store({
     },
     editorMode (state) {
       return state.editorMode
+    },
+    gameEditMode (state) {
+      return state.gameEditMode
     },
     analysisVisualization (state) {
       return state.analysisVisualization
