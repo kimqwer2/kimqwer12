@@ -26,33 +26,54 @@
       class="opening-group"
     >
       <summary class="opening-summary">
-        <span class="opening-title">{{ opening.label }}</span>
-        <span>{{ opening.positionCount }} positions</span>
-        <button type="button" class="rename-opening" @click.prevent.stop="renameOpening(opening)">Rename</button>
+        <span v-if="editingOpeningKey !== opening.key" class="opening-title">{{ opening.label }}</span>
+        <input
+          v-else
+          v-model="editingOpeningName"
+          class="opening-name-input"
+          type="text"
+          @click.stop
+          @keydown.enter.prevent="saveOpeningName(opening)"
+          @keydown.esc.prevent="cancelOpeningName"
+        >
+        <span class="opening-meta">{{ opening.positionCount }} positions<span v-if="opening.customName"> · {{ opening.fallbackLabel }}</span></span>
+        <button
+          v-if="editingOpeningKey !== opening.key"
+          type="button"
+          class="rename-opening"
+          @click.prevent.stop="startOpeningNameEdit(opening)"
+        >Rename</button>
+        <template v-else>
+          <button type="button" class="rename-opening" @click.prevent.stop="saveOpeningName(opening)">Save</button>
+          <button type="button" class="rename-opening" @click.prevent.stop="cancelOpeningName">Cancel</button>
+        </template>
       </summary>
       <div v-for="group in opening.moveGroups" :key="group.moveNumber" class="move-group">
         <div class="move-heading">Move {{ group.moveNumber }} <span>({{ group.items.length }})</span></div>
         <div class="future-chip-row">
-          <article v-for="item in group.items" :key="entryKey(item)" class="future-entry" :class="{ expanded: entryMode(item) }">
+          <article v-for="item in group.items" :key="entryKey(item)" class="future-entry" :class="{ full: entryMode(item) === 'full' }">
             <button
               type="button"
               class="future-chip"
+              :class="{ expanded: entryMode(item) }"
               :title="chipTitle(item)"
               @mouseenter="preview(item)"
               @mouseleave="clearPreview"
               @click="handleChipClick($event, item)"
               @dblclick.stop="analyze(item)"
             >
-              <span class="main">D{{ item.deepestDepth }}</span>
-              <span class="score">{{ score(item) }}</span>
-              <span class="meta">{{ item.appearances }}×</span>
+              <template v-if="entryMode(item)">
+                <span>{{ compactSummary(item) }}</span>
+              </template>
+              <template v-else>
+                <span class="main">D{{ item.deepestDepth }}</span>
+                <span class="score">{{ score(item) }}</span>
+                <span class="meta">{{ item.appearances }}×</span>
+              </template>
             </button>
-            <div v-if="entryMode(item)" class="entry-detail">
-              <div class="entry-summary">{{ compactSummary(item) }}</div>
-              <div v-if="entryMode(item) === 'full'" class="entry-lines">
-                <p><strong>Reached by</strong> <code>{{ item.pvUCI || '—' }}</code></p>
-                <p><strong>Continuation PV</strong> <code>{{ item.continuationUCI || '—' }}</code></p>
-              </div>
+            <div v-if="entryMode(item) === 'full'" class="entry-lines">
+              <p><strong>Reached by</strong> <code>{{ item.pvUCI || '—' }}</code></p>
+              <p><strong>Continuation PV</strong> <code>{{ item.continuationUCI || '—' }}</code></p>
             </div>
           </article>
         </div>
@@ -68,7 +89,9 @@ export default {
   name: 'FutureExplorerPanel',
   data: () => ({
     expandedEntries: {},
-    previewClearTimer: null
+    previewClearTimer: null,
+    editingOpeningKey: '',
+    editingOpeningName: ''
   }),
   computed: {
     ...mapGetters(['futureExplorer', 'analysisVisualization']),
@@ -97,7 +120,8 @@ export default {
     saveSort () {},
     openingGroup (openingKey, opening) {
       const groups = (opening && opening.groups) || {}
-      const openingLabel = (opening && opening.name) || this.openingLabel(opening && opening.rootFen)
+      const fallbackLabel = this.openingLabel(opening && opening.rootFen)
+      const openingLabel = (opening && opening.name) || fallbackLabel
       const moveGroups = Object.keys(groups).map(moveNumber => {
         const items = Object.values(groups[moveNumber] || {}).map(item => ({ ...item, moveNumber }))
         const byAppearances = this.sortMode === 'appearances'
@@ -110,6 +134,7 @@ export default {
       return {
         key: openingKey,
         label: openingLabel,
+        fallbackLabel,
         customName: opening && opening.name,
         moveGroups,
         positionCount: moveGroups.reduce((sum, group) => sum + group.items.length, 0)
@@ -155,14 +180,29 @@ export default {
       }
       this.jump(item)
     },
-    renameOpening (opening) {
+    startOpeningNameEdit (opening) {
       if (!opening || !opening.key) return
-      const nextName = prompt('Opening name', opening.customName || opening.label || '')
-      if (nextName === null) return
+      this.editingOpeningKey = opening.key
+      this.editingOpeningName = opening.customName || opening.label || ''
+      this.$nextTick(() => {
+        const input = this.$el && this.$el.querySelector('.opening-name-input')
+        if (input) {
+          input.focus()
+          input.select()
+        }
+      })
+    },
+    saveOpeningName (opening) {
+      if (!opening || !opening.key) return
       this.$store.dispatch('renameFutureExplorerOpening', {
         rootKey: opening.key,
-        name: nextName.trim()
+        name: this.editingOpeningName.trim()
       })
+      this.cancelOpeningName()
+    },
+    cancelOpeningName () {
+      this.editingOpeningKey = ''
+      this.editingOpeningName = ''
     },
     clearExplorer () {
       if (!confirm('Clear all stored Future Explorer positions?')) return
@@ -184,14 +224,19 @@ export default {
     },
     score (item) {
       if (typeof item.mate === 'number') return `#${item.mate}`
-      if (typeof item.averageEval === 'number') return (item.averageEval / 100).toFixed(2)
+      if (typeof item.averageEval === 'number') {
+        const value = item.averageEval / 100
+        return `${value > 0 ? '+' : ''}${value.toFixed(2)}`
+      }
       return '—'
     },
     averageEval (item) {
-      return typeof item.averageEval === 'number' ? (item.averageEval / 100).toFixed(2) : '—'
+      if (typeof item.averageEval !== 'number') return '—'
+      const value = item.averageEval / 100
+      return `${value > 0 ? '+' : ''}${value.toFixed(2)}`
     },
     compactSummary (item) {
-      return [`D${item.deepestDepth || '—'}`, this.score(item), `${item.appearances || 0}×`, `D${item.firstDepth || '—'}–D${item.lastDepth || item.deepestDepth || '—'}`].join(' · ')
+      return [`D${item.deepestDepth || '—'}`, this.score(item), `${item.appearances || 0}×`, `D${item.firstDepth || '—'}–${item.deepestDepth || '—'}`].join(' · ')
     },
     rank (item) {
       return typeof item.averageRank === 'number' ? item.averageRank.toFixed(1) : '—'
@@ -239,20 +284,21 @@ export default {
 .opening-summary { display: flex; align-items: center; gap: 0.35rem; }
 .opening-summary .opening-title { opacity: 1; font-weight: 600; margin-left: 0; }
 .opening-group > summary span { opacity: 0.65; font-weight: 400; margin-left: 0.35rem; }
+.opening-group > summary .opening-meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.opening-name-input { min-width: 10rem; max-width: 18rem; border: 1px solid rgba(128,128,128,0.35); border-radius: 4px; background: rgba(128,128,128,0.08); color: inherit; font: inherit; padding: 0.12rem 0.3rem; }
 .rename-opening { border: 1px solid rgba(128,128,128,0.2); border-radius: 999px; background: transparent; color: inherit; cursor: pointer; font-size: 0.68rem; padding: 0.1rem 0.32rem; opacity: 0.72; }
 .rename-opening:hover { opacity: 1; background: rgba(128,128,128,0.12); }
 .move-group { margin-top: 0.35rem; }
 .move-heading { opacity: 0.85; font-size: 0.82rem; font-weight: 700; margin: 0.25rem 0 0.15rem; }
 .move-heading span { opacity: 0.65; font-weight: 400; }
 .future-chip-row { display: flex; flex-wrap: wrap; gap: 0.25rem; }
-.future-entry { display: inline-flex; align-items: center; gap: 0.2rem; max-width: 100%; }
-.future-entry.expanded { display: block; width: 100%; margin: 0.15rem 0; padding: 0.35rem; border: 1px solid rgba(128,128,128,0.18); border-radius: 8px; background: rgba(128,128,128,0.05); }
+.future-entry { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 0.15rem; max-width: min(100%, 28rem); }
+.future-entry.full { padding: 0.2rem; border: 1px solid rgba(128,128,128,0.16); border-radius: 10px; background: rgba(128,128,128,0.04); }
 .future-chip { display: inline-flex; align-items: center; gap: 0.25rem; max-width: 100%; padding: 0.28rem 0.45rem; text-align: left; border: 1px solid rgba(128,128,128,0.25); border-radius: 999px; background: rgba(128,128,128,0.08); color: inherit; cursor: pointer; font-size: 0.78rem; }
+.future-chip.expanded { font-weight: 600; }
 .future-chip:hover { background: rgba(128,128,128,0.18); }
-.entry-detail { margin-top: 0.35rem; font-size: 0.78rem; }
-.entry-summary { font-weight: 600; opacity: 0.9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.entry-lines { margin-top: 0.35rem; }
-.entry-lines p { margin: 0.15rem 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.entry-lines { max-width: 100%; font-size: 0.76rem; }
+.entry-lines p { margin: 0.08rem 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .entry-lines code { font-family: monospace; font-size: 0.76rem; }
 .main, .score, .meta { display: inline-block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .main { font-weight: 600; }
