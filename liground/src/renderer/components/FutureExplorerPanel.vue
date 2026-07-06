@@ -91,32 +91,47 @@
           </article>
         </div>
       </div>
-      <details class="piece-activity" @toggle="handlePieceActivityToggle($event, opening)">
-        <summary class="piece-activity-summary">Piece Activity <span>({{ opening.positionCount }} positions)</span></summary>
-        <div v-if="pieceActivityLoading[opening.key]" class="piece-activity-loading">Calculating piece activity…</div>
-        <div v-else-if="pieceActivityFor(opening)" class="piece-activity-body">
-          <div class="piece-tabs" role="tablist" aria-label="Piece activity side">
-            <button type="button" :class="{ active: pieceActivitySide(opening.key) === 'cho' }" @click="setPieceActivitySide(opening.key, 'cho')">Cho</button>
-            <button type="button" :class="{ active: pieceActivitySide(opening.key) === 'han' }" @click="setPieceActivitySide(opening.key, 'han')">Han</button>
-          </div>
-          <div class="piece-activity-grid">
-            <article v-for="piece in pieceActivityPieces(opening)" :key="piece.id" class="piece-card">
-              <h4>{{ piece.label }}</h4>
-              <dl>
-                <div><dt>Move Rate</dt><dd>{{ piece.moveRate }}%</dd></div>
-                <div><dt>Average First Move</dt><dd>{{ piece.averageFirstMove }}</dd></div>
-              </dl>
-              <div class="top-moves">
-                <strong>Top Destinations</strong>
-                <p v-if="!piece.topMoves.length" class="muted">No first moves</p>
-                <div v-for="move in piece.topMoves" :key="move.destination" class="top-move-row">
-                  <code>{{ move.destination }}</code><span>{{ move.percent }}%</span>
+      <section class="piece-activity">
+        <button type="button" class="piece-activity-summary" :aria-expanded="pieceActivityExpanded(opening.key) ? 'true' : 'false'" @click="togglePieceActivity(opening)">
+          <span class="piece-activity-caret">{{ pieceActivityExpanded(opening.key) ? '▼' : '▶' }}</span>
+          <span>Piece Activity</span>
+          <small>({{ opening.positionCount }} positions)</small>
+        </button>
+        <div v-if="pieceActivityExpanded(opening.key)" class="piece-activity-panel">
+          <div v-if="pieceActivityLoading[opening.key]" class="piece-activity-loading">Calculating piece activity…</div>
+          <div v-else-if="pieceActivityFor(opening)" class="piece-activity-body">
+            <p class="piece-activity-note">Top Destinations are based on each piece's first move in every analyzed position for this Opening.</p>
+            <div class="piece-tabs" role="tablist" aria-label="Piece activity side">
+              <button type="button" :class="{ active: pieceActivitySide(opening.key) === 'cho' }" @click="setPieceActivitySide(opening.key, 'cho')">Cho</button>
+              <button type="button" :class="{ active: pieceActivitySide(opening.key) === 'han' }" @click="setPieceActivitySide(opening.key, 'han')">Han</button>
+            </div>
+            <div class="piece-activity-grid">
+              <article
+                v-for="piece in pieceActivityPieces(opening)"
+                :key="piece.id"
+                class="piece-card"
+                :title="`Starts on ${piece.square}`"
+                @mouseenter="highlightPieceStart(piece)"
+                @mouseleave="clearPieceStartHighlight"
+              >
+                <h4>{{ piece.label }}</h4>
+                <dl>
+                  <div><dt>Starting Square</dt><dd>{{ piece.square }}</dd></div>
+                  <div><dt>Move Rate</dt><dd>{{ piece.moveRate }}%</dd></div>
+                  <div><dt>Average First Move</dt><dd>{{ piece.averageFirstMove }}</dd></div>
+                </dl>
+                <div class="top-moves">
+                  <strong>Top Destinations</strong>
+                  <p v-if="!piece.topMoves.length" class="muted">No first moves</p>
+                  <div v-for="move in piece.topMoves" :key="move.destination" class="top-move-row">
+                    <code>{{ move.destination }}</code><span>{{ move.percent }}%</span>
+                  </div>
                 </div>
-              </div>
-            </article>
+              </article>
+            </div>
           </div>
         </div>
-      </details>
+      </section>
     </details>
   </details>
 </template>
@@ -133,7 +148,9 @@ export default {
     editingOpeningName: '',
     pieceActivityCache: {},
     pieceActivityLoading: {},
-    pieceActivitySides: {}
+    pieceActivitySides: {},
+    expandedPieceActivity: {},
+    pieceActivityTimers: {}
   }),
   computed: {
     ...mapGetters(['futureExplorer', 'analysisVisualization']),
@@ -167,18 +184,35 @@ export default {
   },
   methods: {
     saveSort () {},
-    handlePieceActivityToggle (event, opening) {
-      if (!event || !event.target || !event.target.open || !opening || !opening.key) return
-      if (this.pieceActivityCache[opening.key] || this.pieceActivityLoading[opening.key]) return
+    pieceActivityExpanded (openingKey) {
+      return !!this.expandedPieceActivity[openingKey]
+    },
+    togglePieceActivity (opening) {
+      if (!opening || !opening.key) return
+      const nextOpen = !this.pieceActivityExpanded(opening.key)
+      this.$set(this.expandedPieceActivity, opening.key, nextOpen)
+      if (nextOpen) this.ensurePieceActivity(opening)
+      else this.clearPieceStartHighlight()
+    },
+    ensurePieceActivity (opening) {
+      if (!opening || !opening.key) return
+      const signature = this.openingActivitySignature(opening)
+      const cached = this.pieceActivityCache[opening.key]
+      if (cached && cached.signature === signature) return
+      if (this.pieceActivityTimers[opening.key]) clearTimeout(this.pieceActivityTimers[opening.key])
       this.$set(this.pieceActivityLoading, opening.key, true)
-      this.$nextTick(() => {
-        const activity = this.calculatePieceActivity(opening)
+      const timer = setTimeout(() => {
+        const activity = this.calculatePieceActivity(opening, signature)
         this.$set(this.pieceActivityCache, opening.key, activity)
         this.$set(this.pieceActivityLoading, opening.key, false)
-      })
+        this.$delete(this.pieceActivityTimers, opening.key)
+      }, 0)
+      this.$set(this.pieceActivityTimers, opening.key, timer)
     },
     pieceActivityFor (opening) {
-      return opening && opening.key ? this.pieceActivityCache[opening.key] : null
+      if (!opening || !opening.key) return null
+      const cached = this.pieceActivityCache[opening.key]
+      return cached && cached.signature === this.openingActivitySignature(opening) ? cached : null
     },
     pieceActivitySide (openingKey) {
       return this.pieceActivitySides[openingKey] || 'cho'
@@ -190,7 +224,7 @@ export default {
       const activity = this.pieceActivityFor(opening)
       return activity ? activity[this.pieceActivitySide(opening.key)] || [] : []
     },
-    calculatePieceActivity (opening) {
+    calculatePieceActivity (opening, signature = this.openingActivitySignature(opening)) {
       const pieces = this.initialPieces(opening.rootFen)
       const byId = pieces.reduce((acc, piece) => {
         acc[piece.id] = { ...piece, moved: 0, firstMoveTotal: 0, destinations: {} }
@@ -208,12 +242,15 @@ export default {
         })
       })
       const total = Math.max(1, positions.length)
-      return ['cho', 'han'].reduce((acc, side) => {
+      const activity = ['cho', 'han'].reduce((acc, side) => {
         acc[side] = Object.values(byId)
           .filter(piece => piece.side === side)
           .map(piece => this.pieceActivitySummary(piece, total))
         return acc
       }, { cho: [], han: [] })
+      activity.signature = signature
+      activity.positionCount = positions.length
+      return activity
     },
     pieceActivitySummary (piece, total) {
       const moved = piece.moved || 0
@@ -224,6 +261,7 @@ export default {
       return {
         id: piece.id,
         label: piece.label,
+        square: piece.square,
         moveRate: Math.round((moved / total) * 100),
         averageFirstMove: moved ? (piece.firstMoveTotal / moved).toFixed(1) : '—',
         topMoves
@@ -278,6 +316,33 @@ export default {
     pieceTypeName (piece) {
       const names = { p: 'Pawn', r: 'Chariot', n: 'Horse', h: 'Horse', b: 'Elephant', e: 'Elephant', a: 'Advisor', k: 'King', c: 'Cannon' }
       return names[String(piece || '').toLowerCase()] || String(piece || '').toUpperCase()
+    },
+
+    openingActivitySignature (opening) {
+      if (!opening || !opening.key) return ''
+      const groups = opening.moveGroups || []
+      const parts = [opening.key, opening.rootFen || '', String(opening.positionCount || 0)]
+      groups.forEach(group => {
+        parts.push(String(group.moveNumber), String(group.totalItems || 0))
+        ;(group.allItems || []).forEach(item => {
+          parts.push([
+            item.key || '',
+            item.signature || '',
+            item.pvUCI || '',
+            item.appearances || 0,
+            item.deepestDepth || 0,
+            item.averageEval || ''
+          ].join(':'))
+        })
+      })
+      return parts.join('|')
+    },
+    highlightPieceStart (piece) {
+      if (!piece || !piece.square) return
+      this.$store.dispatch('previewFutureExplorerPieceStart', { square: piece.square, label: piece.label })
+    },
+    clearPieceStartHighlight () {
+      this.$store.dispatch('clearFutureExplorerPieceStartPreview')
     },
     openingGroup (openingKey, opening) {
       const groups = (opening && opening.groups) || {}
@@ -493,6 +558,8 @@ export default {
   },
   beforeDestroy () {
     if (this.previewClearTimer) clearTimeout(this.previewClearTimer)
+    Object.values(this.pieceActivityTimers || {}).forEach(timer => clearTimeout(timer))
+    this.clearPieceStartHighlight()
   }
 }
 </script>
@@ -534,9 +601,12 @@ export default {
 .score { max-width: 4rem; }
 .meta { opacity: 0.7; }
 .piece-activity { margin-top: 0.55rem; padding-top: 0.35rem; border-top: 1px solid rgba(128,128,128,0.14); }
-.piece-activity-summary { cursor: pointer; font-size: 0.84rem; font-weight: 700; opacity: 0.9; }
-.piece-activity-summary span { opacity: 0.65; font-weight: 400; }
-.piece-activity-loading, .muted { opacity: 0.7; font-size: 0.78rem; }
+.piece-activity-summary { display: inline-flex; align-items: center; gap: 0.28rem; border: 0; background: transparent; color: inherit; cursor: pointer; font: inherit; font-size: 0.84rem; font-weight: 700; opacity: 0.9; padding: 0; }
+.piece-activity-summary small { opacity: 0.65; font-weight: 400; }
+.piece-activity-caret { width: 1rem; opacity: 0.78; }
+.piece-activity-panel { margin-top: 0.35rem; }
+.piece-activity-loading, .muted, .piece-activity-note { opacity: 0.7; font-size: 0.78rem; }
+.piece-activity-note { margin: 0 0 0.35rem; }
 .piece-activity-body { margin-top: 0.4rem; }
 .piece-tabs { display: flex; gap: 0.25rem; margin-bottom: 0.4rem; }
 .piece-tabs button { border: 1px solid rgba(128,128,128,0.25); border-radius: 999px; background: rgba(128,128,128,0.06); color: inherit; cursor: pointer; font-size: 0.76rem; padding: 0.18rem 0.55rem; }

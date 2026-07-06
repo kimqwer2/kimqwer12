@@ -2769,6 +2769,7 @@ export const store = new Vuex.Store({
       futureExplorerQualityMode: false
     },
     futureExplorer: emptyFutureExplorerState(),
+    futureExplorerPieceHighlight: null,
     deepAnalysis: {
       running: false,
       error: null,
@@ -3233,6 +3234,9 @@ export const store = new Vuex.Store({
     },
     futureExplorerLoad (state, payload) {
       state.futureExplorer = normalizeFutureExplorerState(payload)
+    },
+    futureExplorerPieceHighlightSet (state, payload) {
+      state.futureExplorerPieceHighlight = payload && payload.square ? { square: payload.square, label: payload.label || '' } : null
     },
     futureExplorerRecord (state, payload) {
       const rootKey = boardFenKey(state.fen)
@@ -6746,6 +6750,12 @@ export const store = new Vuex.Store({
     clearFuturePreview (context) {
       context.commit('reviewPreviewClear')
     },
+    previewFutureExplorerPieceStart (context, payload) {
+      context.commit('futureExplorerPieceHighlightSet', payload)
+    },
+    clearFutureExplorerPieceStartPreview (context) {
+      context.commit('futureExplorerPieceHighlightSet', null)
+    },
     async loadFutureExplorerFromStorage (context) {
       try {
         if (ipcRenderer) {
@@ -8003,6 +8013,9 @@ export const store = new Vuex.Store({
     },
     futureExplorer (state) {
       return state.futureExplorer || emptyFutureExplorerState()
+    },
+    futureExplorerPieceHighlight (state) {
+      return state.futureExplorerPieceHighlight
     },
     reviewSequence (state) {
       return state.review.sequence

@@ -305,7 +305,7 @@ export default {
       // Block mouse input completely when not player's turn
       return this.isPlayerTurn ? 'auto' : 'none'
     },
-    ...mapGetters(['initialized', 'variant', 'multipv', 'hoveredpv', 'redraw', 'pieceStyle', 'boardStyle', 'fen', 'lastFen', 'orientation', 'moves', 'isPast', 'dimensionNumber', 'analysisMode', 'editorMode', 'gameEditMode', 'analysisVisualization', 'reviewSequence', 'reviewSequenceActive', 'reviewPreview', 'reviewPreviewActive', 'reviewOverlays', 'active', 'PvE', 'PvEPlayerIsWhite', 'EvE', 'enginetime', 'resized', 'resized9x9width', 'resized9x9height', 'resized9x10width', 'resized9x10height', 'dimNumber', 'openingCandidates', 'openingBook'])
+    ...mapGetters(['initialized', 'variant', 'multipv', 'hoveredpv', 'redraw', 'pieceStyle', 'boardStyle', 'fen', 'lastFen', 'orientation', 'moves', 'isPast', 'dimensionNumber', 'analysisMode', 'editorMode', 'gameEditMode', 'analysisVisualization', 'reviewSequence', 'reviewSequenceActive', 'reviewPreview', 'reviewPreviewActive', 'reviewOverlays', 'active', 'PvE', 'PvEPlayerIsWhite', 'EvE', 'enginetime', 'resized', 'resized9x9width', 'resized9x9height', 'resized9x10width', 'resized9x10height', 'dimNumber', 'openingCandidates', 'openingBook', 'futureExplorerPieceHighlight'])
   },
   watch: {
     dimensionNumber () {
@@ -382,6 +382,7 @@ export default {
         this.scheduleBoardInteractionSync('reviewPreview')
       }
     },
+    futureExplorerPieceHighlight () { this.drawShapes() },
     resized () { this.scheduleBoardInteractionSync('resized') },
     resized9x9width () { this.scheduleBoardInteractionSync('resized9x9width') },
     resized9x9height () { this.scheduleBoardInteractionSync('resized9x9height') },
@@ -1301,7 +1302,10 @@ export default {
         const reviewShapes = (this.reviewOverlays || []).map(this.reviewOverlayToShape).filter(Boolean)
         const baseShapes = (this.reviewSequenceActive || this.reviewPreviewActive) ? [] : this.shapes
         const basePieceShapes = (this.reviewSequenceActive || this.reviewPreviewActive) ? [] : this.pieceShapes
-        const combinedShapes = [...baseShapes, ...basePieceShapes, ...reviewShapes].map(shape => {
+        const pieceHighlight = this.futureExplorerPieceHighlight && this.futureExplorerPieceHighlight.square
+          ? [{ orig: this.futureExplorerPieceHighlight.square, brush: 'yellow', modifiers: { lineWidth: 5, opacity: 0.9 } }]
+          : []
+        const combinedShapes = [...baseShapes, ...basePieceShapes, ...reviewShapes, ...pieceHighlight].map(shape => {
           if (!shape) return null
           return {
             ...shape,
