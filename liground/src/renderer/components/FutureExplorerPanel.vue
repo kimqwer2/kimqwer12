@@ -100,7 +100,7 @@
         <div v-if="pieceActivityExpanded(opening.key)" class="piece-activity-panel">
           <div v-if="pieceActivityLoading[opening.key]" class="piece-activity-loading">Calculating piece activity…</div>
           <div v-else-if="pieceActivityFor(opening)" class="piece-activity-body">
-            <p class="piece-activity-note">Top Destinations are first-move destinations for each piece in every analyzed position for this Opening.</p>
+            <p class="piece-activity-note">목적지는 각 기물이 이 오프닝 포지션들에서 처음 이동한 보드 좌표입니다.</p>
             <button type="button" class="piece-scan-button" @click="scanPieceActivity(opening)">Rescan Positions</button>
             <div v-if="pieceActivityEmpty(opening)" class="piece-activity-empty">No piece activity data could be generated for this Opening.</div>
             <div v-if="pieceActivityDiagnostics(opening)" class="piece-diagnostics">
@@ -122,18 +122,18 @@
                 v-for="piece in pieceActivityPieces(opening)"
                 :key="piece.id"
                 class="piece-card"
-                :title="`Starts on ${piece.square}`"
+                :title="`시작 위치 ${piece.displaySquare}`"
                 @mouseenter="highlightPieceStart(piece)"
                 @mouseleave="clearPieceStartHighlight"
               >
                 <h4>{{ piece.label }}</h4>
                 <dl>
-                  <div><dt>Starting Square</dt><dd>{{ piece.square }}</dd></div>
-                  <div><dt>Move Rate</dt><dd>{{ piece.moveRate }}%</dd><dd class="rate-count">{{ piece.moved }} / {{ piece.total }} positions</dd></div>
-                  <div><dt>Average First Move</dt><dd>{{ piece.averageFirstMove }}</dd></div>
+                  <div><dt>시작</dt><dd>{{ piece.displaySquare }}</dd></div>
+                  <div><dt>이동률</dt><dd>{{ piece.moveRate }}%</dd><dd class="rate-count">{{ piece.moved }} / {{ piece.total }}</dd></div>
+                  <div><dt>평균 첫 수</dt><dd>{{ piece.averageFirstMove }}</dd></div>
                 </dl>
                 <div class="top-moves">
-                  <strong>Top Destinations</strong>
+                  <strong>첫 이동 목적지</strong>
                   <p v-if="!piece.topMoves.length" class="muted">No first moves</p>
                   <div v-for="move in piece.topMoves" :key="move.destination" class="top-move-row">
                     <code>{{ move.destination }}</code><span>{{ move.percent }}%</span>
@@ -297,11 +297,12 @@ export default {
       const topMoves = Object.entries(piece.destinations || {})
         .sort((a, b) => b[1] - a[1])
         .slice(0, 3)
-        .map(([destination, count]) => ({ destination, percent: Math.round((count / Math.max(1, moved)) * 100) }))
+        .map(([destination, count]) => ({ destination: this.displaySquare(destination), percent: Math.round((count / Math.max(1, moved)) * 100) }))
       return {
         id: piece.id,
         label: piece.label,
         square: piece.square,
+        displaySquare: this.displaySquare(piece.square),
         moved,
         total,
         moveRate: ((moved / total) * 100).toFixed(1),
@@ -321,7 +322,7 @@ export default {
       const backRank = side === 'cho'
         ? Math.max(...pieces.map(piece => piece.rank), 0)
         : Math.min(...pieces.map(piece => piece.rank), height - 1)
-      const typeOrder = { Chariot: 0, Horse: 1, Elephant: 2, Advisor: 3, King: 4, Cannon: 5, Pawn: 6 }
+      const typeOrder = { Pawn: 0, Cannon: 1, Chariot: 2, Horse: 3, Elephant: 4, Advisor: 5, King: 6 }
       const byType = pieces.reduce((acc, piece) => {
         const type = this.pieceTypeName(piece.piece)
         if (!acc[type]) acc[type] = []
@@ -333,19 +334,20 @@ export default {
         const type = this.pieceTypeName(piece.piece)
         const typed = byType[type] || []
         const typeIndex = typed.findIndex(item => item.square === piece.square)
-        const sideName = side === 'cho' ? 'Cho' : 'Han'
-        const pairName = typed.length === 2 ? (typeIndex === 0 ? `Left ${type}` : `Right ${type}`) : type
+        const sidePrefix = side === 'cho' ? '초' : '한'
+        const koreanType = this.pieceTypeKorean(type)
+        const sideMarker = typed.length === 2 ? (typeIndex === 0 ? '좌' : '우') : ''
         const label = type === 'Pawn'
-          ? `${sideName} Pawn${typeIndex + 1}`
-          : (typed.length === 2 ? `${sideName} ${pairName}` : `${sideName} ${type}`)
-        const rankGroup = type === 'Pawn' ? 2 : (type === 'Cannon' ? 1 : 0)
+          ? `${sidePrefix} ${koreanType}${typeIndex + 1}`
+          : `${sidePrefix} ${sideMarker}${koreanType}`
+        const rankGroup = Object.prototype.hasOwnProperty.call(typeOrder, type) ? typeOrder[type] : 9
         const homeOffset = Math.abs(piece.rank - backRank)
         return {
           id: `${side}:${piece.square}:${piece.piece}`,
           side,
           square: piece.square,
           label,
-          order: (rankGroup * 100) + ((typeOrder[type] || 9) * 10) + homeOffset + piece.file / 10
+          order: (rankGroup * 100) + homeOffset + piece.file / 10
         }
       })
     },
@@ -360,8 +362,9 @@ export default {
       }))
       const first = {}
       String(pvUCI || '').split(/\s+/).filter(Boolean).forEach((move, idx) => {
-        const from = move.slice(0, 2)
-        const to = move.slice(2, 4)
+        const parsed = this.moveSquares(move, occupancy)
+        if (!parsed) return
+        const { from, to } = parsed
         const id = occupancy[from]
         if (!id) return
         if (!first[id]) first[id] = { ply: idx + 1, to }
@@ -383,6 +386,30 @@ export default {
     },
     squareName (file, rank, height = 10) {
       return `${String.fromCharCode(97 + file)}${Math.max(0, height - 1 - rank)}`
+    },
+    moveSquares (move, occupancy = {}) {
+      const parts = String(move || '').match(/^([a-z])(\d+)([a-z])(\d+)/i)
+      if (!parts) return null
+      const rawFrom = `${parts[1].toLowerCase()}${Number(parts[2])}`
+      const rawTo = `${parts[3].toLowerCase()}${Number(parts[4])}`
+      if (occupancy[rawFrom]) return { from: rawFrom, to: rawTo }
+      const shiftedFrom = this.shiftSquareRank(rawFrom, -1)
+      if (occupancy[shiftedFrom]) return { from: shiftedFrom, to: this.shiftSquareRank(rawTo, -1) }
+      return { from: rawFrom, to: rawTo }
+    },
+    shiftSquareRank (square, delta) {
+      const match = String(square || '').match(/^([a-z])(\d+)$/i)
+      if (!match) return square
+      return `${match[1].toLowerCase()}${Math.max(0, Number(match[2]) + delta)}`
+    },
+    displaySquare (square) {
+      const match = String(square || '').match(/^([a-z])(\d+)$/i)
+      if (!match) return square || '—'
+      return `${match[1].toUpperCase()}${Number(match[2]) + 1}`
+    },
+    pieceTypeKorean (type) {
+      const names = { Pawn: '졸', Chariot: '차', Horse: '마', Elephant: '상', Advisor: '사', King: '궁', Cannon: '포' }
+      return names[type] || type
     },
     pieceTypeName (piece) {
       const names = { p: 'Pawn', r: 'Chariot', n: 'Horse', h: 'Horse', b: 'Elephant', e: 'Elephant', a: 'Advisor', k: 'King', c: 'Cannon' }
