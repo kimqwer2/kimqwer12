@@ -12,6 +12,7 @@
         <button type="button" @click="toggleAllEntryDetails('details')">Expand Details</button>
         <button type="button" @click="toggleAllEntryDetails('full')">Expand Full</button>
         <button type="button" class="danger" @click="clearExplorer">Clear Future Explorer</button>
+        <label class="quality-toggle"><input v-model="qualityMode" type="checkbox"> Quality</label>
         <select v-model="sortMode" @change="saveSort">
           <option value="depth">Depth</option>
           <option value="appearances">Frequency</option>
@@ -49,6 +50,12 @@
           class="rename-opening"
           @click.prevent.stop="startOpeningNameEdit(opening)"
         >Rename</button>
+        <button
+          v-if="editingOpeningKey !== opening.key"
+          type="button"
+          class="rename-opening danger"
+          @click.prevent.stop="deleteOpening(opening)"
+        >Delete</button>
         <template v-else>
           <button type="button" class="rename-opening" @click.prevent.stop="saveOpeningName(opening)">Save</button>
           <button type="button" class="rename-opening" @click.prevent.stop="cancelOpeningName">Cancel</button>
@@ -68,7 +75,7 @@
               @click="handleChipClick($event, item)"
               @dblclick.stop="analyze(item)"
             >
-              <template v-if="entryMode(item)">
+              <template v-if="entryMode(item) || qualityMode">
                 <span>{{ compactSummary(item) }}</span>
               </template>
               <template v-else>
@@ -110,6 +117,10 @@ export default {
       get () { return this.cfg.futureExplorerEvalPerspective || 'auto' },
       set (value) { this.$store.dispatch('analysisVisualization', { futureExplorerEvalPerspective: value }) }
     },
+    qualityMode: {
+      get () { return !!this.cfg.futureExplorerQualityMode },
+      set (value) { this.$store.dispatch('analysisVisualization', { futureExplorerQualityMode: !!value }) }
+    },
     openings () {
       const explorer = this.futureExplorer || {}
       const openings = explorer.openings && Object.keys(explorer.openings).length
@@ -117,7 +128,6 @@ export default {
         : { [explorer.rootKey || 'current']: { rootKey: explorer.rootKey || 'current', rootFen: explorer.rootFen, groups: explorer.groups || {} } }
       return Object.keys(openings).map(openingKey => this.openingGroup(openingKey, openings[openingKey]))
         .filter(Boolean)
-        .sort((a, b) => a.label.localeCompare(b.label))
     },
     totalPositions () {
       return this.openings.reduce((sum, opening) => sum + opening.positionCount, 0)
@@ -131,19 +141,21 @@ export default {
     openingGroup (openingKey, opening) {
       const groups = (opening && opening.groups) || {}
       const fallbackLabel = this.openingLabel(opening && opening.rootFen)
-      const openingLabel = (opening && opening.name) || fallbackLabel
+      const openingLabel = (opening && (opening.name || opening.autoName)) || fallbackLabel
       const moveGroups = Object.keys(groups).map(moveNumber => {
-        const items = Object.values(groups[moveNumber] || {}).map(item => ({ ...item, moveNumber }))
+        const items = Object.values(groups[moveNumber] || {}).map(item => ({ ...item, moveNumber, openingLabel }))
         const byAppearances = this.sortMode === 'appearances'
         const byEvaluation = this.sortMode === 'evaluation'
         items.sort((a, b) => {
           if (byEvaluation) {
+            const depthOrder = (b.deepestDepth || 0) - (a.deepestDepth || 0)
+            if (Math.abs(depthOrder) >= 3) return depthOrder
             const aEval = this.displayEvalValue(a)
             const bEval = this.displayEvalValue(b)
             const evalOrder = Number.isFinite(bEval) && Number.isFinite(aEval)
               ? bEval - aEval
               : (Number.isFinite(bEval) ? 1 : 0) - (Number.isFinite(aEval) ? 1 : 0)
-            return evalOrder || ((b.deepestDepth || 0) - (a.deepestDepth || 0)) || ((b.appearances || 0) - (a.appearances || 0))
+            return depthOrder || evalOrder || ((b.appearances || 0) - (a.appearances || 0))
           }
           return byAppearances
             ? ((b.appearances || 0) - (a.appearances || 0)) || ((b.deepestDepth || 0) - (a.deepestDepth || 0))
@@ -157,6 +169,7 @@ export default {
         label: openingLabel,
         fallbackLabel,
         customName: opening && opening.name,
+        autoName: opening && opening.autoName,
         moveGroups,
         positionCount: moveGroups.reduce((sum, group) => sum + group.items.length, 0)
       }
@@ -225,6 +238,11 @@ export default {
       this.editingOpeningKey = ''
       this.editingOpeningName = ''
     },
+    deleteOpening (opening) {
+      if (!opening || !opening.key) return
+      if (!confirm(`Delete Future Explorer section "${opening.label}"?`)) return
+      this.$store.dispatch('deleteFutureExplorerOpening', { rootKey: opening.key })
+    },
     clearExplorer () {
       if (!confirm('Clear all stored Future Explorer positions?')) return
       this.$store.dispatch('clearFutureExplorer')
@@ -286,7 +304,20 @@ export default {
       return `${value > 0 ? '+' : ''}${value.toFixed(2)}`
     },
     compactSummary (item) {
-      return [`D${item.deepestDepth || '—'}`, this.score(item), `${item.appearances || 0}×`, `D${item.firstDepth || '—'}–${item.deepestDepth || '—'}`].join(' · ')
+      const parts = [`D${item.deepestDepth || '—'}`, this.score(item), `${item.appearances || 0}×`, `D${item.firstDepth || '—'}–${item.deepestDepth || '—'}`]
+      if (this.qualityMode) parts.push(`Q:${this.qualityScore(item)}`)
+      return parts.join(' · ')
+    },
+    qualityScore (item) {
+      const depthSpan = Math.max(1, (item.deepestDepth || 0) - (item.firstDepth || item.deepestDepth || 0) + 1)
+      const depthScore = Math.min(1, (item.deepestDepth || 0) / 30)
+      const frequencyScore = Math.min(1, Math.log10((item.appearances || 0) + 1) / 2)
+      const variance = item.evalSamples > 1 && typeof item.evalSquareTotal === 'number'
+        ? Math.max(0, item.evalSquareTotal / item.evalSamples - Math.pow(item.averageEval || 0, 2))
+        : 0
+      const consistencyScore = 1 / (1 + Math.sqrt(variance) / 120)
+      const convergenceScore = Math.min(1, (item.appearances || 0) / depthSpan)
+      return (depthScore * 0.35 + consistencyScore * 0.3 + frequencyScore * 0.2 + convergenceScore * 0.15).toFixed(2)
     },
     rank (item) {
       return typeof item.averageRank === 'number' ? item.averageRank.toFixed(1) : '—'
@@ -308,10 +339,14 @@ export default {
       this.previewClearTimer = null
       this.$store.dispatch('jumpToFuturePosition', item)
     },
+    continuationName (item) {
+      const base = item.openingLabel || 'Future Explorer'
+      return `${base} · D${item.deepestDepth || '—'}`
+    },
     analyze (item) {
       if (this.previewClearTimer) clearTimeout(this.previewClearTimer)
       this.previewClearTimer = null
-      this.$store.dispatch('analyzeFuturePosition', item)
+      this.$store.dispatch('analyzeFuturePosition', { ...item, continuationName: this.continuationName(item) })
     }
   },
   beforeDestroy () {
@@ -338,6 +373,8 @@ export default {
 .opening-name-input { min-width: 10rem; max-width: 18rem; border: 1px solid rgba(128,128,128,0.35); border-radius: 4px; background: rgba(128,128,128,0.08); color: inherit; font: inherit; padding: 0.12rem 0.3rem; }
 .rename-opening { border: 1px solid rgba(128,128,128,0.2); border-radius: 999px; background: transparent; color: inherit; cursor: pointer; font-size: 0.68rem; padding: 0.1rem 0.32rem; opacity: 0.72; }
 .rename-opening:hover { opacity: 1; background: rgba(128,128,128,0.12); }
+.rename-opening.danger { color: #d66; border-color: rgba(190,70,70,0.35); }
+.quality-toggle { display: inline-flex; align-items: center; gap: 0.15rem; font-size: 0.72rem; opacity: 0.8; }
 .move-group { margin-top: 0.35rem; }
 .move-heading { opacity: 0.85; font-size: 0.82rem; font-weight: 700; margin: 0.25rem 0 0.15rem; }
 .move-heading span { opacity: 0.65; font-weight: 400; }

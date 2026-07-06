@@ -25,7 +25,7 @@ function normalizeFutureExplorerData (data) {
   if (data.openings && typeof data.openings === 'object') {
     next.openings = Object.keys(data.openings).reduce((acc, key) => {
       const opening = data.openings[key]
-      acc[key] = opening && typeof opening === 'object' ? { ...opening, name: opening.name || '' } : opening
+      acc[key] = opening && typeof opening === 'object' ? { ...opening, name: opening.name || '', autoName: opening.autoName || '' } : opening
       return acc
     }, {})
   }

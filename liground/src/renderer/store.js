@@ -61,6 +61,7 @@ function normalizeFutureExplorerState (input) {
       rootKey,
       rootFen: opening.rootFen || '',
       name: opening.name || '',
+      autoName: opening.autoName || '',
       groups: opening.groups && typeof opening.groups === 'object' ? opening.groups : {},
       lastSignature: opening.lastSignature || ''
     }
@@ -72,6 +73,7 @@ function normalizeFutureExplorerState (input) {
         rootKey,
         rootFen: next.rootFen,
         name: input.name || '',
+        autoName: input.autoName || '',
         groups: input.groups,
         lastSignature: input.lastSignature || ''
       }
@@ -2763,7 +2765,8 @@ export const store = new Vuex.Store({
       futureExplorerStartMove: 15,
       futureExplorerMaxMove: 60,
       futureExplorerSortMode: 'depth',
-      futureExplorerEvalPerspective: 'auto'
+      futureExplorerEvalPerspective: 'auto',
+      futureExplorerQualityMode: false
     },
     futureExplorer: emptyFutureExplorerState(),
     deepAnalysis: {
@@ -3240,6 +3243,7 @@ export const store = new Vuex.Store({
           rootKey,
           rootFen: state.fen,
           name: '',
+          autoName: '',
           groups: {},
           lastSignature: ''
         })
@@ -3268,6 +3272,7 @@ export const store = new Vuex.Store({
             rankTotal: entry.rank,
             evalTotal: typeof score === 'number' ? score : 0,
             evalSamples: typeof score === 'number' ? 1 : 0,
+            evalSquareTotal: typeof score === 'number' ? score * score : 0,
             averageRank: entry.rank,
             averageEval: typeof score === 'number' ? score : null,
             rootTurn: typeof entry.rootTurn === 'boolean' ? entry.rootTurn : sideToMoveFromFen(entry.rootFen),
@@ -3282,6 +3287,7 @@ export const store = new Vuex.Store({
           if (typeof score === 'number') {
             current.evalTotal = (current.evalTotal || 0) + score
             current.evalSamples = (current.evalSamples || 0) + 1
+            current.evalSquareTotal = (current.evalSquareTotal || 0) + score * score
             current.averageEval = current.evalTotal / current.evalSamples
           }
           current.averageRank = current.rankTotal / current.appearances
@@ -3300,6 +3306,36 @@ export const store = new Vuex.Store({
       const opening = state.futureExplorer.openings[payload.rootKey]
       if (!opening) return
       Vue.set(opening, 'name', payload.name || '')
+    },
+    futureExplorerPrepareOpening (state, payload) {
+      if (!payload || !payload.rootFen) return
+      if (!state.futureExplorer) state.futureExplorer = emptyFutureExplorerState()
+      if (!state.futureExplorer.openings) Vue.set(state.futureExplorer, 'openings', {})
+      const rootKey = boardFenKey(payload.rootFen)
+      if (!state.futureExplorer.openings[rootKey]) {
+        Vue.set(state.futureExplorer.openings, rootKey, {
+          rootKey,
+          rootFen: payload.rootFen,
+          name: '',
+          autoName: payload.autoName || '',
+          groups: {},
+          lastSignature: ''
+        })
+      } else if (payload.autoName && !state.futureExplorer.openings[rootKey].name) {
+        Vue.set(state.futureExplorer.openings[rootKey], 'autoName', payload.autoName)
+      }
+    },
+    futureExplorerDeleteOpening (state, payload) {
+      if (!payload || !payload.rootKey || !state.futureExplorer || !state.futureExplorer.openings) return
+      Vue.delete(state.futureExplorer.openings, payload.rootKey)
+      if (state.futureExplorer.rootKey === payload.rootKey) {
+        const nextKey = Object.keys(state.futureExplorer.openings)[0] || ''
+        const next = nextKey ? state.futureExplorer.openings[nextKey] : null
+        state.futureExplorer.rootKey = nextKey
+        state.futureExplorer.rootFen = next ? next.rootFen : ''
+        state.futureExplorer.groups = next ? next.groups : {}
+        state.futureExplorer.lastSignature = next ? next.lastSignature || '' : ''
+      }
     },
     pieceStyle (state, payload) {
       state.pieceStyle = payload
@@ -6729,6 +6765,14 @@ export const store = new Vuex.Store({
       context.commit('futureExplorerRenameOpening', payload)
       return context.dispatch('persistFutureExplorer')
     },
+    deleteFutureExplorerOpening (context, payload) {
+      context.commit('futureExplorerDeleteOpening', payload)
+      return context.dispatch('persistFutureExplorer')
+    },
+    prepareFutureExplorerOpening (context, payload) {
+      context.commit('futureExplorerPrepareOpening', payload)
+      return context.dispatch('persistFutureExplorer')
+    },
     async persistFutureExplorer (context) {
       const data = normalizeFutureExplorerState(context.state.futureExplorer)
       try {
@@ -6761,6 +6805,7 @@ export const store = new Vuex.Store({
     analyzeFuturePosition (context, payload) {
       if (!payload || !payload.fen) return
       context.commit('reviewPreviewClear')
+      context.commit('futureExplorerPrepareOpening', { rootFen: payload.fen, autoName: payload.continuationName || '' })
       return context.dispatch('loadFutureExplorerLine', payload).then(() => {
         context.commit('analysisMode', true)
         context.dispatch('startEngine')
