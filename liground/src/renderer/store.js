@@ -74,6 +74,7 @@ function futureExplorerEntryFromPv (state, payload) {
           mate: payload.mate,
           pvUCI: pvMoves.slice(0, moveNumber).join(' '),
           continuationUCI: pvMoves.slice(moveNumber).join(' '),
+          rootFen: state.fen,
           firstMove: pvMoves[0],
           lastMove: move,
           signature: `${depth}|${Number(payload.multipv) || 1}|${moveNumber}|${boardFenKey(board.fen())}|${payload.pv}`
@@ -6628,14 +6629,55 @@ export const store = new Vuex.Store({
     jumpToFuturePosition (context, payload) {
       if (!payload || !payload.fen) return
       context.commit('reviewPreviewClear')
-      return context.dispatch('fen', payload.fen)
+      return context.dispatch('loadFutureExplorerLine', payload)
     },
     analyzeFuturePosition (context, payload) {
       if (!payload || !payload.fen) return
       context.commit('reviewPreviewClear')
-      context.dispatch('fen', payload.fen)
-      context.commit('analysisMode', true)
-      context.dispatch('startEngine')
+      return context.dispatch('loadFutureExplorerLine', payload).then(() => {
+        context.commit('analysisMode', true)
+        context.dispatch('startEngine')
+      })
+    },
+    async loadFutureExplorerLine (context, payload) {
+      const rootFen = payload.rootFen || (context.state.futureExplorer && context.state.futureExplorer.rootFen) || context.state.startFen
+      const moves = String(payload.pvUCI || '').split(/\s+/).filter(Boolean)
+      if (!rootFen || !moves.length) {
+        return context.dispatch('fen', payload.fen)
+      }
+
+      const board = new ffish.Board(context.state.variant, rootFen, context.getters.is960)
+      const legalMoves = []
+      for (const move of moves) {
+        if (!board.legalMoves().includes(move)) break
+        legalMoves.push(move)
+        board.push(move)
+      }
+      if (!legalMoves.length) {
+        return context.dispatch('fen', payload.fen)
+      }
+
+      const finalFen = board.fen()
+      const comments = {}
+      const reached = legalMoves.join(' ')
+      const then = String(payload.continuationUCI || '').trim()
+      comments[String(legalMoves.length - 1)] = then ? `Reached by ${reached}. Then ${then}` : `Reached by ${reached}.`
+      await context.dispatch('loadGameSequence', {
+        variant: context.state.variant,
+        startFen: rootFen,
+        moves: legalMoves,
+        comments
+      })
+      await context.dispatch('fen', finalFen)
+      if (then) {
+        context.commit('multipv', [{
+          cp: payload.cp,
+          mate: payload.mate,
+          pvUCI: then,
+          pv: then,
+          ucimove: then.split(/\s+/)[0] || ''
+        }])
+      }
     },
     jumpToReviewMove (context, move) {
       if (!move || !move.previewFen) return
