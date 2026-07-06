@@ -62,7 +62,7 @@
         </template>
       </summary>
       <div v-for="group in opening.moveGroups" :key="group.moveNumber" class="move-group">
-        <div class="move-heading">Move {{ group.moveNumber }} <span>({{ group.items.length }})</span></div>
+        <div class="move-heading">Move {{ group.moveNumber }} <span>({{ group.totalItems }})</span></div>
         <div class="future-chip-row">
           <article v-for="item in group.items" :key="entryKey(item)" class="future-entry" :class="{ full: entryMode(item) === 'full' }">
             <button
@@ -91,6 +91,32 @@
           </article>
         </div>
       </div>
+      <details class="piece-activity" @toggle="handlePieceActivityToggle($event, opening)">
+        <summary class="piece-activity-summary">Piece Activity <span>({{ opening.positionCount }} positions)</span></summary>
+        <div v-if="pieceActivityLoading[opening.key]" class="piece-activity-loading">Calculating piece activity…</div>
+        <div v-else-if="pieceActivityFor(opening)" class="piece-activity-body">
+          <div class="piece-tabs" role="tablist" aria-label="Piece activity side">
+            <button type="button" :class="{ active: pieceActivitySide(opening.key) === 'cho' }" @click="setPieceActivitySide(opening.key, 'cho')">Cho</button>
+            <button type="button" :class="{ active: pieceActivitySide(opening.key) === 'han' }" @click="setPieceActivitySide(opening.key, 'han')">Han</button>
+          </div>
+          <div class="piece-activity-grid">
+            <article v-for="piece in pieceActivityPieces(opening)" :key="piece.id" class="piece-card">
+              <h4>{{ piece.label }}</h4>
+              <dl>
+                <div><dt>Move Rate</dt><dd>{{ piece.moveRate }}%</dd></div>
+                <div><dt>Average First Move</dt><dd>{{ piece.averageFirstMove }}</dd></div>
+              </dl>
+              <div class="top-moves">
+                <strong>Top Destinations</strong>
+                <p v-if="!piece.topMoves.length" class="muted">No first moves</p>
+                <div v-for="move in piece.topMoves" :key="move.destination" class="top-move-row">
+                  <code>{{ move.destination }}</code><span>{{ move.percent }}%</span>
+                </div>
+              </div>
+            </article>
+          </div>
+        </div>
+      </details>
     </details>
   </details>
 </template>
@@ -104,7 +130,10 @@ export default {
     expandedEntries: {},
     previewClearTimer: null,
     editingOpeningKey: '',
-    editingOpeningName: ''
+    editingOpeningName: '',
+    pieceActivityCache: {},
+    pieceActivityLoading: {},
+    pieceActivitySides: {}
   }),
   computed: {
     ...mapGetters(['futureExplorer', 'analysisVisualization']),
@@ -138,6 +167,118 @@ export default {
   },
   methods: {
     saveSort () {},
+    handlePieceActivityToggle (event, opening) {
+      if (!event || !event.target || !event.target.open || !opening || !opening.key) return
+      if (this.pieceActivityCache[opening.key] || this.pieceActivityLoading[opening.key]) return
+      this.$set(this.pieceActivityLoading, opening.key, true)
+      this.$nextTick(() => {
+        const activity = this.calculatePieceActivity(opening)
+        this.$set(this.pieceActivityCache, opening.key, activity)
+        this.$set(this.pieceActivityLoading, opening.key, false)
+      })
+    },
+    pieceActivityFor (opening) {
+      return opening && opening.key ? this.pieceActivityCache[opening.key] : null
+    },
+    pieceActivitySide (openingKey) {
+      return this.pieceActivitySides[openingKey] || 'cho'
+    },
+    setPieceActivitySide (openingKey, side) {
+      this.$set(this.pieceActivitySides, openingKey, side)
+    },
+    pieceActivityPieces (opening) {
+      const activity = this.pieceActivityFor(opening)
+      return activity ? activity[this.pieceActivitySide(opening.key)] || [] : []
+    },
+    calculatePieceActivity (opening) {
+      const pieces = this.initialPieces(opening.rootFen)
+      const byId = pieces.reduce((acc, piece) => {
+        acc[piece.id] = { ...piece, moved: 0, firstMoveTotal: 0, destinations: {} }
+        return acc
+      }, {})
+      const positions = (opening.allItems || []).filter(item => item && item.pvUCI)
+      positions.forEach(item => {
+        const firstMoves = this.firstMovesByPiece(opening.rootFen, item.pvUCI)
+        Object.keys(firstMoves).forEach(id => {
+          if (!byId[id]) return
+          const first = firstMoves[id]
+          byId[id].moved += 1
+          byId[id].firstMoveTotal += first.ply
+          byId[id].destinations[first.to] = (byId[id].destinations[first.to] || 0) + 1
+        })
+      })
+      const total = Math.max(1, positions.length)
+      return ['cho', 'han'].reduce((acc, side) => {
+        acc[side] = Object.values(byId)
+          .filter(piece => piece.side === side)
+          .map(piece => this.pieceActivitySummary(piece, total))
+        return acc
+      }, { cho: [], han: [] })
+    },
+    pieceActivitySummary (piece, total) {
+      const moved = piece.moved || 0
+      const topMoves = Object.entries(piece.destinations || {})
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(([destination, count]) => ({ destination, percent: Math.round((count / Math.max(1, moved)) * 100) }))
+      return {
+        id: piece.id,
+        label: piece.label,
+        moveRate: Math.round((moved / total) * 100),
+        averageFirstMove: moved ? (piece.firstMoveTotal / moved).toFixed(1) : '—',
+        topMoves
+      }
+    },
+    initialPieces (fen) {
+      const board = this.parseFenBoard(fen)
+      const counts = { cho: {}, han: {} }
+      return board.flatMap((row, rank) => row.map((piece, file) => ({ piece, file, rank })).filter(x => x.piece)).map(({ piece, file, rank }) => {
+        const side = piece === piece.toUpperCase() ? 'cho' : 'han'
+        const type = this.pieceTypeName(piece)
+        counts[side][type] = (counts[side][type] || 0) + 1
+        const square = this.squareName(file, rank, board.length)
+        return { id: `${side}:${square}:${piece}`, side, square, label: `${side === 'cho' ? 'Cho' : 'Han'} ${type} ${counts[side][type]}` }
+      })
+    },
+    firstMovesByPiece (fen, pvUCI) {
+      const board = this.parseFenBoard(fen)
+      const occupancy = {}
+      board.forEach((row, rank) => row.forEach((piece, file) => {
+        if (piece) {
+          const square = this.squareName(file, rank, board.length)
+          occupancy[square] = `${piece === piece.toUpperCase() ? 'cho' : 'han'}:${square}:${piece}`
+        }
+      }))
+      const first = {}
+      String(pvUCI || '').split(/\s+/).filter(Boolean).forEach((move, idx) => {
+        const from = move.slice(0, 2)
+        const to = move.slice(2, 4)
+        const id = occupancy[from]
+        if (!id) return
+        if (!first[id]) first[id] = { ply: idx + 1, to }
+        delete occupancy[from]
+        occupancy[to] = id
+      })
+      return first
+    },
+    parseFenBoard (fen) {
+      const placement = String(fen || '').split(/\s+/)[0] || ''
+      return placement.split('/').map(row => {
+        const cells = []
+        for (const ch of row) {
+          if (/\d/.test(ch)) for (let i = 0; i < Number(ch); i++) cells.push('')
+          else cells.push(ch)
+        }
+        return cells
+      })
+    },
+    squareName (file, rank, height = 10) {
+      return `${String.fromCharCode(97 + file)}${Math.max(0, height - 1 - rank)}`
+    },
+    pieceTypeName (piece) {
+      const names = { p: 'Pawn', r: 'Chariot', n: 'Horse', h: 'Horse', b: 'Elephant', e: 'Elephant', a: 'Advisor', k: 'King', c: 'Cannon' }
+      return names[String(piece || '').toLowerCase()] || String(piece || '').toUpperCase()
+    },
     openingGroup (openingKey, opening) {
       const groups = (opening && opening.groups) || {}
       const fallbackLabel = this.openingLabel(opening && opening.rootFen)
@@ -161,7 +302,7 @@ export default {
             ? ((b.appearances || 0) - (a.appearances || 0)) || ((b.deepestDepth || 0) - (a.deepestDepth || 0))
             : ((b.deepestDepth || 0) - (a.deepestDepth || 0)) || ((b.appearances || 0) - (a.appearances || 0))
         })
-        return { moveNumber, items: items.slice(0, 12) }
+        return { moveNumber, items: items.slice(0, 12), allItems: items, totalItems: items.length }
       }).sort((a, b) => Number(a.moveNumber) - Number(b.moveNumber))
       if (!moveGroups.length) return null
       return {
@@ -171,7 +312,8 @@ export default {
         customName: opening && opening.name,
         autoName: opening && opening.autoName,
         moveGroups,
-        positionCount: moveGroups.reduce((sum, group) => sum + group.items.length, 0)
+        positionCount: moveGroups.reduce((sum, group) => sum + group.totalItems, 0),
+        allItems: moveGroups.flatMap(group => group.allItems)
       }
     },
     openingLabel (fen) {
@@ -391,4 +533,21 @@ export default {
 .main { font-weight: 600; }
 .score { max-width: 4rem; }
 .meta { opacity: 0.7; }
+.piece-activity { margin-top: 0.55rem; padding-top: 0.35rem; border-top: 1px solid rgba(128,128,128,0.14); }
+.piece-activity-summary { cursor: pointer; font-size: 0.84rem; font-weight: 700; opacity: 0.9; }
+.piece-activity-summary span { opacity: 0.65; font-weight: 400; }
+.piece-activity-loading, .muted { opacity: 0.7; font-size: 0.78rem; }
+.piece-activity-body { margin-top: 0.4rem; }
+.piece-tabs { display: flex; gap: 0.25rem; margin-bottom: 0.4rem; }
+.piece-tabs button { border: 1px solid rgba(128,128,128,0.25); border-radius: 999px; background: rgba(128,128,128,0.06); color: inherit; cursor: pointer; font-size: 0.76rem; padding: 0.18rem 0.55rem; }
+.piece-tabs button.active { background: rgba(80,140,220,0.22); border-color: rgba(80,140,220,0.45); font-weight: 700; }
+.piece-activity-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr)); gap: 0.4rem; }
+.piece-card { border: 1px solid rgba(128,128,128,0.16); border-radius: 10px; background: rgba(128,128,128,0.04); padding: 0.45rem; }
+.piece-card h4 { margin: 0 0 0.35rem; font-size: 0.84rem; }
+.piece-card dl { display: grid; grid-template-columns: 1fr 1fr; gap: 0.35rem; margin: 0 0 0.35rem; }
+.piece-card dt { font-size: 0.68rem; opacity: 0.68; }
+.piece-card dd { margin: 0; font-size: 0.88rem; font-weight: 700; }
+.top-moves strong { display: block; margin-bottom: 0.15rem; font-size: 0.7rem; opacity: 0.78; }
+.top-move-row { display: flex; justify-content: space-between; gap: 0.35rem; font-size: 0.74rem; }
+.top-move-row code { font-family: monospace; }
 </style>
