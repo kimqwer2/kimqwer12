@@ -42,6 +42,10 @@ function boardFenKey (fen) {
   return String(fen || '').split(/\s+/).slice(0, 4).join(' ')
 }
 
+function sideToMoveFromFen (fen) {
+  return String(fen || '').split(/\s+/)[1] !== 'b'
+}
+
 function normalizeFutureExplorerState (input) {
   const next = emptyFutureExplorerState()
   if (!input || typeof input !== 'object') return next
@@ -56,6 +60,8 @@ function normalizeFutureExplorerState (input) {
     next.openings[rootKey] = {
       rootKey,
       rootFen: opening.rootFen || '',
+      name: opening.name || '',
+      autoName: opening.autoName || '',
       groups: opening.groups && typeof opening.groups === 'object' ? opening.groups : {},
       lastSignature: opening.lastSignature || ''
     }
@@ -66,6 +72,8 @@ function normalizeFutureExplorerState (input) {
       next.openings[rootKey] = {
         rootKey,
         rootFen: next.rootFen,
+        name: input.name || '',
+        autoName: input.autoName || '',
         groups: input.groups,
         lastSignature: input.lastSignature || ''
       }
@@ -97,6 +105,7 @@ function futureExplorerEntryFromPv (state, payload) {
   if (!board) return []
   const savedFen = board.fen()
   const entries = []
+  const rootTurn = typeof state.turn === 'boolean' ? state.turn : sideToMoveFromFen(state.fen)
   try {
     board.setFen(state.fen)
     for (let idx = 0; idx < limit; idx++) {
@@ -104,6 +113,7 @@ function futureExplorerEntryFromPv (state, payload) {
       if (!move || !board.legalMoves().includes(move)) break
       board.push(move)
       const moveNumber = idx + 1
+      const moveTurn = !board.turn()
       if (moveNumber >= startMove) {
         entries.push({
           key: boardFenKey(board.fen()),
@@ -113,6 +123,8 @@ function futureExplorerEntryFromPv (state, payload) {
           rank: Number(payload.multipv) || 1,
           cp: payload.cp,
           mate: payload.mate,
+          rootTurn,
+          moveTurn,
           pvUCI: pvMoves.slice(0, moveNumber).join(' '),
           continuationUCI: pvMoves.slice(moveNumber).join(' '),
           rootFen: state.fen,
@@ -2752,7 +2764,9 @@ export const store = new Vuex.Store({
       futureExplorerStartDepth: 20,
       futureExplorerStartMove: 15,
       futureExplorerMaxMove: 60,
-      futureExplorerSortMode: 'depth'
+      futureExplorerSortMode: 'depth',
+      futureExplorerEvalPerspective: 'auto',
+      futureExplorerQualityMode: false
     },
     futureExplorer: emptyFutureExplorerState(),
     deepAnalysis: {
@@ -3228,6 +3242,8 @@ export const store = new Vuex.Store({
         Vue.set(state.futureExplorer.openings, rootKey, {
           rootKey,
           rootFen: state.fen,
+          name: '',
+          autoName: '',
           groups: {},
           lastSignature: ''
         })
@@ -3256,8 +3272,11 @@ export const store = new Vuex.Store({
             rankTotal: entry.rank,
             evalTotal: typeof score === 'number' ? score : 0,
             evalSamples: typeof score === 'number' ? 1 : 0,
+            evalSquareTotal: typeof score === 'number' ? score * score : 0,
             averageRank: entry.rank,
-            averageEval: typeof score === 'number' ? score : null
+            averageEval: typeof score === 'number' ? score : null,
+            rootTurn: typeof entry.rootTurn === 'boolean' ? entry.rootTurn : sideToMoveFromFen(entry.rootFen),
+            moveTurn: typeof entry.moveTurn === 'boolean' ? entry.moveTurn : !sideToMoveFromFen(entry.fen)
           })
         } else {
           current.appearances = (current.appearances || 0) + 1
@@ -3268,6 +3287,7 @@ export const store = new Vuex.Store({
           if (typeof score === 'number') {
             current.evalTotal = (current.evalTotal || 0) + score
             current.evalSamples = (current.evalSamples || 0) + 1
+            current.evalSquareTotal = (current.evalSquareTotal || 0) + score * score
             current.averageEval = current.evalTotal / current.evalSamples
           }
           current.averageRank = current.rankTotal / current.appearances
@@ -3276,7 +3296,45 @@ export const store = new Vuex.Store({
           current.pvUCI = entry.pvUCI
           current.continuationUCI = entry.continuationUCI
           current.rootFen = entry.rootFen || opening.rootFen
+          current.rootTurn = typeof entry.rootTurn === 'boolean' ? entry.rootTurn : (typeof current.rootTurn === 'boolean' ? current.rootTurn : sideToMoveFromFen(current.rootFen))
+          current.moveTurn = typeof entry.moveTurn === 'boolean' ? entry.moveTurn : (typeof current.moveTurn === 'boolean' ? current.moveTurn : !sideToMoveFromFen(current.fen))
         }
+      }
+    },
+    futureExplorerRenameOpening (state, payload) {
+      if (!payload || !payload.rootKey || !state.futureExplorer || !state.futureExplorer.openings) return
+      const opening = state.futureExplorer.openings[payload.rootKey]
+      if (!opening) return
+      Vue.set(opening, 'name', payload.name || '')
+    },
+    futureExplorerPrepareOpening (state, payload) {
+      if (!payload || !payload.rootFen) return
+      if (!state.futureExplorer) state.futureExplorer = emptyFutureExplorerState()
+      if (!state.futureExplorer.openings) Vue.set(state.futureExplorer, 'openings', {})
+      const rootKey = boardFenKey(payload.rootFen)
+      if (!state.futureExplorer.openings[rootKey]) {
+        Vue.set(state.futureExplorer.openings, rootKey, {
+          rootKey,
+          rootFen: payload.rootFen,
+          name: '',
+          autoName: payload.autoName || '',
+          groups: {},
+          lastSignature: ''
+        })
+      } else if (payload.autoName && !state.futureExplorer.openings[rootKey].name) {
+        Vue.set(state.futureExplorer.openings[rootKey], 'autoName', payload.autoName)
+      }
+    },
+    futureExplorerDeleteOpening (state, payload) {
+      if (!payload || !payload.rootKey || !state.futureExplorer || !state.futureExplorer.openings) return
+      Vue.delete(state.futureExplorer.openings, payload.rootKey)
+      if (state.futureExplorer.rootKey === payload.rootKey) {
+        const nextKey = Object.keys(state.futureExplorer.openings)[0] || ''
+        const next = nextKey ? state.futureExplorer.openings[nextKey] : null
+        state.futureExplorer.rootKey = nextKey
+        state.futureExplorer.rootFen = next ? next.rootFen : ''
+        state.futureExplorer.groups = next ? next.groups : {}
+        state.futureExplorer.lastSignature = next ? next.lastSignature || '' : ''
       }
     },
     pieceStyle (state, payload) {
@@ -6703,6 +6761,18 @@ export const store = new Vuex.Store({
         console.warn('[future-explorer] load failed', err)
       }
     },
+    renameFutureExplorerOpening (context, payload) {
+      context.commit('futureExplorerRenameOpening', payload)
+      return context.dispatch('persistFutureExplorer')
+    },
+    deleteFutureExplorerOpening (context, payload) {
+      context.commit('futureExplorerDeleteOpening', payload)
+      return context.dispatch('persistFutureExplorer')
+    },
+    prepareFutureExplorerOpening (context, payload) {
+      context.commit('futureExplorerPrepareOpening', payload)
+      return context.dispatch('persistFutureExplorer')
+    },
     async persistFutureExplorer (context) {
       const data = normalizeFutureExplorerState(context.state.futureExplorer)
       try {
@@ -6735,6 +6805,7 @@ export const store = new Vuex.Store({
     analyzeFuturePosition (context, payload) {
       if (!payload || !payload.fen) return
       context.commit('reviewPreviewClear')
+      context.commit('futureExplorerPrepareOpening', { rootFen: payload.fen, autoName: payload.continuationName || '' })
       return context.dispatch('loadFutureExplorerLine', payload).then(() => {
         context.commit('analysisMode', true)
         context.dispatch('startEngine')

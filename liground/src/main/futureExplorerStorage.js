@@ -23,7 +23,11 @@ function normalizeFutureExplorerData (data) {
   next.rootKey = data.rootKey || ''
   next.lastSignature = data.lastSignature || ''
   if (data.openings && typeof data.openings === 'object') {
-    next.openings = data.openings
+    next.openings = Object.keys(data.openings).reduce((acc, key) => {
+      const opening = data.openings[key]
+      acc[key] = opening && typeof opening === 'object' ? { ...opening, name: opening.name || '', autoName: opening.autoName || '' } : opening
+      return acc
+    }, {})
   }
   if (data.groups && typeof data.groups === 'object') {
     next.groups = data.groups
