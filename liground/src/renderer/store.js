@@ -42,6 +42,10 @@ function boardFenKey (fen) {
   return String(fen || '').split(/\s+/).slice(0, 4).join(' ')
 }
 
+function sideToMoveFromFen (fen) {
+  return String(fen || '').split(/\s+/)[1] !== 'b'
+}
+
 function normalizeFutureExplorerState (input) {
   const next = emptyFutureExplorerState()
   if (!input || typeof input !== 'object') return next
@@ -99,6 +103,7 @@ function futureExplorerEntryFromPv (state, payload) {
   if (!board) return []
   const savedFen = board.fen()
   const entries = []
+  const rootTurn = typeof state.turn === 'boolean' ? state.turn : sideToMoveFromFen(state.fen)
   try {
     board.setFen(state.fen)
     for (let idx = 0; idx < limit; idx++) {
@@ -106,6 +111,7 @@ function futureExplorerEntryFromPv (state, payload) {
       if (!move || !board.legalMoves().includes(move)) break
       board.push(move)
       const moveNumber = idx + 1
+      const moveTurn = !board.turn()
       if (moveNumber >= startMove) {
         entries.push({
           key: boardFenKey(board.fen()),
@@ -115,6 +121,8 @@ function futureExplorerEntryFromPv (state, payload) {
           rank: Number(payload.multipv) || 1,
           cp: payload.cp,
           mate: payload.mate,
+          rootTurn,
+          moveTurn,
           pvUCI: pvMoves.slice(0, moveNumber).join(' '),
           continuationUCI: pvMoves.slice(moveNumber).join(' '),
           rootFen: state.fen,
@@ -2754,7 +2762,8 @@ export const store = new Vuex.Store({
       futureExplorerStartDepth: 20,
       futureExplorerStartMove: 15,
       futureExplorerMaxMove: 60,
-      futureExplorerSortMode: 'depth'
+      futureExplorerSortMode: 'depth',
+      futureExplorerEvalPerspective: 'auto'
     },
     futureExplorer: emptyFutureExplorerState(),
     deepAnalysis: {
@@ -3260,7 +3269,9 @@ export const store = new Vuex.Store({
             evalTotal: typeof score === 'number' ? score : 0,
             evalSamples: typeof score === 'number' ? 1 : 0,
             averageRank: entry.rank,
-            averageEval: typeof score === 'number' ? score : null
+            averageEval: typeof score === 'number' ? score : null,
+            rootTurn: typeof entry.rootTurn === 'boolean' ? entry.rootTurn : sideToMoveFromFen(entry.rootFen),
+            moveTurn: typeof entry.moveTurn === 'boolean' ? entry.moveTurn : !sideToMoveFromFen(entry.fen)
           })
         } else {
           current.appearances = (current.appearances || 0) + 1
@@ -3279,6 +3290,8 @@ export const store = new Vuex.Store({
           current.pvUCI = entry.pvUCI
           current.continuationUCI = entry.continuationUCI
           current.rootFen = entry.rootFen || opening.rootFen
+          current.rootTurn = typeof entry.rootTurn === 'boolean' ? entry.rootTurn : (typeof current.rootTurn === 'boolean' ? current.rootTurn : sideToMoveFromFen(current.rootFen))
+          current.moveTurn = typeof entry.moveTurn === 'boolean' ? entry.moveTurn : (typeof current.moveTurn === 'boolean' ? current.moveTurn : !sideToMoveFromFen(current.fen))
         }
       }
     },

@@ -14,7 +14,13 @@
         <button type="button" class="danger" @click="clearExplorer">Clear Future Explorer</button>
         <select v-model="sortMode" @change="saveSort">
           <option value="depth">Depth</option>
-          <option value="appearances">Appearances</option>
+          <option value="appearances">Frequency</option>
+          <option value="evaluation">Evaluation</option>
+        </select>
+        <select v-model="evalPerspective" title="Evaluation perspective">
+          <option value="auto">Auto</option>
+          <option value="cho">Cho</option>
+          <option value="han">Han</option>
         </select>
       </div>
     </div>
@@ -100,6 +106,10 @@ export default {
       get () { return this.cfg.futureExplorerSortMode || 'depth' },
       set (value) { this.$store.dispatch('analysisVisualization', { futureExplorerSortMode: value }) }
     },
+    evalPerspective: {
+      get () { return this.cfg.futureExplorerEvalPerspective || 'auto' },
+      set (value) { this.$store.dispatch('analysisVisualization', { futureExplorerEvalPerspective: value }) }
+    },
     openings () {
       const explorer = this.futureExplorer || {}
       const openings = explorer.openings && Object.keys(explorer.openings).length
@@ -125,9 +135,20 @@ export default {
       const moveGroups = Object.keys(groups).map(moveNumber => {
         const items = Object.values(groups[moveNumber] || {}).map(item => ({ ...item, moveNumber }))
         const byAppearances = this.sortMode === 'appearances'
-        items.sort((a, b) => byAppearances
-          ? ((b.appearances || 0) - (a.appearances || 0)) || ((b.deepestDepth || 0) - (a.deepestDepth || 0))
-          : ((b.deepestDepth || 0) - (a.deepestDepth || 0)) || ((b.appearances || 0) - (a.appearances || 0)))
+        const byEvaluation = this.sortMode === 'evaluation'
+        items.sort((a, b) => {
+          if (byEvaluation) {
+            const aEval = this.displayEvalValue(a)
+            const bEval = this.displayEvalValue(b)
+            const evalOrder = Number.isFinite(bEval) && Number.isFinite(aEval)
+              ? bEval - aEval
+              : (Number.isFinite(bEval) ? 1 : 0) - (Number.isFinite(aEval) ? 1 : 0)
+            return evalOrder || ((b.deepestDepth || 0) - (a.deepestDepth || 0)) || ((b.appearances || 0) - (a.appearances || 0))
+          }
+          return byAppearances
+            ? ((b.appearances || 0) - (a.appearances || 0)) || ((b.deepestDepth || 0) - (a.deepestDepth || 0))
+            : ((b.deepestDepth || 0) - (a.deepestDepth || 0)) || ((b.appearances || 0) - (a.appearances || 0))
+        })
         return { moveNumber, items: items.slice(0, 12) }
       }).sort((a, b) => Number(a.moveNumber) - Number(b.moveNumber))
       if (!moveGroups.length) return null
@@ -216,23 +237,52 @@ export default {
       const continuation = item.continuationUCI ? `\nThen: ${item.continuationUCI}` : ''
       return [
         `Depth ${item.deepestDepth}`,
-        `Score ${this.score(item)}`,
+        `Score ${this.score(item)} (${this.evalPerspectiveLabel(item)})`,
         `Rank ${this.rank(item)}`,
         `Seen ${item.firstDepth}–${item.lastDepth}`,
         `Reached by: ${item.pvUCI}${continuation}`
       ].join('\n')
     },
+    sideToMoveFromFen (fen) {
+      return String(fen || '').split(/\s+/)[1] !== 'b'
+    },
+    rootTurn (item) {
+      return typeof item.rootTurn === 'boolean' ? item.rootTurn : this.sideToMoveFromFen(item.rootFen)
+    },
+    moveTurn (item) {
+      if (typeof item.moveTurn === 'boolean') return item.moveTurn
+      if (item.fen) return !this.sideToMoveFromFen(item.fen)
+      const rootTurn = this.rootTurn(item)
+      const moveNumber = Number(item.moveNumber) || 1
+      return moveNumber % 2 === 1 ? rootTurn : !rootTurn
+    },
+    displayEvalValue (item) {
+      if (typeof item.averageEval !== 'number') return Number.NEGATIVE_INFINITY
+      if (this.evalPerspective === 'cho') return item.averageEval
+      if (this.evalPerspective === 'han') return -item.averageEval
+      return this.moveTurn(item) === this.rootTurn(item) ? item.averageEval : -item.averageEval
+    },
+    evalPerspectiveLabel (item) {
+      if (this.evalPerspective === 'cho') return 'Cho'
+      if (this.evalPerspective === 'han') return 'Han'
+      return this.moveTurn(item) ? 'Auto · Cho to move' : 'Auto · Han to move'
+    },
     score (item) {
-      if (typeof item.mate === 'number') return `#${item.mate}`
-      if (typeof item.averageEval === 'number') {
-        const value = item.averageEval / 100
+      const displayEval = this.displayEvalValue(item)
+      if (typeof item.mate === 'number') {
+        const mate = Number.isFinite(displayEval) && displayEval < 0 ? -Math.abs(item.mate) : Math.abs(item.mate)
+        return `#${mate}`
+      }
+      if (Number.isFinite(displayEval)) {
+        const value = displayEval / 100
         return `${value > 0 ? '+' : ''}${value.toFixed(2)}`
       }
       return '—'
     },
     averageEval (item) {
-      if (typeof item.averageEval !== 'number') return '—'
-      const value = item.averageEval / 100
+      const displayEval = this.displayEvalValue(item)
+      if (!Number.isFinite(displayEval)) return '—'
+      const value = displayEval / 100
       return `${value > 0 ? '+' : ''}${value.toFixed(2)}`
     },
     compactSummary (item) {
