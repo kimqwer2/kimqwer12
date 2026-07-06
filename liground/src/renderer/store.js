@@ -31,6 +31,7 @@ function emptyFutureExplorerState () {
     sortMode: 'depth',
     rootFen: '',
     rootKey: '',
+    openings: {},
     groups: {},
     lastSignature: ''
   }
@@ -38,6 +39,18 @@ function emptyFutureExplorerState () {
 
 function boardFenKey (fen) {
   return String(fen || '').split(/\s+/).slice(0, 4).join(' ')
+}
+
+function futureOpeningMeta (state) {
+  const fen = state.startFen || state.fen || ''
+  const key = boardFenKey(fen)
+  const pool = []
+  if (Array.isArray(state.openingStartPool)) pool.push(...state.openingStartPool)
+  if (['janggi', 'janggimodern'].includes(state.variant)) pool.push(...janggiStandard16OpeningPositions(state.variant))
+  const match = pool.find(item => item && boardFenKey(item.fen) === key)
+  const info = state.gameInfo || {}
+  const label = (match && match.name) || info.Opening || `Start ${key.slice(0, 18)}…`
+  return { key, fen, label }
 }
 
 function futureExplorerEntryFromPv (state, payload) {
@@ -55,6 +68,7 @@ function futureExplorerEntryFromPv (state, payload) {
   const board = state.board
   if (!board) return []
   const savedFen = board.fen()
+  const opening = futureOpeningMeta(state)
   const entries = []
   try {
     board.setFen(state.fen)
@@ -67,6 +81,9 @@ function futureExplorerEntryFromPv (state, payload) {
         entries.push({
           key: boardFenKey(board.fen()),
           fen: board.fen(),
+          openingKey: opening.key,
+          openingFen: opening.fen,
+          openingLabel: opening.label,
           moveNumber,
           depth,
           rank: Number(payload.multipv) || 1,
@@ -3177,15 +3194,28 @@ export const store = new Vuex.Store({
     },
     futureExplorerRecord (state, payload) {
       const rootKey = boardFenKey(state.fen)
-      if (!state.futureExplorer || state.futureExplorer.rootKey !== rootKey) {
-        state.futureExplorer = { ...emptyFutureExplorerState(), rootFen: state.fen, rootKey }
-      }
+      if (!state.futureExplorer) state.futureExplorer = emptyFutureExplorerState()
+      if (!state.futureExplorer.openings) Vue.set(state.futureExplorer, 'openings', {})
+      state.futureExplorer.rootFen = state.fen
+      state.futureExplorer.rootKey = rootKey
       for (const entry of payload || []) {
         if (!entry || !entry.key || entry.signature === state.futureExplorer.lastSignature) continue
         state.futureExplorer.lastSignature = entry.signature
+        const openingKey = entry.openingKey || 'current'
+        if (!state.futureExplorer.openings[openingKey]) {
+          Vue.set(state.futureExplorer.openings, openingKey, {
+            key: openingKey,
+            label: entry.openingLabel || 'Current start',
+            fen: entry.openingFen || '',
+            groups: {}
+          })
+        }
+        const opening = state.futureExplorer.openings[openingKey]
+        opening.label = entry.openingLabel || opening.label
+        opening.fen = entry.openingFen || opening.fen
         const groupKey = String(entry.moveNumber)
-        if (!state.futureExplorer.groups[groupKey]) Vue.set(state.futureExplorer.groups, groupKey, {})
-        const group = state.futureExplorer.groups[groupKey]
+        if (!opening.groups[groupKey]) Vue.set(opening.groups, groupKey, {})
+        const group = opening.groups[groupKey]
         const current = group[entry.key]
         const score = scoreToCpForStore(entry)
         if (!current) {
