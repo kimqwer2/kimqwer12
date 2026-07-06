@@ -3,6 +3,7 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu } from 'electron'
 import path from 'path'
 import { addGamePath, removeGamePath, getAllSavedGamePaths, clearAllGamePaths, listSavedGameLibrary, saveGameToLibrary, readSavedGame, renameSavedGame, deleteSavedGame, savedGamesDirectory } from './gameStorage'
+import { loadFutureExplorerData, saveFutureExplorerData, clearFutureExplorerData } from './futureExplorerStorage'
 import { createSchema, insertEval, getEvals } from './evalCache'
 import { createReviewSchema, getReviewResult, insertReviewResult } from './reviewCache'
 import { analyzeReviewRequest, buildReviewCacheKey } from '../shared/review/reviewService'
@@ -248,6 +249,30 @@ ipcMain.handle('saved-games-library-rename', async (_event, payload) => {
 ipcMain.handle('saved-games-library-delete', async (_event, filePath) => {
   try {
     return { success: true, deleted: deleteSavedGame(filePath) }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+
+ipcMain.handle('future-explorer-load', async () => {
+  try {
+    return { success: true, data: loadFutureExplorerData() }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+
+ipcMain.handle('future-explorer-save', async (_event, payload) => {
+  try {
+    return { success: true, data: saveFutureExplorerData(payload || {}) }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+
+ipcMain.handle('future-explorer-clear', async () => {
+  try {
+    return { success: true, data: clearFutureExplorerData() }
   } catch (err) {
     return { success: false, error: err.message }
   }
