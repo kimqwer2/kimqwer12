@@ -385,7 +385,7 @@ export default {
       })
     },
     squareName (file, rank, height = 10) {
-      return `${String.fromCharCode(97 + file)}${Math.max(0, height - 1 - rank)}`
+      return `${String.fromCharCode(97 + file)}${height - rank}`
     },
     moveSquares (move, occupancy = {}) {
       const parts = String(move || '').match(/^([a-z])(\d+)([a-z])(\d+)/i)
@@ -405,7 +405,7 @@ export default {
     displaySquare (square) {
       const match = String(square || '').match(/^([a-z])(\d+)$/i)
       if (!match) return square || '—'
-      return `${match[1].toUpperCase()}${Number(match[2]) + 1}`
+      return `${match[1].toUpperCase()}${Number(match[2])}`
     },
     pieceTypeKorean (type) {
       const names = { Pawn: '졸', Chariot: '차', Horse: '마', Elephant: '상', Advisor: '사', King: '궁', Cannon: '포' }
