@@ -152,7 +152,7 @@
         class="engineManualBtn"
         @click="engineAnalyze"
       >
-        Engine Analyze
+        {{ active ? 'Stop Analysis' : 'Engine Analyze' }}
       </button>
       <button
         class="engineManualBtn"
@@ -300,7 +300,7 @@ export default {
     displayVariant () { // retuns the "nice" name of the current variant
       return this.variantOptions.revGet(this.variant)
     },
-    ...mapGetters(['QuickTourIndex', 'gameConfig', 'showGameEndModal', 'focusMode']),
+    ...mapGetters(['QuickTourIndex', 'gameConfig', 'showGameEndModal', 'focusMode', 'active']),
     showGameEndModal () {
       return this.$store.getters.showGameEndModal
     },

@@ -1303,7 +1303,10 @@ export default {
         const baseShapes = (this.reviewSequenceActive || this.reviewPreviewActive) ? [] : this.shapes
         const basePieceShapes = (this.reviewSequenceActive || this.reviewPreviewActive) ? [] : this.pieceShapes
         const pieceHighlight = this.futureExplorerPieceHighlight && this.futureExplorerPieceHighlight.square
-          ? [{ orig: this.futureExplorerPieceHighlight.square.replace('10', ':'), brush: 'yellow', modifiers: { lineWidth: 5, opacity: 0.9 } }]
+          ? [
+              { orig: this.futureExplorerPieceHighlight.square.replace('10', ':'), brush: 'yellow', modifiers: { lineWidth: 5, opacity: 0.9 } },
+              this.futureExplorerPieceHighlight.dest ? { orig: this.futureExplorerPieceHighlight.square.replace('10', ':'), dest: this.futureExplorerPieceHighlight.dest.replace('10', ':'), brush: 'yellow', modifiers: { lineWidth: 4, opacity: 0.85 } } : null
+            ].filter(Boolean)
           : []
         const combinedShapes = [...baseShapes, ...basePieceShapes, ...reviewShapes, ...pieceHighlight].map(shape => {
           if (!shape) return null
