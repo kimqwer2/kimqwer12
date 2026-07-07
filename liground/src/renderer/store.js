@@ -34,7 +34,8 @@ function emptyFutureExplorerState () {
     rootKey: '',
     openings: {},
     groups: {},
-    lastSignature: ''
+    lastSignature: '',
+    activePositionRootKey: ''
   }
 }
 
@@ -52,6 +53,7 @@ function normalizeFutureExplorerState (input) {
   next.rootFen = input.rootFen || ''
   next.rootKey = input.rootKey || (input.rootFen ? boardFenKey(input.rootFen) : '')
   next.lastSignature = input.lastSignature || ''
+  next.activePositionRootKey = input.activePositionRootKey || ''
   const sourceOpenings = input.openings && typeof input.openings === 'object' ? input.openings : {}
   for (const key of Object.keys(sourceOpenings)) {
     const opening = sourceOpenings[key]
@@ -63,7 +65,8 @@ function normalizeFutureExplorerState (input) {
       name: opening.name || '',
       autoName: opening.autoName || '',
       groups: opening.groups && typeof opening.groups === 'object' ? opening.groups : {},
-      lastSignature: opening.lastSignature || ''
+      lastSignature: opening.lastSignature || '',
+      type: opening.type || 'position'
     }
   }
   if (input.groups && typeof input.groups === 'object') {
@@ -75,7 +78,8 @@ function normalizeFutureExplorerState (input) {
         name: input.name || '',
         autoName: input.autoName || '',
         groups: input.groups,
-        lastSignature: input.lastSignature || ''
+        lastSignature: input.lastSignature || '',
+        type: input.type || 'position'
       }
     }
   }
@@ -2766,7 +2770,8 @@ export const store = new Vuex.Store({
       futureExplorerMaxMove: 60,
       futureExplorerSortMode: 'depth',
       futureExplorerEvalPerspective: 'auto',
-      futureExplorerQualityMode: false
+      futureExplorerQualityMode: false,
+      futureExplorerStorePositions: true
     },
     futureExplorer: emptyFutureExplorerState(),
     futureExplorerPieceHighlight: null,
@@ -3236,23 +3241,32 @@ export const store = new Vuex.Store({
       state.futureExplorer = normalizeFutureExplorerState(payload)
     },
     futureExplorerPieceHighlightSet (state, payload) {
-      state.futureExplorerPieceHighlight = payload && payload.square ? { square: payload.square, label: payload.label || '' } : null
+      state.futureExplorerPieceHighlight = payload && payload.square ? { square: payload.square, dest: payload.dest || '', label: payload.label || '' } : null
     },
     futureExplorerRecord (state, payload) {
-      const rootKey = boardFenKey(state.fen)
+      const cfg = state.analysisVisualization || {}
       if (!state.futureExplorer) state.futureExplorer = emptyFutureExplorerState()
       if (!state.futureExplorer.openings) Vue.set(state.futureExplorer, 'openings', {})
+      const activePositionKey = state.futureExplorer.activePositionRootKey || ''
+      const activePosition = activePositionKey ? state.futureExplorer.openings[activePositionKey] : null
+      const useActivePosition = !!(activePosition && boardFenKey(activePosition.rootFen) === boardFenKey(state.fen))
+      const hasGameMoves = Array.isArray(state.moves) && state.moves.length > 0 && !useActivePosition
+      if (!hasGameMoves && cfg.futureExplorerStorePositions === false && !useActivePosition) return
+      const rootKey = useActivePosition ? activePositionKey : (hasGameMoves ? `game:${state.moves.length}:${boardFenKey(state.fen)}` : boardFenKey(state.fen))
+      const sessionType = hasGameMoves ? 'game' : 'position'
       if (!state.futureExplorer.openings[rootKey]) {
         Vue.set(state.futureExplorer.openings, rootKey, {
           rootKey,
           rootFen: state.fen,
           name: '',
           autoName: '',
+          type: sessionType,
           groups: {},
           lastSignature: ''
         })
       }
       const opening = state.futureExplorer.openings[rootKey]
+      if (!opening.type) Vue.set(opening, 'type', sessionType)
       opening.rootFen = opening.rootFen || state.fen
       state.futureExplorer.rootFen = opening.rootFen
       state.futureExplorer.rootKey = rootKey
@@ -3323,11 +3337,13 @@ export const store = new Vuex.Store({
           name: '',
           autoName: payload.autoName || '',
           groups: {},
-          lastSignature: ''
+          lastSignature: '',
+          type: payload.type || 'position'
         })
       } else if (payload.autoName && !state.futureExplorer.openings[rootKey].name) {
         Vue.set(state.futureExplorer.openings[rootKey], 'autoName', payload.autoName)
       }
+      if (payload.type === 'position') Vue.set(state.futureExplorer, 'activePositionRootKey', rootKey)
     },
     futureExplorerDeleteOpening (state, payload) {
       if (!payload || !payload.rootKey || !state.futureExplorer || !state.futureExplorer.openings) return
@@ -3340,6 +3356,22 @@ export const store = new Vuex.Store({
         state.futureExplorer.groups = next ? next.groups : {}
         state.futureExplorer.lastSignature = next ? next.lastSignature || '' : ''
       }
+    },
+
+    futureExplorerDeleteByType (state, payload) {
+      const type = payload && payload.type
+      if (!type || !state.futureExplorer || !state.futureExplorer.openings) return
+      Object.keys(state.futureExplorer.openings).forEach(key => {
+        const opening = state.futureExplorer.openings[key]
+        if ((opening && (opening.type || 'position')) === type) Vue.delete(state.futureExplorer.openings, key)
+      })
+      const nextKey = Object.keys(state.futureExplorer.openings)[0] || ''
+      const next = nextKey ? state.futureExplorer.openings[nextKey] : null
+      state.futureExplorer.rootKey = nextKey
+      state.futureExplorer.rootFen = next ? next.rootFen : ''
+      state.futureExplorer.groups = next ? next.groups : {}
+      state.futureExplorer.lastSignature = next ? next.lastSignature || '' : ''
+      if (type === 'position') state.futureExplorer.activePositionRootKey = ''
     },
     pieceStyle (state, payload) {
       state.pieceStyle = payload
@@ -6779,6 +6811,10 @@ export const store = new Vuex.Store({
       context.commit('futureExplorerDeleteOpening', payload)
       return context.dispatch('persistFutureExplorer')
     },
+    deleteFutureExplorerByType (context, payload) {
+      context.commit('futureExplorerDeleteByType', payload)
+      return context.dispatch('persistFutureExplorer')
+    },
     prepareFutureExplorerOpening (context, payload) {
       context.commit('futureExplorerPrepareOpening', payload)
       return context.dispatch('persistFutureExplorer')
@@ -6815,7 +6851,7 @@ export const store = new Vuex.Store({
     analyzeFuturePosition (context, payload) {
       if (!payload || !payload.fen) return
       context.commit('reviewPreviewClear')
-      context.commit('futureExplorerPrepareOpening', { rootFen: payload.fen, autoName: payload.continuationName || '' })
+      context.commit('futureExplorerPrepareOpening', { rootFen: payload.fen, autoName: payload.continuationName || '', type: 'position' })
       return context.dispatch('loadFutureExplorerLine', payload).then(() => {
         context.commit('analysisMode', true)
         context.dispatch('startEngine')

@@ -12,7 +12,8 @@ function emptyFutureExplorerData () {
     rootKey: '',
     openings: {},
     groups: {},
-    lastSignature: ''
+    lastSignature: '',
+    activePositionRootKey: ''
   }
 }
 
@@ -22,6 +23,7 @@ function normalizeFutureExplorerData (data) {
   next.rootFen = data.rootFen || ''
   next.rootKey = data.rootKey || ''
   next.lastSignature = data.lastSignature || ''
+  next.activePositionRootKey = data.activePositionRootKey || ''
   if (data.openings && typeof data.openings === 'object') {
     next.openings = Object.keys(data.openings).reduce((acc, key) => {
       const opening = data.openings[key]
