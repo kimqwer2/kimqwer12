@@ -13,7 +13,9 @@
         <button type="button" @click="toggleAllEntryDetails('full')">Expand Full</button>
         <button type="button" @click="deepExploreCurrentPosition">Deep Explore This Position</button>
         <button type="button" class="danger" @click="clearPositionExplorer">Clear Position Explorer</button>
+        <button type="button" class="danger" @click="clearGameAnalysis">Clear Game Analysis</button>
         <button type="button" class="danger" @click="clearExplorer">Clear Future Explorer</button>
+        <label class="quality-toggle"><input v-model="storePositions" type="checkbox"> Store Positions</label>
         <label class="quality-toggle"><input v-model="qualityMode" type="checkbox"> Quality</label>
         <select v-model="sortMode" @change="saveSort">
           <option value="depth">Depth</option>
@@ -151,6 +153,141 @@
       </section>
     </details>
     </section>
+    <section v-if="gameGroups.length" class="explorer-section game-analysis-section">
+      <h3 class="section-title">Game Analysis <small>{{ gameGroups.length }} games</small></h3>
+      <details
+        v-for="game in gameGroups"
+        :key="game.key"
+        ref="gameDetails"
+        class="game-group"
+      >
+        <summary class="game-summary">
+          <span>{{ game.label }}</span>
+          <small>{{ game.openings.length }} moves</small>
+          <button type="button" class="rename-opening danger" @click.prevent.stop="deleteGameAnalysisGame(game)">Delete Game</button>
+        </summary>
+        <details
+          v-for="opening in game.openings"
+          :key="opening.key"
+          ref="openingDetails"
+          class="opening-group"
+        >
+          <summary class="opening-summary">
+            <span v-if="editingOpeningKey !== opening.key" class="opening-title">{{ opening.label }}</span>
+            <input
+              v-else
+              v-model="editingOpeningName"
+              class="opening-name-input"
+              type="text"
+              @click.stop
+              @keydown.enter.prevent="saveOpeningName(opening)"
+              @keydown.esc.prevent="cancelOpeningName"
+            >
+            <span class="opening-meta">{{ opening.positionCount }} positions<span v-if="opening.customName"> · {{ opening.fallbackLabel }}</span></span>
+            <button
+              v-if="editingOpeningKey !== opening.key"
+              type="button"
+              class="rename-opening"
+              @click.prevent.stop="startOpeningNameEdit(opening)"
+            >Rename</button>
+            <button
+              v-if="editingOpeningKey !== opening.key"
+              type="button"
+              class="rename-opening danger"
+              @click.prevent.stop="deleteOpening(opening)"
+            >Delete</button>
+            <template v-else>
+              <button type="button" class="rename-opening" @click.prevent.stop="saveOpeningName(opening)">Save</button>
+              <button type="button" class="rename-opening" @click.prevent.stop="cancelOpeningName">Cancel</button>
+            </template>
+          </summary>
+          <div v-for="group in opening.moveGroups" :key="group.moveNumber" class="move-group">
+            <div class="move-heading">Move {{ group.moveNumber }} <span>({{ group.totalItems }})</span></div>
+            <div class="future-chip-row">
+              <article v-for="item in group.items" :key="entryKey(item)" class="future-entry" :class="{ full: entryMode(item) === 'full' }">
+                <button
+                  type="button"
+                  class="future-chip"
+                  :class="{ expanded: entryMode(item) }"
+                  :title="chipTitle(item)"
+                  @mouseenter="preview(item)"
+                  @mouseleave="clearPreview"
+                  @click="handleChipClick($event, item)"
+                  @dblclick.stop="analyze(item)"
+                >
+                  <template v-if="entryMode(item) || qualityMode">
+                    <span>{{ compactSummary(item) }}</span>
+                  </template>
+                  <template v-else>
+                    <span class="main">D{{ item.deepestDepth }}</span>
+                    <span class="score">{{ score(item) }}</span>
+                    <span class="meta">{{ item.appearances }}×</span>
+                  </template>
+                </button>
+                <div v-if="entryMode(item) === 'full'" class="entry-lines">
+                  <p><strong>Reached by</strong> <code>{{ item.pvUCI || '—' }}</code></p>
+                  <p><strong>Continuation PV</strong> <code>{{ item.continuationUCI || '—' }}</code></p>
+                </div>
+              </article>
+            </div>
+          </div>
+          <section class="piece-activity">
+            <button type="button" class="piece-activity-summary" :aria-expanded="pieceActivityExpanded(opening.key) ? 'true' : 'false'" @click="togglePieceActivity(opening)">
+              <span class="piece-activity-caret">{{ pieceActivityExpanded(opening.key) ? '▼' : '▶' }}</span>
+              <span>Piece Activity</span>
+              <small>({{ opening.positionCount }} positions)</small>
+            </button>
+            <div v-if="pieceActivityExpanded(opening.key)" class="piece-activity-panel">
+              <div v-if="pieceActivityLoading[opening.key]" class="piece-activity-loading">Calculating piece activity…</div>
+              <div v-else-if="pieceActivityFor(opening)" class="piece-activity-body">
+                <p class="piece-activity-note">목적지는 각 기물이 이 오프닝 포지션들에서 처음 이동한 보드 좌표입니다.</p>
+                <button type="button" class="piece-scan-button" @click="scanPieceActivity(opening)">Rescan Positions</button>
+                <div v-if="pieceActivityEmpty(opening)" class="piece-activity-empty">No piece activity data could be generated for this Opening.</div>
+                <div v-if="pieceActivityDiagnostics(opening)" class="piece-diagnostics">
+                  <strong>Scanned Opening</strong>
+                  <span>Expected positions: {{ pieceActivityDiagnostics(opening).expectedPositions }}</span>
+                  <span>Visited positions: {{ pieceActivityDiagnostics(opening).visitedPositions }}</span>
+                  <span>PVs found: {{ pieceActivityDiagnostics(opening).pvsFound }}</span>
+                  <span>Moves extracted: {{ pieceActivityDiagnostics(opening).movesExtracted }}</span>
+                  <span>Pieces detected: Cho {{ pieceActivityDiagnostics(opening).choPieces }} / Han {{ pieceActivityDiagnostics(opening).hanPieces }}</span>
+                  <span>Individual pieces matched: {{ pieceActivityDiagnostics(opening).piecesMatched }}</span>
+                  <span>Statistics generated: {{ pieceActivityDiagnostics(opening).statisticsGenerated }}</span>
+                </div>
+                <div v-if="!pieceActivityEmpty(opening)" class="piece-tabs" role="tablist" aria-label="Piece activity side">
+                  <button type="button" :class="{ active: pieceActivitySide(opening.key) === 'cho' }" @click="setPieceActivitySide(opening.key, 'cho')">Cho</button>
+                  <button type="button" :class="{ active: pieceActivitySide(opening.key) === 'han' }" @click="setPieceActivitySide(opening.key, 'han')">Han</button>
+                </div>
+                <div v-if="!pieceActivityEmpty(opening)" class="average-first-move"><strong>Average First Move</strong><span v-for="piece in averageFirstMovePieces(opening)" :key="`avg-${piece.id}`">{{ piece.averageFirstMove }} {{ piece.shortLabel }}</span></div>
+                <div v-if="!pieceActivityEmpty(opening)" class="piece-activity-grid">
+                  <article
+                    v-for="piece in pieceActivityPieces(opening)"
+                    :key="piece.id"
+                    class="piece-card"
+                    :title="`시작 위치 ${piece.displaySquare}`"
+                    @mouseenter="highlightPieceStart(piece)"
+                    @mouseleave="clearPieceStartHighlight"
+                  >
+                    <h4>{{ piece.label }}</h4>
+                    <dl>
+                      <div><dt>시작</dt><dd>{{ piece.displaySquare }}</dd></div>
+                      <div><dt>이동률</dt><dd>{{ piece.moveRate }}%</dd><dd class="rate-count">{{ piece.moved }} / {{ piece.total }}</dd></div>
+                      <div><dt>평균 첫 수</dt><dd>{{ piece.averageFirstMove }}</dd></div>
+                    </dl>
+                    <div class="top-moves">
+                      <strong>첫 이동 목적지</strong>
+                      <p v-if="!piece.topMoves.length" class="muted">No first moves</p>
+                      <div v-for="move in piece.topMoves" :key="move.destination" class="top-move-row">
+                        <code>{{ move.destination }}</code><span>{{ move.percent }}%</span>
+                      </div>
+                    </div>
+                  </article>
+                </div>
+              </div>
+            </div>
+          </section>
+        </details>
+      </details>
+    </section>
   </details>
 </template>
 
@@ -185,6 +322,10 @@ export default {
       get () { return !!this.cfg.futureExplorerQualityMode },
       set (value) { this.$store.dispatch('analysisVisualization', { futureExplorerQualityMode: !!value }) }
     },
+    storePositions: {
+      get () { return this.cfg.futureExplorerStorePositions !== false },
+      set (value) { this.$store.dispatch('analysisVisualization', { futureExplorerStorePositions: !!value }) }
+    },
     openings () {
       const explorer = this.futureExplorer || {}
       const openings = explorer.openings && Object.keys(explorer.openings).length
@@ -198,9 +339,20 @@ export default {
     },
     explorerSections () {
       return [
-        { type: 'position', title: 'Position Explorer', openings: this.openings.filter(opening => opening.type !== 'game') },
-        { type: 'game', title: 'Game Analysis', openings: this.openings.filter(opening => opening.type === 'game') }
+        { type: 'position', title: 'Position Explorer', openings: this.openings.filter(opening => opening.type !== 'game') }
       ].filter(section => section.openings.length)
+    },
+    gameGroups () {
+      const groups = {}
+      this.openings.filter(opening => opening.type === 'game').forEach(opening => {
+        const key = opening.gameKey || 'game-1'
+        if (!groups[key]) groups[key] = { key, label: this.gameLabel(key), openings: [] }
+        groups[key].openings.push(opening)
+      })
+      return Object.values(groups).map(game => ({
+        ...game,
+        openings: game.openings.sort((a, b) => (a.gamePly || 0) - (b.gamePly || 0))
+      })).sort((a, b) => this.gameIndex(a.key) - this.gameIndex(b.key))
     },
     allItems () {
       return this.openings.flatMap(opening => opening.moveGroups.flatMap(group => group.items))
@@ -486,11 +638,14 @@ export default {
       return {
         key: openingKey,
         rootFen: opening && opening.rootFen,
-        label: openingLabel,
         fallbackLabel,
         customName: opening && opening.name,
         autoName: opening && opening.autoName,
         type: opening && (opening.type || 'position'),
+        gameKey: opening && opening.gameKey,
+        gamePly: opening && opening.gamePly,
+        gameSide: opening && opening.gameSide,
+        label: opening && opening.type === 'game' ? `${opening.gamePly || '?'} ${opening.gameSide || ''}`.trim() : openingLabel,
         moveGroups,
         positionCount: moveGroups.reduce((sum, group) => sum + group.totalItems, 0),
         allItems: moveGroups.flatMap(group => group.allItems)
@@ -502,6 +657,13 @@ export default {
         .slice()
         .sort((a, b) => a.averageFirstMoveValue - b.averageFirstMoveValue)
         .slice(0, 8)
+    },
+    gameIndex (key) {
+      const match = String(key || '').match(/(\d+)$/)
+      return match ? Number(match[1]) : 1
+    },
+    gameLabel (key) {
+      return `Game ${this.gameIndex(key)}`
     },
     openingLabel (fen) {
       if (!fen) return 'Current opening'
@@ -580,6 +742,15 @@ export default {
     clearPositionExplorer () {
       if (!confirm('Clear stored Position Explorer sessions?')) return
       this.$store.dispatch('deleteFutureExplorerByType', { type: 'position' })
+    },
+    clearGameAnalysis () {
+      if (!confirm('Clear all stored Game Analysis sessions?')) return
+      this.$store.dispatch('deleteFutureExplorerByType', { type: 'game' })
+    },
+    deleteGameAnalysisGame (game) {
+      if (!game || !game.key) return
+      if (!confirm(`Delete ${game.label}?`)) return
+      this.$store.dispatch('deleteFutureExplorerGame', { gameKey: game.key })
     },
     clearExplorer () {
       if (!confirm('Clear all stored Future Explorer positions?')) return
@@ -707,6 +878,9 @@ export default {
 .explorer-section { margin-top: 0.65rem; }
 .section-title { margin: 0.55rem 0 0.25rem; font-size: 0.9rem; }
 .section-title small { opacity: 0.6; font-weight: 400; }
+.game-group { margin-top: 0.45rem; padding: 0.25rem 0.35rem; border: 1px solid rgba(128,128,128,0.12); border-radius: 8px; }
+.game-summary { cursor: pointer; display: flex; align-items: center; gap: 0.45rem; font-weight: 700; }
+.game-summary small { opacity: 0.65; font-weight: 400; }
 .opening-group { margin-top: 0.5rem; }
 .opening-group > summary { cursor: pointer; font-weight: 600; }
 .opening-summary { display: flex; align-items: center; gap: 0.35rem; }

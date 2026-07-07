@@ -35,7 +35,9 @@ function emptyFutureExplorerState () {
     openings: {},
     groups: {},
     lastSignature: '',
-    activePositionRootKey: ''
+    activePositionRootKey: '',
+    currentGameKey: '',
+    nextGameIndex: 1
   }
 }
 
@@ -47,6 +49,14 @@ function sideToMoveFromFen (fen) {
   return String(fen || '').split(/\s+/)[1] !== 'b'
 }
 
+function futureExplorerGamePly (state) {
+  const current = Array.isArray(state.moves) ? state.moves.find(move => move && move.fen === state.fen) : null
+  const ply = current && Number.isFinite(Number(current.ply))
+    ? Number(current.ply) + 1
+    : Math.max(1, (Array.isArray(state.moves) ? state.moves.length : 0) + 1)
+  return ply
+}
+
 function normalizeFutureExplorerState (input) {
   const next = emptyFutureExplorerState()
   if (!input || typeof input !== 'object') return next
@@ -54,6 +64,8 @@ function normalizeFutureExplorerState (input) {
   next.rootKey = input.rootKey || (input.rootFen ? boardFenKey(input.rootFen) : '')
   next.lastSignature = input.lastSignature || ''
   next.activePositionRootKey = input.activePositionRootKey || ''
+  next.currentGameKey = input.currentGameKey || ''
+  next.nextGameIndex = Math.max(1, Number(input.nextGameIndex) || 1)
   const sourceOpenings = input.openings && typeof input.openings === 'object' ? input.openings : {}
   for (const key of Object.keys(sourceOpenings)) {
     const opening = sourceOpenings[key]
@@ -66,7 +78,10 @@ function normalizeFutureExplorerState (input) {
       autoName: opening.autoName || '',
       groups: opening.groups && typeof opening.groups === 'object' ? opening.groups : {},
       lastSignature: opening.lastSignature || '',
-      type: opening.type || 'position'
+      type: opening.type || 'position',
+      gameKey: opening.gameKey || '',
+      gamePly: Number(opening.gamePly) || 0,
+      gameSide: opening.gameSide || ''
     }
   }
   if (input.groups && typeof input.groups === 'object') {
@@ -79,7 +94,10 @@ function normalizeFutureExplorerState (input) {
         autoName: input.autoName || '',
         groups: input.groups,
         lastSignature: input.lastSignature || '',
-        type: input.type || 'position'
+        type: input.type || 'position',
+        gameKey: input.gameKey || '',
+        gamePly: Number(input.gamePly) || 0,
+        gameSide: input.gameSide || ''
       }
     }
   }
@@ -2873,6 +2891,7 @@ export const store = new Vuex.Store({
       state.fenply = 1
       state.gameState.startFen = committedFen
       state.gameState.moves = []
+      this.commit('futureExplorerStartGame')
       state.gameState.sideToMove = state.turn ? 'white' : 'black'
       state.gameState.variant = state.variant
     },
@@ -3243,6 +3262,12 @@ export const store = new Vuex.Store({
     futureExplorerPieceHighlightSet (state, payload) {
       state.futureExplorerPieceHighlight = payload && payload.square ? { square: payload.square, dest: payload.dest || '', label: payload.label || '' } : null
     },
+    futureExplorerStartGame (state) {
+      if (!state.futureExplorer) state.futureExplorer = emptyFutureExplorerState()
+      const nextIndex = Math.max(1, Number(state.futureExplorer.nextGameIndex) || 1)
+      Vue.set(state.futureExplorer, 'currentGameKey', `game-${nextIndex}`)
+      Vue.set(state.futureExplorer, 'nextGameIndex', nextIndex + 1)
+    },
     futureExplorerRecord (state, payload) {
       const cfg = state.analysisVisualization || {}
       if (!state.futureExplorer) state.futureExplorer = emptyFutureExplorerState()
@@ -3252,7 +3277,11 @@ export const store = new Vuex.Store({
       const useActivePosition = !!(activePosition && boardFenKey(activePosition.rootFen) === boardFenKey(state.fen))
       const hasGameMoves = Array.isArray(state.moves) && state.moves.length > 0 && !useActivePosition
       if (!hasGameMoves && cfg.futureExplorerStorePositions === false && !useActivePosition) return
-      const rootKey = useActivePosition ? activePositionKey : (hasGameMoves ? `game:${state.moves.length}:${boardFenKey(state.fen)}` : boardFenKey(state.fen))
+      if (hasGameMoves && !state.futureExplorer.currentGameKey) this.commit('futureExplorerStartGame')
+      const gameKey = hasGameMoves ? state.futureExplorer.currentGameKey : ''
+      const gamePly = hasGameMoves ? futureExplorerGamePly(state) : 0
+      const gameSide = hasGameMoves ? (sideToMoveFromFen(state.fen) ? 'Cho' : 'Han') : ''
+      const rootKey = useActivePosition ? activePositionKey : (hasGameMoves ? `${gameKey}:ply-${gamePly}` : boardFenKey(state.fen))
       const sessionType = hasGameMoves ? 'game' : 'position'
       if (!state.futureExplorer.openings[rootKey]) {
         Vue.set(state.futureExplorer.openings, rootKey, {
@@ -3261,12 +3290,20 @@ export const store = new Vuex.Store({
           name: '',
           autoName: '',
           type: sessionType,
+          gameKey,
+          gamePly,
+          gameSide,
           groups: {},
           lastSignature: ''
         })
       }
       const opening = state.futureExplorer.openings[rootKey]
       if (!opening.type) Vue.set(opening, 'type', sessionType)
+      if (sessionType === 'game') {
+        Vue.set(opening, 'gameKey', opening.gameKey || gameKey)
+        Vue.set(opening, 'gamePly', opening.gamePly || gamePly)
+        Vue.set(opening, 'gameSide', opening.gameSide || gameSide)
+      }
       opening.rootFen = opening.rootFen || state.fen
       state.futureExplorer.rootFen = opening.rootFen
       state.futureExplorer.rootKey = rootKey
@@ -3338,7 +3375,10 @@ export const store = new Vuex.Store({
           autoName: payload.autoName || '',
           groups: {},
           lastSignature: '',
-          type: payload.type || 'position'
+          type: payload.type || 'position',
+          gameKey: payload.gameKey || '',
+          gamePly: Number(payload.gamePly) || 0,
+          gameSide: payload.gameSide || ''
         })
       } else if (payload.autoName && !state.futureExplorer.openings[rootKey].name) {
         Vue.set(state.futureExplorer.openings[rootKey], 'autoName', payload.autoName)
@@ -3358,6 +3398,16 @@ export const store = new Vuex.Store({
       }
     },
 
+
+    futureExplorerDeleteGame (state, payload) {
+      const gameKey = payload && payload.gameKey
+      if (!gameKey || !state.futureExplorer || !state.futureExplorer.openings) return
+      Object.keys(state.futureExplorer.openings).forEach(key => {
+        const opening = state.futureExplorer.openings[key]
+        if (opening && opening.type === 'game' && opening.gameKey === gameKey) Vue.delete(state.futureExplorer.openings, key)
+      })
+      if (state.futureExplorer.currentGameKey === gameKey) state.futureExplorer.currentGameKey = ''
+    },
     futureExplorerDeleteByType (state, payload) {
       const type = payload && payload.type
       if (!type || !state.futureExplorer || !state.futureExplorer.openings) return
@@ -3372,6 +3422,7 @@ export const store = new Vuex.Store({
       state.futureExplorer.groups = next ? next.groups : {}
       state.futureExplorer.lastSignature = next ? next.lastSignature || '' : ''
       if (type === 'position') state.futureExplorer.activePositionRootKey = ''
+      if (type === 'game') state.futureExplorer.currentGameKey = ''
     },
     pieceStyle (state, payload) {
       state.pieceStyle = payload
@@ -3411,6 +3462,7 @@ export const store = new Vuex.Store({
       this.commit('resetEngineStats')
       state.normalizedFen = normalizeFen(state.fen)
       this.commit('syncGameStateFromStore')
+      this.commit('futureExplorerStartGame')
     },
     resetBoard (state, payload) {
       if (!payload.is960) {
@@ -3782,6 +3834,7 @@ export const store = new Vuex.Store({
     movesChangeDummy (state, payload) {
       state.moves = []
       state.moves = payload
+      this.commit('futureExplorerStartGame')
     },
     setEngineClock (state) {
       clearInterval(state.clock)
@@ -4317,10 +4370,15 @@ export const store = new Vuex.Store({
       return { goCmd: `go wtime ${clockMs} btime ${clockMs} winc ${incMs} binc ${incMs}` }
     },
     async analyzePosition (context, payload = {}) {
-      // Manual analysis action: think on the exact current board state without playing a move.
+      // Manual analysis action: toggle thinking on the exact current board state without playing a move.
+      if (context.state.active && !context.state.PvE && !context.state.EvE) {
+        await context.dispatch('stopEngine', { source: 'analysis-toggle' })
+        context.commit('analysisMode', false)
+        return
+      }
       context.dispatch('position')
-      context.dispatch('stopEngine')
       context.dispatch('goEngine', { ...payload, source: 'analysis' })
+      context.commit('analysisMode', true)
     },
     async playSingleEngineMove (context, payload = {}) {
       // Manual single-action engine move:
@@ -6813,6 +6871,10 @@ export const store = new Vuex.Store({
     },
     deleteFutureExplorerByType (context, payload) {
       context.commit('futureExplorerDeleteByType', payload)
+      return context.dispatch('persistFutureExplorer')
+    },
+    deleteFutureExplorerGame (context, payload) {
+      context.commit('futureExplorerDeleteGame', payload)
       return context.dispatch('persistFutureExplorer')
     },
     prepareFutureExplorerOpening (context, payload) {
