@@ -148,11 +148,24 @@
 
 
     <div class="engine-manual-controls">
+      <!--
+        Legacy analysis workflow.
+        Kept only for backward compatibility.
+        Do NOT reuse this code for new features.
+        Use the Ctrl+A / toggleAnalysisMode workflow instead.
+      -->
       <button
         class="engineManualBtn"
         @click="engineAnalyze"
       >
         {{ active ? 'Stop Analysis' : 'Engine Analyze' }}
+      </button>
+      <button
+        class="engineManualBtn"
+        title="Toggle analysis exactly like Ctrl+A"
+        @click="toggleAnalysisHotkey"
+      >
+        {{ active ? 'Analysis Toggle OFF' : 'Analysis Toggle ON' }}
       </button>
       <button
         class="engineManualBtn"
@@ -437,6 +450,13 @@ export default {
       this.closeStartModal()
     },
 
+    async toggleAnalysisHotkey () {
+      await this.$store.dispatch('toggleAnalysisMode')
+    },
+    // Legacy analysis workflow.
+    // Kept only for backward compatibility.
+    // Do NOT reuse this code for new features.
+    // Use the Ctrl+A / toggleAnalysisMode workflow instead.
     async engineAnalyze () {
       await this.$store.dispatch('EvEfalse')
       await this.$store.dispatch('PvEfalse')

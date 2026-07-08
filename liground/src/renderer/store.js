@@ -25,6 +25,25 @@ const MIN_CACHE_DEPTH = 20
 let lastCacheKey = null
 let lastFocusModeGetterLog = null
 
+
+function parseRepeatDelayMs (value, fallbackMs = 0) {
+  const raw = String(value == null ? '' : value).trim().toLowerCase()
+  if (!raw) return fallbackMs
+  const match = raw.match(/^([0-9]+(?:\.[0-9]+)?)\s*(ms|s|m|h)?$/)
+  if (!match) return fallbackMs
+  const amount = Number(match[1])
+  if (!Number.isFinite(amount) || amount < 0) return fallbackMs
+  const unit = match[2] || 's'
+  if (unit === 'ms') return amount
+  if (unit === 'm') return amount * 60 * 1000
+  if (unit === 'h') return amount * 60 * 60 * 1000
+  return amount * 1000
+}
+
+function sleepMs (ms) {
+  return new Promise(resolve => setTimeout(resolve, Math.max(0, Number(ms) || 0)))
+}
+
 function emptyFutureExplorerState () {
   return {
     schemaVersion: 1,
@@ -2789,9 +2808,23 @@ export const store = new Vuex.Store({
       futureExplorerSortMode: 'depth',
       futureExplorerEvalPerspective: 'auto',
       futureExplorerQualityMode: false,
-      futureExplorerStorePositions: true
+      futureExplorerStorePositions: true,
+      repeatAnalysisMode: 'count',
+      repeatAnalysisCount: 10,
+      repeatAnalysisDuration: '10m',
+      repeatAnalysisDelay: '1s',
+      repeatAnalysisOverrideDepth: false,
+      repeatAnalysisDepth: 30
     },
     futureExplorer: emptyFutureExplorerState(),
+    futureExplorerRepeatAnalysis: {
+      running: false,
+      stopRequested: false,
+      completed: 0,
+      startedAt: null,
+      endsAt: null,
+      lastStatus: ''
+    },
     futureExplorerPieceHighlight: null,
     deepAnalysis: {
       running: false,
@@ -3261,6 +3294,22 @@ export const store = new Vuex.Store({
     },
     futureExplorerPieceHighlightSet (state, payload) {
       state.futureExplorerPieceHighlight = payload && payload.square ? { square: payload.square, dest: payload.dest || '', label: payload.label || '' } : null
+    },
+    futureExplorerRepeatAnalysis (state, payload = {}) {
+      state.futureExplorerRepeatAnalysis = { ...state.futureExplorerRepeatAnalysis, ...payload }
+    },
+    futureExplorerStartAnalysisSession (state) {
+      if (!state.futureExplorer) state.futureExplorer = emptyFutureExplorerState()
+      Vue.set(state.futureExplorer, 'lastSignature', '')
+      const activePositionKey = state.futureExplorer.activePositionRootKey || ''
+      const activePosition = activePositionKey && state.futureExplorer.openings ? state.futureExplorer.openings[activePositionKey] : null
+      const useActivePosition = !!(activePosition && boardFenKey(activePosition.rootFen) === boardFenKey(state.fen))
+      const hasGameMoves = Array.isArray(state.moves) && state.moves.length > 0 && !useActivePosition
+      const gameKey = hasGameMoves ? state.futureExplorer.currentGameKey : ''
+      const gamePly = hasGameMoves ? futureExplorerGamePly(state) : 0
+      const rootKey = useActivePosition ? activePositionKey : (hasGameMoves ? `${gameKey}:ply-${gamePly}` : boardFenKey(state.fen))
+      const opening = rootKey && state.futureExplorer.openings ? state.futureExplorer.openings[rootKey] : null
+      if (opening) Vue.set(opening, 'lastSignature', '')
     },
     futureExplorerStartGame (state) {
       if (!state.futureExplorer) state.futureExplorer = emptyFutureExplorerState()
@@ -4338,10 +4387,13 @@ export const store = new Vuex.Store({
       context.commit('engineTimeControlConfig', payload)
     },
     computeEngineSearchLimits (context, payload = {}) {
+      if (payload.depth) {
+        return { goCmd: `go depth ${payload.depth}` }
+      }
       if (!context.state.engineTimeControlsEnabled || context.state.engineTimeControlMode === 'depth') {
         const targetDepth = context.state.analysisVisualization.analysisTargetDepth
-        const goCmd = (payload.depth || (targetDepth !== 'infinite' && Number.isFinite(Number(targetDepth))))
-          ? `go depth ${payload.depth || Number(targetDepth)}`
+        const goCmd = (targetDepth !== 'infinite' && Number.isFinite(Number(targetDepth)))
+          ? `go depth ${Number(targetDepth)}`
           : 'go infinite'
         return { goCmd }
       }
@@ -4369,6 +4421,10 @@ export const store = new Vuex.Store({
       }
       return { goCmd: `go wtime ${clockMs} btime ${clockMs} winc ${incMs} binc ${incMs}` }
     },
+    // Legacy analysis workflow.
+    // Kept only for backward compatibility.
+    // Do NOT reuse this code for new features.
+    // Use the Ctrl+A / toggleAnalysisMode workflow instead.
     async analyzePosition (context, payload = {}) {
       // Manual analysis action: toggle thinking on the exact current board state without playing a move.
       if (context.state.active && !context.state.PvE && !context.state.EvE) {
@@ -4376,6 +4432,7 @@ export const store = new Vuex.Store({
         context.commit('analysisMode', false)
         return
       }
+      context.commit('futureExplorerStartAnalysisSession')
       context.dispatch('position')
       context.dispatch('goEngine', { ...payload, source: 'analysis' })
       context.commit('analysisMode', true)
@@ -5703,7 +5760,9 @@ export const store = new Vuex.Store({
 
       // only update multipv if depth is higher than cached depth
       if (stats.isEvalCached && stats.depth <= stats.cachedDepth) return
-      const targetDepth = context.state.analysisVisualization.analysisTargetDepth
+      const repeatState = context.state.futureExplorerRepeatAnalysis || {}
+      const repeatDepthOverride = repeatState.running && repeatState.targetDepthOverride ? repeatState.targetDepthOverride : null
+      const targetDepth = repeatDepthOverride || context.state.analysisVisualization.analysisTargetDepth
       if (!context.state.deepAnalysis.running && context.state.active && targetDepth !== 'infinite' && Number.isFinite(Number(targetDepth)) && stats.depth >= Number(targetDepth)) {
         if (context.state.openingGeneration && context.state.openingGeneration.analysisActive) {
           return
@@ -6737,7 +6796,7 @@ export const store = new Vuex.Store({
     analysisMode (context, payload) {
       context.commit('analysisMode', payload)
     },
-    async toggleAnalysisMode (context) {
+    async toggleAnalysisMode (context, payload = {}) {
       if (context.state.active) {
         context.dispatch('stopEngine')
         context.commit('analysisMode', false)
@@ -6752,8 +6811,9 @@ export const store = new Vuex.Store({
           MultiPV: multiPvValue,
           UCI_Variant: context.getters.variant
         })
+        context.commit('futureExplorerStartAnalysisSession')
         await context.dispatch('position')
-        context.dispatch('goEngine')
+        context.dispatch('goEngine', payload)
         context.commit('analysisMode', true)
       }
     },
@@ -6785,6 +6845,56 @@ export const store = new Vuex.Store({
       if (entering) {
         context.commit('editorMode', false)
         context.commit('analysisMode', true)
+      }
+    },
+    stopFutureExplorerRepeatAnalysis (context) {
+      context.commit('futureExplorerRepeatAnalysis', { stopRequested: true, lastStatus: 'Stopping…' })
+      if (context.state.active) context.dispatch('toggleAnalysisMode')
+    },
+    async startFutureExplorerRepeatAnalysis (context) {
+      if (context.state.futureExplorerRepeatAnalysis && context.state.futureExplorerRepeatAnalysis.running) {
+        context.dispatch('stopFutureExplorerRepeatAnalysis')
+        return
+      }
+      await context.dispatch('EvEfalse')
+      await context.dispatch('PvEfalse')
+      const cfg = context.state.analysisVisualization || {}
+      const mode = cfg.repeatAnalysisMode || 'count'
+      const countLimit = Math.max(1, parseInt(cfg.repeatAnalysisCount, 10) || 1)
+      const durationMs = parseRepeatDelayMs(cfg.repeatAnalysisDuration, 10 * 60 * 1000)
+      const delayMs = parseRepeatDelayMs(cfg.repeatAnalysisDelay, 1000)
+      const overrideDepth = !!cfg.repeatAnalysisOverrideDepth
+      const repeatDepth = Math.max(1, parseInt(cfg.repeatAnalysisDepth, 10) || 1)
+      const analysisPayload = overrideDepth ? { depth: repeatDepth } : {}
+      const startedAt = Date.now()
+      const endsAt = mode === 'duration' ? startedAt + durationMs : null
+      context.commit('futureExplorerRepeatAnalysis', { running: true, stopRequested: false, completed: 0, startedAt, endsAt, targetDepthOverride: overrideDepth ? repeatDepth : null, lastStatus: 'Running' })
+      try {
+        while (!context.state.futureExplorerRepeatAnalysis.stopRequested) {
+          const completed = Number(context.state.futureExplorerRepeatAnalysis.completed) || 0
+          if (mode === 'count' && completed >= countLimit) break
+          if (mode === 'duration' && Date.now() >= endsAt) break
+          if (context.state.active) await context.dispatch('toggleAnalysisMode')
+          await context.dispatch('toggleAnalysisMode', analysisPayload)
+          const waitStarted = Date.now()
+          while (context.state.active && !context.state.futureExplorerRepeatAnalysis.stopRequested) {
+            await sleepMs(100)
+            if (mode === 'duration' && Date.now() >= endsAt) break
+            if (Date.now() - waitStarted > 24 * 60 * 60 * 1000) break
+          }
+          if (context.state.futureExplorerRepeatAnalysis.stopRequested) break
+          if (context.state.active) await context.dispatch('toggleAnalysisMode')
+          context.commit('futureExplorerRepeatAnalysis', { completed: completed + 1, lastStatus: `Completed ${completed + 1}` })
+          if (mode === 'count' && completed + 1 >= countLimit) break
+          if (mode === 'duration' && Date.now() >= endsAt) break
+          if (delayMs > 0) await sleepMs(delayMs)
+        }
+      } finally {
+        if (context.state.active && context.state.futureExplorerRepeatAnalysis.stopRequested) {
+          await context.dispatch('toggleAnalysisMode')
+        }
+        const stopped = context.state.futureExplorerRepeatAnalysis.stopRequested
+        context.commit('futureExplorerRepeatAnalysis', { running: false, stopRequested: false, endsAt: null, targetDepthOverride: null, lastStatus: stopped ? 'Stopped' : 'Finished' })
       }
     },
     analysisVisualization (context, payload) {
@@ -8111,6 +8221,9 @@ export const store = new Vuex.Store({
     },
     futureExplorer (state) {
       return state.futureExplorer || emptyFutureExplorerState()
+    },
+    futureExplorerRepeatAnalysis (state) {
+      return state.futureExplorerRepeatAnalysis || { running: false, completed: 0, lastStatus: '' }
     },
     futureExplorerPieceHighlight (state) {
       return state.futureExplorerPieceHighlight
