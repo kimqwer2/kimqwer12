@@ -29,6 +29,42 @@
         </select>
       </div>
     </div>
+    <section class="repeat-analysis-card">
+      <div class="repeat-analysis-title">
+        <strong>Repeat Analysis</strong>
+        <small>{{ repeatStatus }}</small>
+      </div>
+      <div class="repeat-analysis-grid">
+        <button type="button" class="repeat-start" @click="toggleRepeatAnalysis">{{ repeatRunning ? 'Stop' : 'Start' }}</button>
+        <label>Repeat mode
+          <select v-model="repeatMode">
+            <option value="count">Repeat N times</option>
+            <option value="duration">Repeat for duration</option>
+            <option value="infinite">Infinite repeat</option>
+          </select>
+        </label>
+        <label v-if="repeatMode === 'count'">Times
+          <input v-model="repeatCount" type="number" min="1" step="1">
+        </label>
+        <label v-if="repeatMode === 'duration'">Duration
+          <input v-model="repeatDuration" type="text" placeholder="10m, 30m, 2h, 6h">
+        </label>
+        <label>Delay between repeats
+          <input v-model="repeatDelay" list="future-repeat-delays" type="text" placeholder="1s">
+          <datalist id="future-repeat-delays">
+            <option value="0s"></option>
+            <option value="0.5s"></option>
+            <option value="1s"></option>
+            <option value="2s"></option>
+            <option value="5s"></option>
+            <option value="10s"></option>
+            <option value="30s"></option>
+            <option value="60s"></option>
+          </datalist>
+        </label>
+        <label class="keep-best-toggle"><input v-model="repeatKeepBestOnly" type="checkbox"> Keep best result only</label>
+      </div>
+    </section>
     <p v-if="openings.length === 0" class="empty">Depth {{ cfg.futureExplorerStartDepth || 20 }}+, move {{ cfg.futureExplorerStartMove || 15 }}+ PVs will appear here.</p>
     <section v-for="section in explorerSections" :key="section.type" class="explorer-section">
       <h3 v-if="section.openings.length" class="section-title">{{ section.title }} <small>{{ section.openings.length }} sessions</small></h3>
@@ -308,8 +344,36 @@ export default {
     pieceActivityTimers: {}
   }),
   computed: {
-    ...mapGetters(['futureExplorer', 'analysisVisualization', 'fen']),
+    ...mapGetters(['futureExplorer', 'futureExplorerRepeatAnalysis', 'analysisVisualization', 'fen']),
     cfg () { return this.analysisVisualization || {} },
+    repeatMode: {
+      get () { return this.cfg.repeatAnalysisMode || 'count' },
+      set (value) { this.$store.dispatch('analysisVisualization', { repeatAnalysisMode: value }) }
+    },
+    repeatCount: {
+      get () { return this.cfg.repeatAnalysisCount || 10 },
+      set (value) { this.$store.dispatch('analysisVisualization', { repeatAnalysisCount: value }) }
+    },
+    repeatDuration: {
+      get () { return this.cfg.repeatAnalysisDuration || '10m' },
+      set (value) { this.$store.dispatch('analysisVisualization', { repeatAnalysisDuration: value }) }
+    },
+    repeatDelay: {
+      get () { return this.cfg.repeatAnalysisDelay || '1s' },
+      set (value) { this.$store.dispatch('analysisVisualization', { repeatAnalysisDelay: value }) }
+    },
+    repeatKeepBestOnly: {
+      get () { return !!this.cfg.repeatAnalysisKeepBestOnly },
+      set (value) { this.$store.dispatch('analysisVisualization', { repeatAnalysisKeepBestOnly: !!value }) }
+    },
+    repeatRunning () {
+      return !!(this.futureExplorerRepeatAnalysis && this.futureExplorerRepeatAnalysis.running)
+    },
+    repeatStatus () {
+      const state = this.futureExplorerRepeatAnalysis || {}
+      const completed = Number(state.completed) || 0
+      return this.repeatRunning ? `running · ${completed} completed` : (state.lastStatus || `${completed} completed`)
+    },
     sortMode: {
       get () { return this.cfg.futureExplorerSortMode || 'depth' },
       set (value) { this.$store.dispatch('analysisVisualization', { futureExplorerSortMode: value }) }
@@ -360,6 +424,9 @@ export default {
   },
   methods: {
     saveSort () {},
+    toggleRepeatAnalysis () {
+      this.$store.dispatch(this.repeatRunning ? 'stopFutureExplorerRepeatAnalysis' : 'startFutureExplorerRepeatAnalysis')
+    },
     pieceActivityExpanded (openingKey) {
       return !!this.expandedPieceActivity[openingKey]
     },
@@ -874,6 +941,14 @@ export default {
 .future-controls { display: flex; align-items: center; gap: 0.35rem; }
 .future-controls button { border: 1px solid rgba(128,128,128,0.25); border-radius: 4px; background: rgba(128,128,128,0.08); color: inherit; cursor: pointer; font-size: 0.78rem; padding: 0.2rem 0.4rem; }
 .future-controls button.danger { border-color: rgba(190,70,70,0.35); color: #d66; }
+.repeat-analysis-card { margin-top: 0.55rem; padding: 0.55rem; border: 1px solid rgba(80,140,220,0.22); border-radius: 10px; background: rgba(80,140,220,0.06); }
+.repeat-analysis-title { display: flex; justify-content: space-between; gap: 0.5rem; align-items: center; margin-bottom: 0.45rem; }
+.repeat-analysis-title small { opacity: 0.68; }
+.repeat-analysis-grid { display: flex; flex-wrap: wrap; align-items: end; gap: 0.45rem; }
+.repeat-analysis-grid label { display: inline-flex; flex-direction: column; gap: 0.15rem; font-size: 0.72rem; opacity: 0.86; }
+.repeat-analysis-grid input, .repeat-analysis-grid select { min-width: 5.5rem; border: 1px solid rgba(128,128,128,0.25); border-radius: 4px; background: rgba(128,128,128,0.08); color: inherit; font: inherit; padding: 0.16rem 0.3rem; }
+.repeat-analysis-grid .repeat-start { border-color: rgba(80,140,220,0.45); font-weight: 700; }
+.repeat-analysis-grid .keep-best-toggle { flex-direction: row; align-items: center; align-self: center; margin-left: 0.2rem; }
 .empty { opacity: 0.75; font-size: 0.85rem; }
 .explorer-section { margin-top: 0.65rem; }
 .section-title { margin: 0.55rem 0 0.25rem; font-size: 0.9rem; }

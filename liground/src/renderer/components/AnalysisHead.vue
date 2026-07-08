@@ -156,6 +156,13 @@
       </button>
       <button
         class="engineManualBtn"
+        title="Toggle analysis exactly like Ctrl+A"
+        @click="toggleAnalysisHotkey"
+      >
+        {{ active ? 'Analysis Toggle OFF' : 'Analysis Toggle ON' }}
+      </button>
+      <button
+        class="engineManualBtn"
         @click="engineMove"
       >
         Engine Move
@@ -437,6 +444,9 @@ export default {
       this.closeStartModal()
     },
 
+    async toggleAnalysisHotkey () {
+      await this.$store.dispatch('toggleAnalysisMode')
+    },
     async engineAnalyze () {
       await this.$store.dispatch('EvEfalse')
       await this.$store.dispatch('PvEfalse')

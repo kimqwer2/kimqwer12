@@ -25,6 +25,36 @@ const MIN_CACHE_DEPTH = 20
 let lastCacheKey = null
 let lastFocusModeGetterLog = null
 
+
+function parseRepeatDelayMs (value, fallbackMs = 0) {
+  const raw = String(value == null ? '' : value).trim().toLowerCase()
+  if (!raw) return fallbackMs
+  const match = raw.match(/^([0-9]+(?:\.[0-9]+)?)\s*(ms|s|m|h)?$/)
+  if (!match) return fallbackMs
+  const amount = Number(match[1])
+  if (!Number.isFinite(amount) || amount < 0) return fallbackMs
+  const unit = match[2] || 's'
+  if (unit === 'ms') return amount
+  if (unit === 'm') return amount * 60 * 1000
+  if (unit === 'h') return amount * 60 * 60 * 1000
+  return amount * 1000
+}
+
+function sleepMs (ms) {
+  return new Promise(resolve => setTimeout(resolve, Math.max(0, Number(ms) || 0)))
+}
+
+function isFutureExplorerReplacementBetter (current, entry) {
+  if (!current) return true
+  const entryDepth = Number(entry && entry.depth) || 0
+  const currentDepth = Number(current.deepestDepth || current.lastDepth || current.depth) || 0
+  if (entryDepth !== currentDepth) return entryDepth > currentDepth
+  const entryScore = scoreToCpForStore(entry)
+  const currentScore = typeof current.averageEval === 'number' ? current.averageEval : scoreToCpForStore(current)
+  if (typeof entryScore === 'number' && typeof currentScore === 'number') return Math.abs(entryScore) > Math.abs(currentScore)
+  return false
+}
+
 function emptyFutureExplorerState () {
   return {
     schemaVersion: 1,
@@ -2789,9 +2819,22 @@ export const store = new Vuex.Store({
       futureExplorerSortMode: 'depth',
       futureExplorerEvalPerspective: 'auto',
       futureExplorerQualityMode: false,
-      futureExplorerStorePositions: true
+      futureExplorerStorePositions: true,
+      repeatAnalysisMode: 'count',
+      repeatAnalysisCount: 10,
+      repeatAnalysisDuration: '10m',
+      repeatAnalysisDelay: '1s',
+      repeatAnalysisKeepBestOnly: false
     },
     futureExplorer: emptyFutureExplorerState(),
+    futureExplorerRepeatAnalysis: {
+      running: false,
+      stopRequested: false,
+      completed: 0,
+      startedAt: null,
+      endsAt: null,
+      lastStatus: ''
+    },
     futureExplorerPieceHighlight: null,
     deepAnalysis: {
       running: false,
@@ -3262,6 +3305,9 @@ export const store = new Vuex.Store({
     futureExplorerPieceHighlightSet (state, payload) {
       state.futureExplorerPieceHighlight = payload && payload.square ? { square: payload.square, dest: payload.dest || '', label: payload.label || '' } : null
     },
+    futureExplorerRepeatAnalysis (state, payload = {}) {
+      state.futureExplorerRepeatAnalysis = { ...state.futureExplorerRepeatAnalysis, ...payload }
+    },
     futureExplorerStartGame (state) {
       if (!state.futureExplorer) state.futureExplorer = emptyFutureExplorerState()
       const nextIndex = Math.max(1, Number(state.futureExplorer.nextGameIndex) || 1)
@@ -3308,8 +3354,9 @@ export const store = new Vuex.Store({
       state.futureExplorer.rootFen = opening.rootFen
       state.futureExplorer.rootKey = rootKey
       state.futureExplorer.groups = opening.groups
+      const recordingRepeatAnalysis = !!(state.futureExplorerRepeatAnalysis && state.futureExplorerRepeatAnalysis.running)
       for (const entry of payload || []) {
-        if (!entry || !entry.key || entry.signature === opening.lastSignature) continue
+        if (!entry || !entry.key || (!recordingRepeatAnalysis && entry.signature === opening.lastSignature)) continue
         opening.lastSignature = entry.signature
         state.futureExplorer.lastSignature = entry.signature
         const groupKey = String(entry.moveNumber)
@@ -3334,18 +3381,20 @@ export const store = new Vuex.Store({
             moveTurn: typeof entry.moveTurn === 'boolean' ? entry.moveTurn : !sideToMoveFromFen(entry.fen)
           })
         } else {
-          current.appearances = (current.appearances || 0) + 1
-          current.lastDepth = Math.max(current.lastDepth || 0, entry.depth)
+          const keepBestOnly = !!(cfg.repeatAnalysisKeepBestOnly && state.futureExplorerRepeatAnalysis && state.futureExplorerRepeatAnalysis.running)
+          if (keepBestOnly && !isFutureExplorerReplacementBetter(current, entry)) continue
+          current.appearances = keepBestOnly ? Math.max(1, current.appearances || 1) : ((current.appearances || 0) + 1)
+          current.lastDepth = keepBestOnly ? entry.depth : Math.max(current.lastDepth || 0, entry.depth)
           current.deepestDepth = Math.max(current.deepestDepth || 0, entry.depth)
-          current.firstDepth = Math.min(current.firstDepth || entry.depth, entry.depth)
-          current.rankTotal = (current.rankTotal || 0) + entry.rank
+          current.firstDepth = keepBestOnly ? Math.min(current.firstDepth || entry.depth, entry.depth) : Math.min(current.firstDepth || entry.depth, entry.depth)
+          current.rankTotal = keepBestOnly ? entry.rank : ((current.rankTotal || 0) + entry.rank)
           if (typeof score === 'number') {
-            current.evalTotal = (current.evalTotal || 0) + score
-            current.evalSamples = (current.evalSamples || 0) + 1
-            current.evalSquareTotal = (current.evalSquareTotal || 0) + score * score
+            current.evalTotal = keepBestOnly ? score : ((current.evalTotal || 0) + score)
+            current.evalSamples = keepBestOnly ? 1 : ((current.evalSamples || 0) + 1)
+            current.evalSquareTotal = keepBestOnly ? score * score : ((current.evalSquareTotal || 0) + score * score)
             current.averageEval = current.evalTotal / current.evalSamples
           }
-          current.averageRank = current.rankTotal / current.appearances
+          current.averageRank = keepBestOnly ? entry.rank : (current.rankTotal / current.appearances)
           current.cp = entry.cp
           current.mate = entry.mate
           current.pvUCI = entry.pvUCI
@@ -6787,6 +6836,57 @@ export const store = new Vuex.Store({
         context.commit('analysisMode', true)
       }
     },
+    stopFutureExplorerRepeatAnalysis (context) {
+      context.commit('futureExplorerRepeatAnalysis', { stopRequested: true, lastStatus: 'Stopping…' })
+      if (context.state.active) context.dispatch('stopEngine', { source: 'future-explorer-repeat-stop' })
+    },
+    async startFutureExplorerRepeatAnalysis (context) {
+      if (context.state.futureExplorerRepeatAnalysis && context.state.futureExplorerRepeatAnalysis.running) {
+        context.dispatch('stopFutureExplorerRepeatAnalysis')
+        return
+      }
+      await context.dispatch('EvEfalse')
+      await context.dispatch('PvEfalse')
+      const cfg = context.state.analysisVisualization || {}
+      const mode = cfg.repeatAnalysisMode || 'count'
+      const countLimit = Math.max(1, parseInt(cfg.repeatAnalysisCount, 10) || 1)
+      const durationMs = parseRepeatDelayMs(cfg.repeatAnalysisDuration, 10 * 60 * 1000)
+      const delayMs = parseRepeatDelayMs(cfg.repeatAnalysisDelay, 1000)
+      const startedAt = Date.now()
+      const endsAt = mode === 'duration' ? startedAt + durationMs : null
+      context.commit('futureExplorerRepeatAnalysis', { running: true, stopRequested: false, completed: 0, startedAt, endsAt, lastStatus: 'Running' })
+      try {
+        while (!context.state.futureExplorerRepeatAnalysis.stopRequested) {
+          const completed = Number(context.state.futureExplorerRepeatAnalysis.completed) || 0
+          if (mode === 'count' && completed >= countLimit) break
+          if (mode === 'duration' && Date.now() >= endsAt) break
+          if (context.state.active) await context.dispatch('stopEngine', { source: 'future-explorer-repeat-restart' })
+          context.dispatch('position')
+          context.dispatch('goEngine', { source: 'future-explorer-repeat' })
+          context.commit('analysisMode', true)
+          const waitStarted = Date.now()
+          while (context.state.active && !context.state.futureExplorerRepeatAnalysis.stopRequested) {
+            await sleepMs(100)
+            if (mode === 'duration' && Date.now() >= endsAt) break
+            if (Date.now() - waitStarted > 24 * 60 * 60 * 1000) break
+          }
+          if (context.state.futureExplorerRepeatAnalysis.stopRequested) break
+          if (context.state.active) await context.dispatch('stopEngine', { source: 'future-explorer-repeat-duration-end' })
+          context.commit('analysisMode', false)
+          context.commit('futureExplorerRepeatAnalysis', { completed: completed + 1, lastStatus: `Completed ${completed + 1}` })
+          if (mode === 'count' && completed + 1 >= countLimit) break
+          if (mode === 'duration' && Date.now() >= endsAt) break
+          if (delayMs > 0) await sleepMs(delayMs)
+        }
+      } finally {
+        if (context.state.active && context.state.futureExplorerRepeatAnalysis.stopRequested) {
+          await context.dispatch('stopEngine', { source: 'future-explorer-repeat-stop' })
+          context.commit('analysisMode', false)
+        }
+        const stopped = context.state.futureExplorerRepeatAnalysis.stopRequested
+        context.commit('futureExplorerRepeatAnalysis', { running: false, stopRequested: false, endsAt: null, lastStatus: stopped ? 'Stopped' : 'Finished' })
+      }
+    },
     analysisVisualization (context, payload) {
       context.commit('analysisVisualization', payload)
     },
@@ -8111,6 +8211,9 @@ export const store = new Vuex.Store({
     },
     futureExplorer (state) {
       return state.futureExplorer || emptyFutureExplorerState()
+    },
+    futureExplorerRepeatAnalysis (state) {
+      return state.futureExplorerRepeatAnalysis || { running: false, completed: 0, lastStatus: '' }
     },
     futureExplorerPieceHighlight (state) {
       return state.futureExplorerPieceHighlight
