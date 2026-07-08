@@ -62,7 +62,10 @@
             <option value="60s"></option>
           </datalist>
         </label>
-        <label class="keep-best-toggle"><input v-model="repeatKeepBestOnly" type="checkbox"> Keep best result only</label>
+        <label class="keep-best-toggle"><input v-model="repeatOverrideDepth" type="checkbox"> Override target depth</label>
+        <label v-if="repeatOverrideDepth">Depth
+          <input v-model="repeatDepth" type="number" min="1" step="1" placeholder="30">
+        </label>
       </div>
     </section>
     <p v-if="openings.length === 0" class="empty">Depth {{ cfg.futureExplorerStartDepth || 20 }}+, move {{ cfg.futureExplorerStartMove || 15 }}+ PVs will appear here.</p>
@@ -362,9 +365,13 @@ export default {
       get () { return this.cfg.repeatAnalysisDelay || '1s' },
       set (value) { this.$store.dispatch('analysisVisualization', { repeatAnalysisDelay: value }) }
     },
-    repeatKeepBestOnly: {
-      get () { return !!this.cfg.repeatAnalysisKeepBestOnly },
-      set (value) { this.$store.dispatch('analysisVisualization', { repeatAnalysisKeepBestOnly: !!value }) }
+    repeatOverrideDepth: {
+      get () { return !!this.cfg.repeatAnalysisOverrideDepth },
+      set (value) { this.$store.dispatch('analysisVisualization', { repeatAnalysisOverrideDepth: !!value }) }
+    },
+    repeatDepth: {
+      get () { return this.cfg.repeatAnalysisDepth || 30 },
+      set (value) { this.$store.dispatch('analysisVisualization', { repeatAnalysisDepth: value }) }
     },
     repeatRunning () {
       return !!(this.futureExplorerRepeatAnalysis && this.futureExplorerRepeatAnalysis.running)
