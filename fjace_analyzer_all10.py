@@ -34,6 +34,43 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 # ==============================================================================
 DB_FILE = "janggi_profiles.db"
 
+LIGROUND_GAMESEQ_PREFIX = "LIGROUND-GAMESEQ/"
+
+def is_pass_token(token: str) -> bool:
+    return token.strip().upper() in {"PASS", "--", "0000"}
+
+def liground_uci_to_analyzer_uci(move: str) -> str:
+    token = move.strip()
+    if is_pass_token(token):
+        return "0000"
+    m = re.fullmatch(r"([a-i])(10|[1-9])([a-i])(10|[1-9])", token.lower())
+    if not m:
+        return token
+    return f"{m.group(1)}{int(m.group(2)) - 1}{m.group(3)}{int(m.group(4)) - 1}"
+
+def parse_liground_game_sequence(text: str) -> Optional[Tuple[Optional[str], List[str]]]:
+    lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
+    if not lines or not lines[0].startswith(LIGROUND_GAMESEQ_PREFIX):
+        return None
+    start_fen = None
+    moves: List[str] = []
+    in_moves = False
+    for line in lines[1:]:
+        if line.startswith("startFen:"):
+            start_fen = line.replace("startFen:", "", 1).strip() or None
+            in_moves = False
+        elif line == "moves:":
+            in_moves = True
+        elif line == "meta:":
+            in_moves = False
+        elif line.startswith("variant:"):
+            in_moves = False
+        elif in_moves:
+            move = re.sub(r"^\d+\.\s*", "", line).strip()
+            if move:
+                moves.append(liground_uci_to_analyzer_uci(move))
+    return start_fen, moves
+
 def get_search_config(depth: Optional[int], nodes: Optional[int]) -> str:
     if nodes: return f"N{nodes}"
     return f"D{depth}"
@@ -586,9 +623,17 @@ class JanggiBoard:
 
     def move_to_uci(self, san: str, ply_index: int) -> str:
         san_clean = san.strip()
-        # [NEW] 한 수 쉼(--) 예외 처리 추가
-        if san_clean == "--":
+        if is_pass_token(san_clean):
             return "0000"
+        uci_match = re.fullmatch(r"([a-i])([0-9])([a-i])([0-9])", san_clean.lower())
+        if uci_match:
+            origin = self.parse_square(uci_match.group(1) + uci_match.group(2))
+            dest = self.parse_square(uci_match.group(3) + uci_match.group(4))
+            piece = self.piece_at(origin)
+            if not piece or piece.color != self.side_to_move(ply_index) or dest not in self.legal_moves_for_piece(origin):
+                raise ValueError(f"'{san}' (UCI move is not legal in the current position.)")
+            self.board[dest] = self.board.pop(origin)
+            return san_clean.lower()
             
         match = MOVE_RE.match(san_clean)
         if not match: raise ValueError(f"Unsupported move token: {san}")
@@ -782,6 +827,9 @@ class EngineSession:
             self.proc.wait(timeout=5)
 
 def tokenize_pgn_moves(text: str) -> List[str]:
+    liground = parse_liground_game_sequence(text)
+    if liground is not None:
+        return liground[1]
     text = re.sub(r"\[[^\]]*\]", " ", text)
     text = re.sub(r"\{[^}]*\}", " ", text)
     text = re.sub(r"\([^)]*\)", " ", text)
@@ -901,8 +949,9 @@ def analyze_game(engine_path: Path, pgn_text: str, depth: Optional[int], nodes: 
             for aux_path in aux_nnues[:2]: 
                 aux_sessions.append(EngineSession(engine_path, depth, nodes, aux_path, True, max(1, threads // 2)))
 
+        liground_sequence = parse_liground_game_sequence(pgn_text)
         fen_match = re.search(r'\[FEN\s+"([^"]+)"\]', pgn_text)
-        start_fen = fen_match.group(1) if fen_match else None
+        start_fen = liground_sequence[0] if liground_sequence else (fen_match.group(1) if fen_match else None)
         if start_fen: board.load_fen(start_fen)
 
         tokens = tokenize_pgn_moves(pgn_text)

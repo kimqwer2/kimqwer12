@@ -21,6 +21,11 @@
       /></a>
       <a
         href="#"
+        class="jump pass"
+        @click.prevent="$store.dispatch('push', { move: '0000', prev: currentMove, skipMistakePrevention: true })"
+      >PASS</a>
+      <a
+        href="#"
         class="jump next"
         :class="{ grey : moves.length === 0 || ( currentMove && !currentMove.main ) }"
         @click="$emit('move-forward-one', 0)"
@@ -129,6 +134,11 @@ i {
 .jump:hover {
   background-color: var(--hover-highlight-color);
   color: white;
+}
+.pass {
+  font-size: 11pt;
+  font-weight: 700;
+  letter-spacing: 0.04em;
 }
 .round {
   border-radius: 90%;
