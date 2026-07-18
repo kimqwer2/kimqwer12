@@ -2131,7 +2131,24 @@ function buildPositionCommand (gameState) {
   if (safeFen && normalizeFen(safeFen) !== normalizeFen(reconstructedFen)) {
     throw new Error(`[GameState] fen mismatch detected: live=${safeFen} reconstructed=${reconstructedFen}`)
   }
-  return `position fen ${reconstructedFen}`
+
+  // === 여기서부터 추가/변경되는 영역입니다 ===
+  
+  // 1. 시작 FEN이 해당 변형 규칙의 표준 시작 위치와 일치하는지 판별합니다.
+  let isStandardStart = false
+  try {
+    const defaultBoard = is960 ? new ffish.Board(variant, undefined, true) : new ffish.Board(variant)
+    isStandardStart = normalizeFen(safeStartFen) === normalizeFen(defaultBoard.fen())
+  } catch (err) {
+    isStandardStart = false
+  }
+
+  // 2. 엔진에 단일 FEN 대신 전체 기보 히스토리(moves ...)를 포함시켜 반환합니다.
+  if (isStandardStart) {
+    return moveLine ? `position startpos moves ${moveLine}` : 'position startpos'
+  } else {
+    return moveLine ? `position fen ${safeStartFen} moves ${moveLine}` : `position fen ${safeStartFen}`
+  }
 }
 
 function reviewMoveToOverlaySquares (move) {
