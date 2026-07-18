@@ -377,6 +377,7 @@ const CHAOS_VALIDATION_PRESETS = [
 
 const DEFAULT_CHAOS_VALIDATION = { preset: 'Normal', stage1Depth: 4, stage2Depth: 10, maxAttempts: 24 }
 const DEFAULT_OPPONENT_VERIFICATION = { stage1Depth: 6, stage2Depth: 12, maxCandidates: 8 }
+const DEFAULT_MISTAKE_PREVENTION_FAST_MODE = { enabled: false, depth: 10, multiPv: 3 }
 const CHAOS_MODES = ['off', 'fast', 'search']
 const PREVENTION_MODES = ['perfect', 'practical', 'flexible']
 const OPENING_STABILIZER_DEFAULTS = { enabled: true, phase1Moves: 5, phase1Cp: 25, phase2Moves: 10, phase2Cp: 75, phase3Moves: 20 }
@@ -449,6 +450,13 @@ function selectOpeningStabilizedMove ({ rootLines, bestmove, selectedCp, engineM
   }
   const last = eligible[eligible.length - 1]
   return { move: last.ucimove, effectiveCp, engineMoveNumber, candidates: candidates.length, eligible: eligible.length, cpLoss: last.cpLoss, reason: 'opening_stabilizer' }
+}
+
+function normalizeMistakePreventionFastModeSettings (settings = {}) {
+  const merged = { ...DEFAULT_MISTAKE_PREVENTION_FAST_MODE, ...(settings || {}) }
+  const depth = Math.max(1, Math.min(30, Math.floor(Number(merged.depth) || DEFAULT_MISTAKE_PREVENTION_FAST_MODE.depth)))
+  const multiPv = Math.max(1, Math.min(20, Math.floor(Number(merged.multiPv) || DEFAULT_MISTAKE_PREVENTION_FAST_MODE.multiPv)))
+  return { enabled: merged.enabled === true, depth, multiPv }
 }
 
 function normalizeChaosValidationSettings (settings = {}) {
@@ -534,7 +542,7 @@ function practicalCpLoss ({ rawCpLoss, beforeCp, userCp, mode = 'practical' }) {
   return rawCpLoss
 }
 
-async function selectTrainingOpponentMove ({ engineInstance, fen, variant, is960, level, chaos = false, chaosMode = 'off', chaosValidation, preventionMode = 'off', rootLines = [], bestmove = '', sideToMove = true, openingStabilizerSettings = null, engineMoveNumber = 1 }) {
+async function selectTrainingOpponentMove ({ engineInstance, fen, variant, is960, level, chaos = false, chaosMode = 'off', chaosValidation, preventionMode = 'off', rootLines = [], bestmove = '', sideToMove = true, openingStabilizerSettings = null, engineMoveNumber = 1, fastMode = null }) {
   const configuredMaxLoss = Math.max(0, Number(level && level.thresholdCp) || 300)
   const maxLoss = phaseAdjustedMaxLoss(configuredMaxLoss, fen, chaos)
   let board
@@ -543,9 +551,13 @@ async function selectTrainingOpponentMove ({ engineInstance, fen, variant, is960
   const moves = (Array.isArray(legal) ? legal : String(legal || '').split(/\s+/)).filter(Boolean)
   if (!moves.length) return null
   const validation = normalizeChaosValidationSettings(chaosValidation || DEFAULT_CHAOS_VALIDATION)
+  const fastSettings = normalizeMistakePreventionFastModeSettings(fastMode || {})
+  const opponentVerification = fastSettings.enabled
+    ? { stage1Depth: Math.max(1, Math.min(DEFAULT_OPPONENT_VERIFICATION.stage1Depth, fastSettings.depth)), stage2Depth: fastSettings.depth, maxCandidates: Math.max(1, Math.min(DEFAULT_OPPONENT_VERIFICATION.maxCandidates, fastSettings.multiPv)) }
+    : DEFAULT_OPPONENT_VERIFICATION
   const rootCandidates = normalizeTrapRootCandidates(rootLines, bestmove, sideToMove)
   const rootBest = rootCandidates.find(line => line.ucimove === bestmove) || rootCandidates[0]
-  const bestRaw = rootBest && typeof rootBest.cp === 'number' ? null : await engineInstance.evaluate(fen, chaos ? validation.stage2Depth : DEFAULT_OPPONENT_VERIFICATION.stage2Depth)
+  const bestRaw = rootBest && typeof rootBest.cp === 'number' ? null : await engineInstance.evaluate(fen, chaos ? validation.stage2Depth : opponentVerification.stage2Depth)
   const bestCp = rootBest && typeof rootBest.cp === 'number' ? rootBest.cp : parseEngineScoreToCp(bestRaw)
   if (bestCp === null) return null
   let rootPool = rootCandidates
@@ -595,19 +607,21 @@ async function selectTrainingOpponentMove ({ engineInstance, fen, variant, is960
 
   const rootFiltered = rootPool.filter(line => line.ucimove && moves.includes(line.ucimove) && typeof line.cp === 'number').map(line => ({ move: line.ucimove, cpLoss: Math.max(0, bestCp - line.cp), estimatedForMover: line.cp, source: 'root_multipv', depth: line.depth }))
   const seeded = rootFiltered.filter(candidate => candidate.cpLoss <= maxLoss)
-  const sampleSize = Math.min(moves.length, Math.max(DEFAULT_OPPONENT_VERIFICATION.maxCandidates, Math.ceil(Math.sqrt(moves.length) * 3)))
+  const sampleSize = fastSettings.enabled
+    ? Math.min(moves.length, opponentVerification.maxCandidates)
+    : Math.min(moves.length, Math.max(opponentVerification.maxCandidates, Math.ceil(Math.sqrt(moves.length) * 3)))
   const seededMoves = new Set(seeded.map(c => c.move))
   const shuffled = moves.filter(move => !seededMoves.has(move)).sort(() => Math.random() - 0.5)
   const stage1 = seeded.slice()
   for (const move of shuffled.slice(0, sampleSize)) {
     try {
-      const candidate = await evaluateTrainingCandidate({ engineInstance, fen, variant, is960, move, bestCp, depth: DEFAULT_OPPONENT_VERIFICATION.stage1Depth })
-      if (candidate && candidate.cpLoss <= maxLoss) stage1.push({ ...candidate, source: 'stage1', depth: DEFAULT_OPPONENT_VERIFICATION.stage1Depth })
+      const candidate = await evaluateTrainingCandidate({ engineInstance, fen, variant, is960, move, bestCp, depth: opponentVerification.stage1Depth })
+      if (candidate && candidate.cpLoss <= maxLoss) stage1.push({ ...candidate, source: 'stage1', depth: opponentVerification.stage1Depth })
     } catch (err) {}
   }
-  const verifyDepth = Math.max(DEFAULT_OPPONENT_VERIFICATION.stage2Depth, Math.min(18, Number(level && level.verificationDepth) || DEFAULT_OPPONENT_VERIFICATION.stage2Depth))
+  const verifyDepth = fastSettings.enabled ? opponentVerification.stage2Depth : Math.max(opponentVerification.stage2Depth, Math.min(18, Number(level && level.verificationDepth) || opponentVerification.stage2Depth))
   const candidates = []
-  for (const quick of stage1.slice(0, DEFAULT_OPPONENT_VERIFICATION.maxCandidates)) {
+  for (const quick of stage1.slice(0, opponentVerification.maxCandidates)) {
     try {
       const candidate = quick.source === 'root_multipv' && Number(quick.depth) >= verifyDepth ? quick : await evaluateTrainingCandidate({ engineInstance, fen, variant, is960, move: quick.move, bestCp, depth: verifyDepth })
       if (candidate) {
@@ -2013,7 +2027,8 @@ function engineVsEngineSelectorConfig ({ state, sideSettings, useGlobal }) {
     opponentLevelName: level.name,
     opponentPreventionMode: useGlobal ? (mpSettings.opponentPreventionMode || 'flexible') : sideSettings.opponentPreventionMode,
     chaosMode: useGlobal ? (mpSettings.chaosMode || 'off') : sideSettings.chaosMode,
-    chaosValidation: useGlobal ? (mpSettings.chaosValidation || DEFAULT_CHAOS_VALIDATION) : sideSettings.chaosValidation
+    chaosValidation: useGlobal ? (mpSettings.chaosValidation || DEFAULT_CHAOS_VALIDATION) : sideSettings.chaosValidation,
+    fastMode: normalizeMistakePreventionFastModeSettings(useGlobal ? mpSettings.fastMode : sideSettings.fastMode)
   }
   const personalityEnabled = humanTrapSettings.enabled || closeWinSettings.enabled || competitiveSettings.pressureMode || competitiveSettings.hunterMode || competitiveSettings.closerMode
   return {
@@ -2025,7 +2040,7 @@ function engineVsEngineSelectorConfig ({ state, sideSettings, useGlobal }) {
     competitiveSettings,
     trainingSettings,
     enabled: personalityEnabled || openingStabilizerSettings.enabled || recoverySettings.enabled || trainingSettings.opponentTraining,
-    multiPv: Math.max(humanTrapSettings.multiPv, closeWinSettings.maxCandidates, competitiveSettings.pressureMultiPv, recoverySettings.enabled ? 5 : 1, openingStabilizerSettings.enabled ? 3 : 1, trainingSettings.opponentTraining ? 5 : 1)
+    multiPv: trainingSettings.fastMode.enabled ? trainingSettings.fastMode.multiPv : Math.max(humanTrapSettings.multiPv, closeWinSettings.maxCandidates, competitiveSettings.pressureMultiPv, recoverySettings.enabled ? 5 : 1, openingStabilizerSettings.enabled ? 3 : 1, trainingSettings.opponentTraining ? 5 : 1)
   }
 }
 
@@ -2542,7 +2557,7 @@ export const store = new Vuex.Store({
     PvELimiter: null, // stores the limiter config for the PvE engine
     PvEEngineInstance: null,
     humanTrapDiagnostics: null,
-    mistakePrevention: { enabled: false, levelName: '중급', thresholdCp: 300, opponentTraining: false, opponentLevelName: '중급', evaluationMode: 'practical', verificationDepth: 14, chaosTraining: false, chaosMode: 'off', chaosValidation: DEFAULT_CHAOS_VALIDATION, opponentPreventionMode: 'flexible', openingStabilizer: OPENING_STABILIZER_DEFAULTS, recoveryMode: RECOVERY_MODE_DEFAULTS, engineVsEngine: normalizeEngineVsEngineSettings({}, { levelName: '중급', thresholdCp: 300, openingStabilizer: OPENING_STABILIZER_DEFAULTS, recoveryMode: RECOVERY_MODE_DEFAULTS, chaosValidation: DEFAULT_CHAOS_VALIDATION }) },
+    mistakePrevention: { enabled: false, levelName: '중급', thresholdCp: 300, opponentTraining: false, opponentLevelName: '중급', evaluationMode: 'practical', verificationDepth: 14, fastMode: DEFAULT_MISTAKE_PREVENTION_FAST_MODE, chaosTraining: false, chaosMode: 'off', chaosValidation: DEFAULT_CHAOS_VALIDATION, opponentPreventionMode: 'flexible', openingStabilizer: OPENING_STABILIZER_DEFAULTS, recoveryMode: RECOVERY_MODE_DEFAULTS, engineVsEngine: normalizeEngineVsEngineSettings({}, { levelName: '중급', thresholdCp: 300, openingStabilizer: OPENING_STABILIZER_DEFAULTS, recoveryMode: RECOVERY_MODE_DEFAULTS, chaosValidation: DEFAULT_CHAOS_VALIDATION }) },
     recoveryMode: false,
     mistakeNotebook: [],
     mistakePreventionPending: false,
@@ -2972,6 +2987,7 @@ export const store = new Vuex.Store({
       next.thresholdCp = level.thresholdCp
       next.evaluationMode = PREVENTION_MODES.includes(next.evaluationMode) ? next.evaluationMode : 'practical'
       next.verificationDepth = Math.max(10, Math.min(20, Number(next.verificationDepth) || 14))
+      next.fastMode = normalizeMistakePreventionFastModeSettings(next.fastMode || DEFAULT_MISTAKE_PREVENTION_FAST_MODE)
       next.chaosMode = CHAOS_MODES.includes(next.chaosMode) ? next.chaosMode : (next.chaosTraining ? 'search' : 'off')
       next.chaosTraining = next.chaosMode !== 'off'
       next.opponentPreventionMode = ['off'].concat(PREVENTION_MODES).includes(next.opponentPreventionMode) ? next.opponentPreventionMode : 'flexible'
@@ -4456,6 +4472,7 @@ export const store = new Vuex.Store({
       const rootOpeningStabilizerSettings = autoPlaySelector ? autoPlaySelector.openingStabilizerSettings : normalizeOpeningStabilizerSettings(rootMpSettings.openingStabilizer)
       const rootLevel = autoPlaySelector ? autoPlaySelector.level : (MISTAKE_PREVENTION_LEVELS.find(l => l.name === rootMpSettings.opponentLevelName) || MISTAKE_PREVENTION_LEVELS.find(l => l.name === rootMpSettings.levelName) || MISTAKE_PREVENTION_LEVELS[2])
       const rootRecoverySettings = autoPlaySelector ? autoPlaySelector.recoverySettings : recoveryModeEffectiveSettings(rootMpSettings.recoveryMode, rootLevel.thresholdCp)
+      const rootFastMode = normalizeMistakePreventionFastModeSettings(rootMpSettings && rootMpSettings.fastMode)
       const rootInfoNeeded = personality.enabled || rootOpeningStabilizerSettings.enabled || rootRecoverySettings.enabled || !!(rootMpSettings && rootMpSettings.opponentTraining)
       const rootFen = context.getters.fen
       let rootLines = []
@@ -4469,12 +4486,12 @@ export const store = new Vuex.Store({
         handleInfo = info => collectRootInfoLine(rootLines, info)
         engine.on('info', handleInfo)
         if (!personality.enabled || autoPlaySelector) {
-          engine.send(`setoption name MultiPV value ${autoPlaySelector ? autoPlaySelector.multiPv : Math.max(1, rootRecoverySettings.enabled ? 5 : 3)}`)
+          engine.send(`setoption name MultiPV value ${autoPlaySelector ? autoPlaySelector.multiPv : (rootFastMode.enabled && rootMpSettings && rootMpSettings.opponentTraining ? rootFastMode.multiPv : Math.max(1, rootRecoverySettings.enabled ? 5 : 3))}`)
         }
       }
 
       if (autoPlaySelector) console.info('[EngineAutoPlay]', { side: autoPlaySide, phase: 'search-start', level: rootLevel.name, multiPv: autoPlaySelector.multiPv, useGlobal: normalizeEngineVsEngineSettings(context.state.mistakePrevention && context.state.mistakePrevention.engineVsEngine, context.state.mistakePrevention || {}).useGlobal })
-      context.dispatch('goEngine', payload)
+      context.dispatch('goEngine', rootFastMode.enabled && rootMpSettings && rootMpSettings.opponentTraining ? { ...payload, depth: rootFastMode.depth, source: 'mistake-prevention-fast-mode' } : payload)
 
       try {
         let bestmove = sanitizeEngineMove(await bestMovePromise)
@@ -4511,7 +4528,7 @@ export const store = new Vuex.Store({
           logMoveSelectionStage(selectionTrace, 'Opening Stabilizer', { selectedMove: bestmove, cpLimit: stabilized && stabilized.effectiveCp, cpLoss: stabilized && stabilized.cpLoss, candidates: rootLines.filter(Boolean), reason: stabilized ? stabilized.reason : 'no replacement' })
         }
         if (mpSettings && mpSettings.opponentTraining) {
-          const selectedTraining = await selectTrainingOpponentMove({ engineInstance: engine, fen: rootFen, variant: context.getters.variant, is960: context.getters.is960, level: mpLevel, chaos: mpSettings.chaosMode !== 'off', chaosMode: mpSettings.chaosMode, chaosValidation: mpSettings.chaosValidation, preventionMode: mpSettings.opponentPreventionMode, rootLines: rootLines.filter(Boolean), bestmove: engineBestmove, sideToMove: context.getters.turn, openingStabilizerSettings, engineMoveNumber })
+          const selectedTraining = await selectTrainingOpponentMove({ engineInstance: engine, fen: rootFen, variant: context.getters.variant, is960: context.getters.is960, level: mpLevel, chaos: mpSettings.chaosMode !== 'off', chaosMode: mpSettings.chaosMode, chaosValidation: mpSettings.chaosValidation, preventionMode: mpSettings.opponentPreventionMode, rootLines: rootLines.filter(Boolean), bestmove: engineBestmove, sideToMove: context.getters.turn, openingStabilizerSettings, engineMoveNumber, fastMode: mpSettings.fastMode })
           if (selectedTraining && selectedTraining.move && context.state.board.legalMoves().includes(selectedTraining.move) && normalizeFen(context.getters.fen) === normalizeFen(rootFen)) {
             bestmove = selectedTraining.move
             context.commit('humanTrapDiagnostics', { mode: 'Opponent Training Strength', type: mpLevel.name, move: bestmove, cpLoss: selectedTraining.cpLoss, pointLoss: Number(pointLossString(selectedTraining.cpLoss)), reason: `${mpSettings.chaosMode !== 'off' ? mpSettings.chaosMode : 'human-like'} sampled legal move within ${selectedTraining.maxLoss}cp${selectedTraining.openingProtected ? ' (opening protected)' : ''}${selectedTraining.fallback ? ' (fallback closest target)' : ''}`, probeStats: { probes: selectedTraining.sampled, source: selectedTraining.source, verificationDepth: selectedTraining.verificationDepth }, selectedAt: Date.now() })
@@ -4631,6 +4648,7 @@ export const store = new Vuex.Store({
       const goLevel = autoPlaySelector ? autoPlaySelector.level : (MISTAKE_PREVENTION_LEVELS.find(l => l.name === mpSettings.opponentLevelName) || MISTAKE_PREVENTION_LEVELS.find(l => l.name === mpSettings.levelName) || MISTAKE_PREVENTION_LEVELS[2])
       const recoverySettings = autoPlaySelector ? autoPlaySelector.recoverySettings : recoveryModeEffectiveSettings(mpSettings.recoveryMode, goLevel.thresholdCp)
       const openingStabilizerSettings = autoPlaySelector ? autoPlaySelector.openingStabilizerSettings : normalizeOpeningStabilizerSettings(mpSettings.openingStabilizer)
+      const goFastMode = normalizeMistakePreventionFastModeSettings(mpSettings && mpSettings.fastMode)
       if (personality.enabled || autoPlaySelector) {
         console.info('[Personality]', {
           humanTrap: personality.humanTrapSettings.enabled,
@@ -4660,7 +4678,7 @@ export const store = new Vuex.Store({
           reason: 'analysis_root_search_started',
           selectedAt: Date.now()
         })
-        engine.send(`setoption name MultiPV value ${autoPlaySelector ? autoPlaySelector.multiPv : Math.max(personality.humanTrapSettings.multiPv, personality.closeWinSettings.maxCandidates, personality.competitiveSettings.pressureMultiPv, recoverySettings.enabled ? 5 : 1, openingStabilizerSettings.enabled ? 3 : 1)}`)
+        engine.send(`setoption name MultiPV value ${autoPlaySelector ? autoPlaySelector.multiPv : (goFastMode.enabled && mpSettings && mpSettings.opponentTraining ? goFastMode.multiPv : Math.max(personality.humanTrapSettings.multiPv, personality.closeWinSettings.maxCandidates, personality.competitiveSettings.pressureMultiPv, recoverySettings.enabled ? 5 : 1, openingStabilizerSettings.enabled ? 3 : 1))}`)
       }
       console.log('[engine-order] cmd:', goCmd)
       engine.send(goCmd)
@@ -5103,8 +5121,9 @@ export const store = new Vuex.Store({
             eveRoot[side].selecting = false
             if (selector.enabled) inst.send(`setoption name MultiPV value ${selector.multiPv || eveMultiPv}`)
             inst.send(buildPositionCommand(context.getters.gameState))
-            inst.send(limiterToGo(lim))
-            console.info('[EvE]', { side, phase: 'search-start', fen: eveRoot[side].fen, multiPv: selector.multiPv || 1 })
+            const fastMode = normalizeMistakePreventionFastModeSettings(selector.trainingSettings && selector.trainingSettings.fastMode)
+            inst.send(fastMode.enabled ? `go depth ${fastMode.depth}` : limiterToGo(lim))
+            console.info('[EvE]', { side, phase: 'search-start', fen: eveRoot[side].fen, multiPv: selector.multiPv || 1, fastMode: fastMode.enabled })
           } catch (err) {
             console.error('[EvE] Failed to send position/go:', err)
           }
@@ -5145,7 +5164,7 @@ export const store = new Vuex.Store({
               }
             }
             if (selector.trainingSettings && selector.trainingSettings.opponentTraining) {
-              const selectedTraining = await selectTrainingOpponentMove({ engineInstance, fen: rootFen, variant: context.getters.variant, is960: context.getters.is960, level: selector.level, chaos: selector.trainingSettings.chaosMode !== 'off', chaosMode: selector.trainingSettings.chaosMode, chaosValidation: selector.trainingSettings.chaosValidation, preventionMode: selector.trainingSettings.opponentPreventionMode, rootLines, bestmove: engineBestmove, sideToMove, openingStabilizerSettings: selector.openingStabilizerSettings, engineMoveNumber })
+              const selectedTraining = await selectTrainingOpponentMove({ engineInstance, fen: rootFen, variant: context.getters.variant, is960: context.getters.is960, level: selector.level, chaos: selector.trainingSettings.chaosMode !== 'off', chaosMode: selector.trainingSettings.chaosMode, chaosValidation: selector.trainingSettings.chaosValidation, preventionMode: selector.trainingSettings.opponentPreventionMode, rootLines, bestmove: engineBestmove, sideToMove, openingStabilizerSettings: selector.openingStabilizerSettings, engineMoveNumber, fastMode: selector.trainingSettings.fastMode })
               if (selectedTraining && selectedTraining.move && context.state.board.legalMoves().includes(selectedTraining.move)) {
                 move = selectedTraining.move
                 context.commit('humanTrapDiagnostics', { mode: `EvE ${side} Mistake Prevention`, type: selector.level.name, move, cpLoss: selectedTraining.cpLoss, pointLoss: Number(pointLossString(selectedTraining.cpLoss)), reason: `${selector.trainingSettings.chaosMode !== 'off' ? selector.trainingSettings.chaosMode : selector.trainingSettings.opponentPreventionMode} selected legal move within ${selectedTraining.maxLoss}cp`, probeStats: { probes: selectedTraining.sampled, source: selectedTraining.source, verificationDepth: selectedTraining.verificationDepth }, selectedAt: Date.now() })
