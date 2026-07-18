@@ -4014,6 +4014,41 @@ export const store = new Vuex.Store({
     }
   },
   actions: { // async
+    async playPassMove (context, payload) {
+      const passMove = payload && payload.move
+      if (!passMove) {
+        console.warn('[PASS Action] No pass move coordinates provided in payload.')
+        return
+      }
+      
+      console.log('[PASS Action] Executing pass move:', passMove)
+      
+      // 1. PASS를 보드에 착수 처리
+      await context.dispatch('push', {
+        move: passMove,
+        prev: payload.prev,
+        skipMistakePrevention: true
+      })
+      
+      // 2. 표준 엔진 모드(플레이 vs 엔진) 대응 트리거 실행
+      if (context.state.playVsEngineEnabled) {
+        console.log('[PASS Action] Triggering playVsEngine response...')
+        await context.dispatch('onHumanMoveComplete')
+      }
+      
+      // 3. 레거시 PvE 모드 대응 엔진 탐색 시작
+      if (context.state.PvE && context.state.PvEEngineInstance) {
+        const playerIsWhite = context.getters.PvEPlayerIsWhite
+        const engineIsWhite = !playerIsWhite
+        const turnIsWhite = context.getters.turn
+        const engineToMoveNow = (turnIsWhite && engineIsWhite) || (!turnIsWhite && !engineIsWhite)
+        if (engineToMoveNow) {
+          console.log('[PASS Action] Triggering legacy PvE engine calculation...')
+          context.dispatch('position')
+          context.dispatch('goEnginePvE')
+        }
+      }
+    },
     scheduleOpeningBookPersist (context, payload = {}) {
       const immediate = payload.immediate === true
       const state = context.state.openingBookPersist || { queued: false, pendingCommits: 0, lastFlushedAt: 0 }

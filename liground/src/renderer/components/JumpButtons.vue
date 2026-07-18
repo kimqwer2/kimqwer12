@@ -1,5 +1,6 @@
 <template>
   <div class="buttons-wrapper">
+    <!-- 화살표 패널만 남겨 완벽한 중앙 정렬을 유지합니다 -->
     <div class="jump-buttons">
       <a
         href="#"
@@ -38,6 +39,25 @@
         class="icon mdi mdi-skip-forward"
       /></a>
     </div>
+
+    <!-- 절반 크기의 PASS 버튼을 독립 패널로 배치합니다 (장기 전용) -->
+    <div
+      v-if="variant === 'janggi' || variant === 'janggimodern'"
+      class="pass-button-container"
+    >
+      <a
+        href="#"
+        class="pass-btn"
+        :class="{ grey: !passMove }"
+        @click.prevent="passMove ? $store.dispatch('playPassMove', {
+          move: passMove,
+          prev: currentMove
+        }) : null"
+      >
+        PASS
+      </a>
+    </div>
+
     <div class="eval-plot-button-container">
       <EvalPlotButton />
     </div>
@@ -73,6 +93,16 @@ export default {
     },
     fen () {
       return this.$store.getters.fen
+    },
+    legalMoves () {
+      return this.$store.getters.legalMoves
+    },
+    passMove () {
+      const list = (typeof this.legalMoves === 'string' ? this.legalMoves : '').split(/\s+/).filter(Boolean);
+      return list.find(m => {
+        const half = m.length / 2;
+        return half > 0 && m.slice(0, half) === m.slice(half);
+      }) || null;
     }
   }
 }
@@ -113,6 +143,34 @@ i {
   border-radius: 5px;
   padding: 3px 5px;
 }
+/* PASS 버튼 패널 컨테이너 (기존 패널들과 일관된 테두리 유지) */
+.pass-button-container {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--second-bg-color);
+  border: 1px solid var(--main-border-color);
+  border-radius: 5px;
+  padding: 3px 5px;
+}
+/* 기존 화살표 크기(70px)의 절반에 준하는 아담한 스타일 */
+.pass-btn {
+  align-items: center;
+  text-align: center;
+  text-decoration: none;
+  display: inline-flex;
+  justify-content: center;
+  font-size: 11pt;
+  font-weight: bold;
+  width: 45px;
+  height: 32px;
+  color: var(--main-text-color);
+  border-radius: 5px;
+}
+.pass-btn:hover {
+  background-color: var(--hover-highlight-color);
+  color: white;
+}
 .jump {
   align-items: center;
   text-align: center;
@@ -136,7 +194,12 @@ i {
 .grey {
   color:gray
 }
-.grey:hover {
+.pass-btn.grey:hover {
+  background-color: transparent;
+  color: gray;
+  cursor: default;
+}
+.jump.grey:hover {
   background-color: var(--main-bg-color);
   color: gray;
   cursor: default;
