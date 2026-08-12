@@ -76,7 +76,6 @@ public:
   CapturePieceToHistory captureHistory;
   ContinuationHistory continuationHistory[2][2];
   Score trend;
-  Search::SearchStats searchStats;
 };
 
 

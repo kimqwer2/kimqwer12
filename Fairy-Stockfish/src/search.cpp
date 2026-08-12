@@ -44,261 +44,6 @@ namespace Search {
   LimitsType Limits;
 }
 
-
-void Search::SearchStats::clear() {
-
-  bool wasActive = active;
-  *this = SearchStats();
-  active = wasActive;
-}
-
-void Search::SearchStats::merge(const SearchStats& stats) {
-
-  active = active || stats.active;
-  orderingSearched += stats.orderingSearched;
-  orderingFailHighs += stats.orderingFailHighs;
-  orderingFirstMoveFailHighs += stats.orderingFirstMoveFailHighs;
-  orderingFailHighIndexTotal += stats.orderingFailHighIndexTotal;
-  orderingTtMovePresent += stats.orderingTtMovePresent;
-  orderingTtMoveSearched += stats.orderingTtMoveSearched;
-  orderingTtMoveFailHighs += stats.orderingTtMoveFailHighs;
-  orderingTtMoveAlphaRaises += stats.orderingTtMoveAlphaRaises;
-  for (int i = 0; i < ORDERING_FH_BUCKET_NB; ++i)
-      orderingFailHighBuckets[i] += stats.orderingFailHighBuckets[i];
-  for (int i = 0; i < ORDERING_PIECE_NB; ++i)
-  {
-      orderingPieces[i].searched += stats.orderingPieces[i].searched;
-      orderingPieces[i].moveIndexTotal += stats.orderingPieces[i].moveIndexTotal;
-      orderingPieces[i].failHighs += stats.orderingPieces[i].failHighs;
-      orderingPieces[i].alphaRaises += stats.orderingPieces[i].alphaRaises;
-      orderingPieces[i].alphaGainTotal += stats.orderingPieces[i].alphaGainTotal;
-      orderingPieces[i].pvHeadAppearances += stats.orderingPieces[i].pvHeadAppearances;
-      orderingPieces[i].rootPvAppearances += stats.orderingPieces[i].rootPvAppearances;
-      orderingPieces[i].ttMoveSearches += stats.orderingPieces[i].ttMoveSearches;
-  }
-  orderingChecks.seen += stats.orderingChecks.seen;
-  orderingChecks.searched += stats.orderingChecks.searched;
-  orderingChecks.failHighs += stats.orderingChecks.failHighs;
-  orderingChecks.alphaRaises += stats.orderingChecks.alphaRaises;
-  orderingChecks.alphaGainTotal += stats.orderingChecks.alphaGainTotal;
-  orderingChecks.pvAppearances += stats.orderingChecks.pvAppearances;
-  for (int i = 0; i < ORDERING_CHECK_NB; ++i)
-  {
-      orderingChecksByPiece[i].seen += stats.orderingChecksByPiece[i].seen;
-      orderingChecksByPiece[i].searched += stats.orderingChecksByPiece[i].searched;
-      orderingChecksByPiece[i].failHighs += stats.orderingChecksByPiece[i].failHighs;
-      orderingChecksByPiece[i].alphaRaises += stats.orderingChecksByPiece[i].alphaRaises;
-      orderingChecksByPiece[i].alphaGainTotal += stats.orderingChecksByPiece[i].alphaGainTotal;
-      orderingChecksByPiece[i].pvAppearances += stats.orderingChecksByPiece[i].pvAppearances;
-  }
-  orderingCaptures.searched += stats.orderingCaptures.searched;
-  orderingCaptures.failHighs += stats.orderingCaptures.failHighs;
-  orderingCaptures.pvAppearances += stats.orderingCaptures.pvAppearances;
-  orderingQuiets.searched += stats.orderingQuiets.searched;
-  orderingQuiets.failHighs += stats.orderingQuiets.failHighs;
-  orderingQuiets.pvAppearances += stats.orderingQuiets.pvAppearances;
-  childFutilityPrunes += stats.childFutilityPrunes;
-  nullMoveAttempts += stats.nullMoveAttempts;
-  nullMoveCutoffs += stats.nullMoveCutoffs;
-  nullMoveVerifications += stats.nullMoveVerifications;
-  nullMoveVerificationCutoffs += stats.nullMoveVerificationCutoffs;
-  probCutAttempts += stats.probCutAttempts;
-  probCutCandidates += stats.probCutCandidates;
-  probCutQsearchPasses += stats.probCutQsearchPasses;
-  probCutSearchPasses += stats.probCutSearchPasses;
-  probCutCutoffs += stats.probCutCutoffs;
-  inCheckProbCutCutoffs += stats.inCheckProbCutCutoffs;
-  mainMoveCountPruningActivations += stats.mainMoveCountPruningActivations;
-  mainCaptureHistoryPrunes += stats.mainCaptureHistoryPrunes;
-  mainSeeCapturePrunes += stats.mainSeeCapturePrunes;
-  mainContinuationPrunes += stats.mainContinuationPrunes;
-  mainParentFutilityPrunes += stats.mainParentFutilityPrunes;
-  mainSeeQuietPrunes += stats.mainSeeQuietPrunes;
-  singularCandidates += stats.singularCandidates;
-  singularSingleExtensions += stats.singularSingleExtensions;
-  singularDoubleExtensions += stats.singularDoubleExtensions;
-  singularMultiCutCutoffs += stats.singularMultiCutCutoffs;
-  singularBetaCutoffs += stats.singularBetaCutoffs;
-  checkExtensionCandidates += stats.checkExtensionCandidates;
-  checkExtensions += stats.checkExtensions;
-  lmrCandidates += stats.lmrCandidates;
-  lmrApplied += stats.lmrApplied;
-  lmrReductionTotal += stats.lmrReductionTotal;
-  lmrReducedFailHighs += stats.lmrReducedFailHighs;
-  lmrFullDepthSearches += stats.lmrFullDepthSearches;
-  lmrFullDepthFailHighs += stats.lmrFullDepthFailHighs;
-  qsearchStandPatCutoffs += stats.qsearchStandPatCutoffs;
-  qsearchMoveCountPrunes += stats.qsearchMoveCountPrunes;
-  qsearchFutilityPrunes += stats.qsearchFutilityPrunes;
-  qsearchSeeFutilityPrunes += stats.qsearchSeeFutilityPrunes;
-  qsearchNegativeSeePrunes += stats.qsearchNegativeSeePrunes;
-  qsearchContinuationPrunes += stats.qsearchContinuationPrunes;
-  aspirationSearches += stats.aspirationSearches;
-  aspirationFailHighs += stats.aspirationFailHighs;
-  aspirationFailLows += stats.aspirationFailLows;
-  aspirationResearches += stats.aspirationResearches;
-  aspirationMaxRetries = std::max(aspirationMaxRetries, stats.aspirationMaxRetries);
-}
-
-namespace {
-
-  Search::SearchStats::OrderingPieceCategory ordering_piece_category(Piece pc);
-  Search::SearchStats::OrderingCheckCategory ordering_check_category(Piece pc);
-  int ordering_fail_high_bucket(int moveIndex);
-  double ratio(uint64_t numerator, uint64_t denominator);
-  double average(int64_t total, uint64_t count);
-  double average(uint64_t total, uint64_t count);
-
-  void print_search_stats() {
-
-    Search::SearchStats stats;
-
-    for (Thread* th : Threads)
-        stats.merge(th->searchStats);
-
-    if (!stats.active)
-        return;
-
-    double avgReduction = stats.lmrApplied ? double(stats.lmrReductionTotal) / stats.lmrApplied : 0.0;
-
-    sync_cout << "info string searchstats mechanism variant " << std::string(Options["UCI_Variant"])
-              << " depth " << Threads.main()->completedDepth
-              << " nodes " << Threads.nodes_searched() << sync_endl;
-
-    sync_cout << "info string searchstats fire lmr candidates " << stats.lmrCandidates
-              << " applied " << stats.lmrApplied
-              << " reduced_fh " << stats.lmrReducedFailHighs
-              << " full_researches " << stats.lmrFullDepthSearches
-              << " full_research_fh " << stats.lmrFullDepthFailHighs
-              << " avg_r " << avgReduction << sync_endl;
-
-    sync_cout << "info string searchstats fire prune child_futility " << stats.childFutilityPrunes
-              << " move_count_activations " << stats.mainMoveCountPruningActivations
-              << " capture_history " << stats.mainCaptureHistoryPrunes
-              << " cont_main " << stats.mainContinuationPrunes
-              << " futility_parent " << stats.mainParentFutilityPrunes
-              << " see_main_capture " << stats.mainSeeCapturePrunes
-              << " see_main_quiet " << stats.mainSeeQuietPrunes << sync_endl;
-
-    sync_cout << "info string searchstats fire null attempts " << stats.nullMoveAttempts
-              << " cutoffs " << stats.nullMoveCutoffs
-              << " verifications " << stats.nullMoveVerifications
-              << " verified_cutoffs " << stats.nullMoveVerificationCutoffs << sync_endl;
-
-    sync_cout << "info string searchstats fire probcut attempts " << stats.probCutAttempts
-              << " candidates " << stats.probCutCandidates
-              << " qpass " << stats.probCutQsearchPasses
-              << " search_pass " << stats.probCutSearchPasses
-              << " cutoffs " << stats.probCutCutoffs
-              << " incheck_cutoffs " << stats.inCheckProbCutCutoffs << sync_endl;
-
-    sync_cout << "info string searchstats fire singular candidates " << stats.singularCandidates
-              << " single_ext " << stats.singularSingleExtensions
-              << " double_ext " << stats.singularDoubleExtensions
-              << " multicuts " << stats.singularMultiCutCutoffs
-              << " beta_ver_cutoffs " << stats.singularBetaCutoffs
-              << " check_ext_candidates " << stats.checkExtensionCandidates
-              << " check_ext " << stats.checkExtensions << sync_endl;
-
-    sync_cout << "info string searchstats fire qsearch stand_pat " << stats.qsearchStandPatCutoffs
-              << " move_count " << stats.qsearchMoveCountPrunes
-              << " futility " << stats.qsearchFutilityPrunes
-              << " see_futility " << stats.qsearchSeeFutilityPrunes
-              << " negative_see " << stats.qsearchNegativeSeePrunes
-              << " continuation " << stats.qsearchContinuationPrunes << sync_endl;
-
-    sync_cout << "info string searchstats aspiration searches " << stats.aspirationSearches
-              << " fail_high " << stats.aspirationFailHighs
-              << " fail_low " << stats.aspirationFailLows
-              << " researches " << stats.aspirationResearches
-              << " max_retries " << stats.aspirationMaxRetries << sync_endl;
-
-    uint64_t orderingAlphaRaises = 0;
-    for (int i = 0; i < Search::SearchStats::ORDERING_PIECE_NB; ++i)
-        orderingAlphaRaises += stats.orderingPieces[i].alphaRaises;
-
-    sync_cout << "info string searchstats ordering all searched " << stats.orderingSearched
-              << " fail_highs " << stats.orderingFailHighs
-              << " alpha_raises " << orderingAlphaRaises << sync_endl;
-
-    sync_cout << "info string searchstats ordering first_move_fail_high_rate total " << stats.orderingFailHighs
-              << " first " << stats.orderingFirstMoveFailHighs
-              << " pct " << ratio(stats.orderingFirstMoveFailHighs, stats.orderingFailHighs) << sync_endl;
-
-    sync_cout << "info string searchstats ordering avg_fail_high_index avg " << average(stats.orderingFailHighIndexTotal, stats.orderingFailHighs)
-              << " bucket_1 " << stats.orderingFailHighBuckets[Search::SearchStats::ORDERING_FH_1]
-              << " bucket_2 " << stats.orderingFailHighBuckets[Search::SearchStats::ORDERING_FH_2]
-              << " bucket_3_4 " << stats.orderingFailHighBuckets[Search::SearchStats::ORDERING_FH_3_4]
-              << " bucket_5_8 " << stats.orderingFailHighBuckets[Search::SearchStats::ORDERING_FH_5_8]
-              << " bucket_9_16 " << stats.orderingFailHighBuckets[Search::SearchStats::ORDERING_FH_9_16]
-              << " bucket_17_plus " << stats.orderingFailHighBuckets[Search::SearchStats::ORDERING_FH_17_PLUS] << sync_endl;
-
-    sync_cout << "info string searchstats ordering tt present " << stats.orderingTtMovePresent
-              << " searched " << stats.orderingTtMoveSearched
-              << " fail_high " << stats.orderingTtMoveFailHighs
-              << " alpha_raise " << stats.orderingTtMoveAlphaRaises
-              << " fail_high_rate " << ratio(stats.orderingTtMoveFailHighs, stats.orderingTtMoveSearched) << sync_endl;
-
-    const char* pieceNames[Search::SearchStats::ORDERING_PIECE_NB] = {"cannon", "rook", "horse", "elephant", "pawn", "king_advisor", "other"};
-    for (int i = 0; i < Search::SearchStats::ORDERING_PIECE_NB; ++i)
-    {
-        const auto& ps = stats.orderingPieces[i];
-        sync_cout << "info string searchstats ordering piece " << pieceNames[i]
-                  << " searched " << ps.searched
-                  << " avg_index " << average(ps.moveIndexTotal, ps.searched)
-                  << " fail_high " << ps.failHighs
-                  << " fail_high_rate " << ratio(ps.failHighs, ps.searched)
-                  << " alpha_raise " << ps.alphaRaises
-                  << " avg_alpha_gain " << average(ps.alphaGainTotal, ps.alphaRaises)
-                  << " pv_head " << ps.pvHeadAppearances
-                  << " root_pv " << ps.rootPvAppearances
-                  << " tt_move " << ps.ttMoveSearches << sync_endl;
-    }
-
-    const auto& cs = stats.orderingChecks;
-    sync_cout << "info string searchstats ordering checks seen " << cs.seen
-              << " searched " << cs.searched
-              << " fail_high " << cs.failHighs
-              << " fail_high_rate " << ratio(cs.failHighs, cs.searched)
-              << " alpha_raise " << cs.alphaRaises
-              << " avg_alpha_gain " << average(cs.alphaGainTotal, cs.alphaRaises)
-              << " pv_appearance_rate " << ratio(cs.pvAppearances, cs.searched) << sync_endl;
-
-    const char* checkNames[Search::SearchStats::ORDERING_CHECK_NB] = {"cannon", "rook", "horse", "other"};
-    for (int i = 0; i < Search::SearchStats::ORDERING_CHECK_NB; ++i)
-    {
-        const auto& cps = stats.orderingChecksByPiece[i];
-        sync_cout << "info string searchstats ordering checks " << checkNames[i]
-                  << " seen " << cps.seen
-                  << " searched " << cps.searched
-                  << " fail_high " << cps.failHighs
-                  << " fail_high_rate " << ratio(cps.failHighs, cps.searched)
-                  << " alpha_raise " << cps.alphaRaises
-                  << " avg_alpha_gain " << average(cps.alphaGainTotal, cps.alphaRaises)
-                  << " pv_appearance_rate " << ratio(cps.pvAppearances, cps.searched) << sync_endl;
-    }
-
-    sync_cout << "info string searchstats ordering captures searched " << stats.orderingCaptures.searched
-              << " fail_high " << stats.orderingCaptures.failHighs
-              << " fail_high_rate " << ratio(stats.orderingCaptures.failHighs, stats.orderingCaptures.searched)
-              << " pv " << stats.orderingCaptures.pvAppearances
-              << " pv_rate " << ratio(stats.orderingCaptures.pvAppearances, stats.orderingCaptures.searched) << sync_endl;
-
-    sync_cout << "info string searchstats ordering quiets searched " << stats.orderingQuiets.searched
-              << " fail_high " << stats.orderingQuiets.failHighs
-              << " fail_high_rate " << ratio(stats.orderingQuiets.failHighs, stats.orderingQuiets.searched)
-              << " pv " << stats.orderingQuiets.pvAppearances
-              << " pv_rate " << ratio(stats.orderingQuiets.pvAppearances, stats.orderingQuiets.searched) << sync_endl;
-
-    const auto& cannon = stats.orderingPieces[Search::SearchStats::ORDERING_CANNON];
-    sync_cout << "info string searchstats ordering cannon_audit avg_index " << average(cannon.moveIndexTotal, cannon.searched)
-              << " fail_high_rate " << ratio(cannon.failHighs, cannon.searched)
-              << " pv_rate " << ratio(cannon.pvHeadAppearances + cannon.rootPvAppearances, cannon.searched)
-              << " avg_alpha_gain " << average(cannon.alphaGainTotal, cannon.alphaRaises)
-              << " tt_move_frequency " << ratio(cannon.ttMoveSearches, cannon.searched) << sync_endl;
-  }
-}
-
 namespace Tablebases {
 
   int Cardinality;
@@ -336,67 +81,6 @@ namespace {
 
   int futility_move_count(bool improving, Depth depth, const Position& pos) {
     return (3 + depth * depth * (1 + pos.walling()) + 2 * pos.blast_on_capture()) / (2 - improving + pos.blast_on_capture());
-  }
-
-  Search::SearchStats::OrderingPieceCategory ordering_piece_category(Piece pc) {
-    switch (type_of(pc))
-    {
-    case CANNON:
-    case JANGGI_CANNON:
-        return Search::SearchStats::ORDERING_CANNON;
-    case ROOK:
-        return Search::SearchStats::ORDERING_ROOK;
-    case HORSE:
-    case KNIGHT:
-        return Search::SearchStats::ORDERING_HORSE;
-    case JANGGI_ELEPHANT:
-    case ELEPHANT:
-        return Search::SearchStats::ORDERING_ELEPHANT;
-    case PAWN:
-    case SOLDIER:
-        return Search::SearchStats::ORDERING_PAWN;
-    case KING:
-    case WAZIR:
-    case FERS:
-        return Search::SearchStats::ORDERING_KING_ADVISOR;
-    default:
-        return Search::SearchStats::ORDERING_OTHER;
-    }
-  }
-
-  Search::SearchStats::OrderingCheckCategory ordering_check_category(Piece pc) {
-    switch (ordering_piece_category(pc))
-    {
-    case Search::SearchStats::ORDERING_CANNON:
-        return Search::SearchStats::ORDERING_CHECK_CANNON;
-    case Search::SearchStats::ORDERING_ROOK:
-        return Search::SearchStats::ORDERING_CHECK_ROOK;
-    case Search::SearchStats::ORDERING_HORSE:
-        return Search::SearchStats::ORDERING_CHECK_HORSE;
-    default:
-        return Search::SearchStats::ORDERING_CHECK_OTHER;
-    }
-  }
-
-  int ordering_fail_high_bucket(int moveIndex) {
-    return moveIndex == 1 ? Search::SearchStats::ORDERING_FH_1
-         : moveIndex == 2 ? Search::SearchStats::ORDERING_FH_2
-         : moveIndex <= 4 ? Search::SearchStats::ORDERING_FH_3_4
-         : moveIndex <= 8 ? Search::SearchStats::ORDERING_FH_5_8
-         : moveIndex <= 16 ? Search::SearchStats::ORDERING_FH_9_16
-                           : Search::SearchStats::ORDERING_FH_17_PLUS;
-  }
-
-  double ratio(uint64_t numerator, uint64_t denominator) {
-    return denominator ? 100.0 * double(numerator) / double(denominator) : 0.0;
-  }
-
-  double average(int64_t total, uint64_t count) {
-    return count ? double(total) / double(count) : 0.0;
-  }
-
-  double average(uint64_t total, uint64_t count) {
-    return count ? double(total) / double(count) : 0.0;
   }
 
   // History and stats update bonus, based on depth
@@ -558,8 +242,6 @@ void MainThread::search() {
   // Wait until all threads have finished
   Threads.wait_for_search_finished();
 
-  print_search_stats();
-
   // When playing in 'nodes as time' mode, subtract the searched nodes from
   // the available ones before exiting.
   if (Limits.npmsec)
@@ -702,9 +384,6 @@ void Thread::search() {
 
   trend = SCORE_ZERO;
 
-  searchStats.active = bool(Options["SearchStats"]);
-  searchStats.clear();
-
   int searchAgainCounter = 0;
 
   // Iterative deepening loop until requested to stop or the target depth is reached
@@ -760,12 +439,8 @@ void Thread::search() {
           // high/low, re-search with a bigger window until we don't fail
           // high/low anymore.
           int failedHighCnt = 0;
-          int aspirationRetries = 0;
           while (true)
           {
-              if (searchStats.active)
-                  searchStats.aspirationSearches++;
-
               Depth adjustedDepth = std::max(1, rootDepth - failedHighCnt - searchAgainCounter);
               bestValue = Stockfish::search<Root>(rootPos, ss, alpha, beta, adjustedDepth, false);
 
@@ -795,9 +470,6 @@ void Thread::search() {
               // re-search, otherwise exit the loop.
               if (bestValue <= alpha)
               {
-                  if (searchStats.active)
-                      searchStats.aspirationFailLows++;
-
                   beta = (alpha + beta) / 2;
                   alpha = std::max(bestValue - delta, -VALUE_INFINITE);
 
@@ -807,20 +479,11 @@ void Thread::search() {
               }
               else if (bestValue >= beta)
               {
-                  if (searchStats.active)
-                      searchStats.aspirationFailHighs++;
-
                   beta = std::min(bestValue + delta, VALUE_INFINITE);
                   ++failedHighCnt;
               }
               else
                   break;
-
-              if (searchStats.active)
-              {
-                  searchStats.aspirationResearches++;
-                  searchStats.aspirationMaxRetries = std::max(searchStats.aspirationMaxRetries, uint64_t(++aspirationRetries));
-              }
 
               delta += delta / 4 + 5;
 
@@ -1267,12 +930,7 @@ namespace {
         &&  depth < 9 - 3 * pos.blast_on_capture()
         &&  eval - futility_margin(depth, improving) * (1 + pos.check_counting() + 2 * pos.must_capture() + pos.extinction_single_piece() + !pos.checking_permitted()) >= beta
         &&  eval < VALUE_KNOWN_WIN) // Do not return unproven wins
-    {
-        if (thisThread->searchStats.active)
-            thisThread->searchStats.childFutilityPrunes++;
-
         return eval;
-    }
 
     // Step 8. Null move search with verification search (~40 Elo)
     if (   !PvNode
@@ -1292,9 +950,6 @@ namespace {
         // Null move dynamic reduction based on depth and value
         Depth R = (1090 - 300 * pos.must_capture() - 250 * !pos.checking_permitted() + 81 * depth) / 256 + std::min(int(eval - beta) / 205, pos.must_capture() || pos.blast_on_capture() ? 0 : 3);
 
-        if (thisThread->searchStats.active)
-            thisThread->searchStats.nullMoveAttempts++;
-
         ss->currentMove = MOVE_NULL;
         ss->continuationHistory = &thisThread->continuationHistory[0][0][NO_PIECE][0];
 
@@ -1306,8 +961,6 @@ namespace {
 
         if (nullValue >= beta)
         {
-            if (thisThread->searchStats.active)
-                thisThread->searchStats.nullMoveCutoffs++;
             // Do not return unproven mate or TB scores
             if (nullValue >= VALUE_TB_WIN_IN_MAX_PLY)
                 nullValue = beta;
@@ -1316,9 +969,6 @@ namespace {
                 return nullValue;
 
             assert(!thisThread->nmpMinPly); // Recursive verification is not allowed
-
-            if (thisThread->searchStats.active)
-                thisThread->searchStats.nullMoveVerifications++;
 
             // Do verification search at high depths, with null move pruning disabled
             // for us, until ply exceeds nmpMinPly.
@@ -1330,12 +980,7 @@ namespace {
             thisThread->nmpMinPly = 0;
 
             if (v >= beta)
-            {
-                if (thisThread->searchStats.active)
-                    thisThread->searchStats.nullMoveVerificationCutoffs++;
-
                 return nullValue;
-            }
         }
     }
 
@@ -1356,9 +1001,6 @@ namespace {
              && ttValue != VALUE_NONE
              && ttValue < probCutBeta))
     {
-        if (thisThread->searchStats.active)
-            thisThread->searchStats.probCutAttempts++;
-
         assert(probCutBeta < VALUE_INFINITE);
 
         MovePicker mp(pos, ttMove, probCutBeta - ss->staticEval, &thisThread->gateHistory, &captureHistory);
@@ -1374,8 +1016,6 @@ namespace {
                 assert(depth >= 5);
 
                 captureOrPromotion = true;
-                if (thisThread->searchStats.active)
-                    thisThread->searchStats.probCutCandidates++;
                 probCutCount++;
 
                 ss->currentMove = move;
@@ -1391,23 +1031,12 @@ namespace {
 
                 // If the qsearch held, perform the regular search
                 if (value >= probCutBeta)
-                {
-                    if (thisThread->searchStats.active)
-                        thisThread->searchStats.probCutQsearchPasses++;
-
                     value = -search<NonPV>(pos, ss+1, -probCutBeta, -probCutBeta+1, depth - 4, !cutNode);
-                }
 
                 pos.undo_move(move);
 
                 if (value >= probCutBeta)
                 {
-                    if (thisThread->searchStats.active)
-                    {
-                        thisThread->searchStats.probCutSearchPasses++;
-                        thisThread->searchStats.probCutCutoffs++;
-                    }
-
                     // if transposition table doesn't have equal or more deep info write probCut data into it
                     if ( !(ss->ttHit
                        && tte->depth() >= depth - 3
@@ -1443,12 +1072,7 @@ moves_loop: // When in check, search starts from here
         && abs(ttValue) <= VALUE_KNOWN_WIN
         && abs(beta) <= VALUE_KNOWN_WIN
        )
-    {
-        if (thisThread->searchStats.active)
-            thisThread->searchStats.inCheckProbCutCutoffs++;
-
         return probCutBeta;
-    }
 
 
     const PieceToHistory* contHist[] = { (ss-1)->continuationHistory, (ss-2)->continuationHistory,
@@ -1476,9 +1100,6 @@ moves_loop: // When in check, search starts from here
                          && ttMove
                          && (tte->bound() & BOUND_UPPER)
                          && tte->depth() >= depth;
-
-    if (thisThread->searchStats.active && ttMove)
-        thisThread->searchStats.orderingTtMovePresent++;
 
     // Step 12. Loop through all pseudo-legal moves until no moves remain
     // or a beta cutoff occurs.
@@ -1515,18 +1136,6 @@ moves_loop: // When in check, search starts from here
       movedPiece = pos.moved_piece(move);
       givesCheck = pos.gives_check(move);
 
-      const bool statsActive = thisThread->searchStats.active;
-      const auto orderingPiece = ordering_piece_category(movedPiece);
-      const auto orderingCheckPiece = ordering_check_category(movedPiece);
-      if (statsActive)
-      {
-          if (givesCheck)
-          {
-              thisThread->searchStats.orderingChecks.seen++;
-              thisThread->searchStats.orderingChecksByPiece[orderingCheckPiece].seen++;
-          }
-      }
-
       // Calculate new depth for this move
       newDepth = depth - 1;
 
@@ -1537,8 +1146,6 @@ moves_loop: // When in check, search starts from here
       {
           // Skip quiet moves if movecount exceeds our FutilityMoveCount threshold
           moveCountPruning = moveCount >= futility_move_count(improving, depth, pos);
-          if (moveCountPruning && thisThread->searchStats.active)
-              thisThread->searchStats.mainMoveCountPruningActivations++;
 
           // Reduced depth of the next LMR search
           int lmrDepth = std::max(newDepth - reduction(improving, depth, moveCount), 0);
@@ -1554,21 +1161,11 @@ moves_loop: // When in check, search starts from here
               if (   !givesCheck
                   && lmrDepth < 1
                   && captureHistory[movedPiece][to_sq(move)][type_of(pos.piece_on(to_sq(move)))] < 0)
-              {
-                  if (thisThread->searchStats.active)
-                      thisThread->searchStats.mainCaptureHistoryPrunes++;
-
                   continue;
-              }
 
               // SEE based pruning
               if (!pos.see_ge(move, Value(-218 - 120 * pos.captures_to_hand()) * depth)) // (~25 Elo)
-              {
-                  if (thisThread->searchStats.active)
-                      thisThread->searchStats.mainSeeCapturePrunes++;
-
                   continue;
-              }
           }
           else
           {
@@ -1576,12 +1173,7 @@ moves_loop: // When in check, search starts from here
               if (   lmrDepth < 5
                   && (*contHist[0])[history_slot(movedPiece)][to_sq(move)] < CounterMovePruneThreshold
                   && (*contHist[1])[history_slot(movedPiece)][to_sq(move)] < CounterMovePruneThreshold)
-              {
-                  if (thisThread->searchStats.active)
-                      thisThread->searchStats.mainContinuationPrunes++;
-
                   continue;
-              }
 
               // Futility pruning: parent node (~5 Elo)
               if (   lmrDepth < 7
@@ -1592,21 +1184,11 @@ moves_loop: // When in check, search starts from here
                     + (*contHist[1])[history_slot(movedPiece)][to_sq(move)]
                     + (*contHist[3])[history_slot(movedPiece)][to_sq(move)]
                     + (*contHist[5])[history_slot(movedPiece)][to_sq(move)] / 3 < 28255)
-              {
-                  if (thisThread->searchStats.active)
-                      thisThread->searchStats.mainParentFutilityPrunes++;
-
                   continue;
-              }
 
               // Prune moves with negative SEE (~20 Elo)
               if (!(pos.walling_rule() == DUCK) && !pos.see_ge(move, Value(-(30 - std::min(lmrDepth, 18) + 10 * !!pos.flag_region(pos.side_to_move())) * lmrDepth * lmrDepth)))
-              {
-                  if (thisThread->searchStats.active)
-                      thisThread->searchStats.mainSeeQuietPrunes++;
-
                   continue;
-              }
           }
       }
 
@@ -1626,9 +1208,6 @@ moves_loop: // When in check, search starts from here
           && (tte->bound() & BOUND_LOWER)
           &&  tte->depth() >= depth - 3)
       {
-          if (thisThread->searchStats.active)
-              thisThread->searchStats.singularCandidates++;
-
           Value singularBeta = ttValue - 2 * depth;
           Depth singularDepth = (depth - 1) / 2;
 
@@ -1640,8 +1219,6 @@ moves_loop: // When in check, search starts from here
           {
               extension = 1;
               singularQuietLMR = !ttCapture;
-              if (thisThread->searchStats.active)
-                  thisThread->searchStats.singularSingleExtensions++;
 
               // Avoid search explosion by limiting the number of double extensions to at most 3
               if (   !PvNode
@@ -1650,8 +1227,6 @@ moves_loop: // When in check, search starts from here
               {
                   extension = 2;
                   doubleExtension = true;
-                  if (thisThread->searchStats.active)
-                      thisThread->searchStats.singularDoubleExtensions++;
               }
           }
 
@@ -1661,12 +1236,7 @@ moves_loop: // When in check, search starts from here
           // that multiple moves fail high, and we can prune the whole subtree by returning
           // a soft bound.
           else if (singularBeta >= beta)
-          {
-              if (thisThread->searchStats.active)
-                  thisThread->searchStats.singularMultiCutCutoffs++;
-
               return singularBeta;
-          }
 
           // If the eval of ttMove is greater than beta we try also if there is another
           // move that pushes it over beta, if so also produce a cutoff.
@@ -1677,57 +1247,19 @@ moves_loop: // When in check, search starts from here
               ss->excludedMove = MOVE_NONE;
 
               if (value >= beta)
-              {
-                  if (thisThread->searchStats.active)
-                      thisThread->searchStats.singularBetaCutoffs++;
-
                   return beta;
-              }
           }
       }
       else if (   givesCheck
                && depth > 6
                && abs(ss->staticEval) > Value(100))
-      {
-          if (thisThread->searchStats.active)
-          {
-              thisThread->searchStats.checkExtensionCandidates++;
-              thisThread->searchStats.checkExtensions++;
-          }
-
           extension = 1;
-      }
 
       // Losing chess capture extension
       else if (    pos.must_capture()
                &&  pos.capture(move)
                &&  (ss->inCheck || MoveList<CAPTURES>(pos).size() == 1))
           extension = 1;
-
-      if (statsActive)
-      {
-          thisThread->searchStats.orderingSearched++;
-          auto& ps = thisThread->searchStats.orderingPieces[orderingPiece];
-          ps.searched++;
-          ps.moveIndexTotal += moveCount;
-          if (PvNode && moveCount == 1)
-              ps.pvHeadAppearances++;
-          if (move == ttMove)
-          {
-              thisThread->searchStats.orderingTtMoveSearched++;
-              ps.ttMoveSearches++;
-          }
-          auto& kindStats = captureOrPromotion ? thisThread->searchStats.orderingCaptures
-                                                : thisThread->searchStats.orderingQuiets;
-          kindStats.searched++;
-          if (givesCheck)
-          {
-              thisThread->searchStats.orderingChecks.searched++;
-              thisThread->searchStats.orderingChecksByPiece[orderingCheckPiece].searched++;
-          }
-      }
-
-      const Value alphaBeforeMove = alpha;
 
       // Add extension to new depth
       newDepth += extension;
@@ -1756,9 +1288,6 @@ moves_loop: // When in check, search starts from here
               || !ss->ttPv)
           && (!PvNode || ss->ply > 1 || thisThread->id() % 4 != 3))
       {
-          if (thisThread->searchStats.active)
-              thisThread->searchStats.lmrCandidates++;
-
           Depth r = reduction(improving, depth, moveCount);
 
           if (PvNode)
@@ -1814,18 +1343,10 @@ moves_loop: // When in check, search starts from here
           // to be searched deeper than the first move, unless ttMove was extended by 2.
           Depth d = std::clamp(newDepth - r, 1, newDepth + (r < -1 && moveCount <= 5 && !doubleExtension));
 
-          if (thisThread->searchStats.active && d < newDepth)
-          {
-              thisThread->searchStats.lmrApplied++;
-              thisThread->searchStats.lmrReductionTotal += uint64_t(newDepth - d);
-          }
-
           value = -search<NonPV>(pos, ss+1, -(alpha+1), -alpha, d, true);
 
           // If the son is reduced and fails high it will be re-searched at full depth
           doFullDepthSearch = value > alpha && d < newDepth;
-          if (doFullDepthSearch && thisThread->searchStats.active)
-              thisThread->searchStats.lmrReducedFailHighs++;
           didLMR = true;
       }
       else
@@ -1837,13 +1358,7 @@ moves_loop: // When in check, search starts from here
       // Step 17. Full depth search when LMR is skipped or fails high
       if (doFullDepthSearch)
       {
-          if (didLMR && thisThread->searchStats.active)
-              thisThread->searchStats.lmrFullDepthSearches++;
-
           value = -search<NonPV>(pos, ss+1, -(alpha+1), -alpha, newDepth, !cutNode);
-
-          if (didLMR && value > alpha && thisThread->searchStats.active)
-              thisThread->searchStats.lmrFullDepthFailHighs++;
 
           // If the move passed LMR update its stats
           if (didLMR && !captureOrPromotion)
@@ -1878,63 +1393,6 @@ moves_loop: // When in check, search starts from here
       // updating best move, PV and TT.
       if (Threads.stop.load(std::memory_order_relaxed))
           return VALUE_ZERO;
-
-      if (statsActive)
-      {
-          const bool failHigh = value >= beta;
-          const bool alphaRaise = value > alphaBeforeMove;
-          const int64_t alphaGain = alphaRaise && alphaBeforeMove > -VALUE_KNOWN_WIN
-                                  ? int64_t(value) - int64_t(alphaBeforeMove) : 0;
-          auto& ps = thisThread->searchStats.orderingPieces[orderingPiece];
-          auto& kindStats = captureOrPromotion ? thisThread->searchStats.orderingCaptures
-                                                : thisThread->searchStats.orderingQuiets;
-
-          if (failHigh)
-          {
-              thisThread->searchStats.orderingFailHighs++;
-              thisThread->searchStats.orderingFailHighIndexTotal += moveCount;
-              thisThread->searchStats.orderingFailHighBuckets[ordering_fail_high_bucket(moveCount)]++;
-              if (moveCount == 1)
-                  thisThread->searchStats.orderingFirstMoveFailHighs++;
-              ps.failHighs++;
-              kindStats.failHighs++;
-              if (move == ttMove)
-                  thisThread->searchStats.orderingTtMoveFailHighs++;
-              if (givesCheck)
-              {
-                  thisThread->searchStats.orderingChecks.failHighs++;
-                  thisThread->searchStats.orderingChecksByPiece[orderingCheckPiece].failHighs++;
-              }
-          }
-
-          if (alphaRaise)
-          {
-              ps.alphaRaises++;
-              ps.alphaGainTotal += alphaGain;
-              if (move == ttMove)
-                  thisThread->searchStats.orderingTtMoveAlphaRaises++;
-              if (givesCheck)
-              {
-                  thisThread->searchStats.orderingChecks.alphaRaises++;
-                  thisThread->searchStats.orderingChecks.alphaGainTotal += alphaGain;
-                  thisThread->searchStats.orderingChecksByPiece[orderingCheckPiece].alphaRaises++;
-                  thisThread->searchStats.orderingChecksByPiece[orderingCheckPiece].alphaGainTotal += alphaGain;
-              }
-          }
-
-          if (PvNode && alphaRaise)
-          {
-              kindStats.pvAppearances++;
-              if (givesCheck)
-              {
-                  thisThread->searchStats.orderingChecks.pvAppearances++;
-                  thisThread->searchStats.orderingChecksByPiece[orderingCheckPiece].pvAppearances++;
-              }
-          }
-
-          if (rootNode && (moveCount == 1 || alphaRaise))
-              ps.rootPvAppearances++;
-      }
 
       if (rootNode)
       {
@@ -2151,9 +1609,6 @@ moves_loop: // When in check, search starts from here
         // Stand pat. Return immediately if static value is at least beta
         if (bestValue >= beta)
         {
-            if (thisThread->searchStats.active)
-                thisThread->searchStats.qsearchStandPatCutoffs++;
-
             // Save gathered info in transposition table
             if (!ss->ttHit)
                 tte->save(posKey, value_to_tt(bestValue, ss->ply), false, BOUND_LOWER,
@@ -2203,30 +1658,19 @@ moves_loop: // When in check, search starts from here
       {
 
           if (moveCount > 2)
-          {
-              if (thisThread->searchStats.active)
-                  thisThread->searchStats.qsearchMoveCountPrunes++;
-
               continue;
-          }
 
           futilityValue = futilityBase + PieceValue[EG][pos.piece_on(to_sq(move))];
 
           if (futilityValue <= alpha)
           {
               bestValue = std::max(bestValue, futilityValue);
-              if (thisThread->searchStats.active)
-                  thisThread->searchStats.qsearchFutilityPrunes++;
-
               continue;
           }
 
           if (futilityBase <= alpha && !pos.see_ge(move, VALUE_ZERO + 1))
           {
               bestValue = std::max(bestValue, futilityBase);
-              if (thisThread->searchStats.active)
-                  thisThread->searchStats.qsearchSeeFutilityPrunes++;
-
               continue;
           }
       }
@@ -2234,12 +1678,7 @@ moves_loop: // When in check, search starts from here
       // Do not search moves with negative SEE values
       if (    bestValue > VALUE_TB_LOSS_IN_MAX_PLY
           && !pos.see_ge(move))
-      {
-          if (thisThread->searchStats.active)
-              thisThread->searchStats.qsearchNegativeSeePrunes++;
-
           continue;
-      }
 
       // Speculative prefetch as early as possible
       prefetch(TT.first_entry(pos.key_after(move)));
@@ -2262,12 +1701,7 @@ moves_loop: // When in check, search starts from here
           && bestValue > VALUE_TB_LOSS_IN_MAX_PLY
           && (*contHist[0])[history_slot(pos.moved_piece(move))][to_sq(move)] < CounterMovePruneThreshold
           && (*contHist[1])[history_slot(pos.moved_piece(move))][to_sq(move)] < CounterMovePruneThreshold)
-      {
-          if (thisThread->searchStats.active)
-              thisThread->searchStats.qsearchContinuationPrunes++;
-
           continue;
-      }
 
       // Make and search the move
       pos.do_move(move, st, givesCheck);
