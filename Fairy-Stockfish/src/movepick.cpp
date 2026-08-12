@@ -31,6 +31,24 @@ int history_slot(Piece pc) {
 
 namespace {
 
+  bool janggimodern_search(const Position& pos) {
+    return pos.variant()->variantTemplate == "janggi"
+        && pos.variant()->materialCounting == JANGGI_MATERIAL
+        && !pos.variant()->bikjangRule
+        && pos.variant()->moveRepetitionIllegal;
+  }
+
+  int janggi_capture_order_bonus(const Position& pos, Move m) {
+    if (!janggimodern_search(pos))
+        return 0;
+    PieceType moved = type_of(pos.moved_piece(m));
+    PieceType victim = type_of(pos.piece_on(to_sq(m)));
+    return 3000 * (moved == JANGGI_CANNON)
+         + 1800 * (victim == JANGGI_CANNON)
+         + 1200 * (moved == ROOK)
+         + 1600 * pos.gives_check(m);
+  }
+
   enum Stages {
     MAIN_TT, CAPTURE_INIT, GOOD_CAPTURE, REFUTATION, QUIET_INIT, QUIET, BAD_CAPTURE,
     EVASION_TT, EVASION_INIT, EVASION,
@@ -110,6 +128,7 @@ void MovePicker::score() {
   for (auto& m : *this)
       if constexpr (Type == CAPTURES)
           m.value =  int(PieceValue[MG][pos.piece_on(to_sq(m))]) * 6
+                   + janggi_capture_order_bonus(pos, m)
                    + (*gateHistory)[pos.side_to_move()][gating_square(m)]
                    + (*captureHistory)[pos.moved_piece(m)][to_sq(m)][type_of(pos.piece_on(to_sq(m)))];
 
@@ -255,7 +274,7 @@ top:
           return *(cur - 1);
 
       // If we did not find any move and we do not try checks, we have finished
-      if (depth != DEPTH_QS_CHECKS)
+      if (depth != DEPTH_QS_CHECKS && !(janggimodern_search(pos) && depth >= DEPTH_QS_NO_CHECKS - 1))
           return MOVE_NONE;
 
       ++stage;
