@@ -66,21 +66,87 @@ namespace {
   constexpr uint64_t TtHitAverageWindow     = 4096;
   constexpr uint64_t TtHitAverageResolution = 1024;
 
-  // Futility margin
-  Value futility_margin(Depth d, bool improving) {
-    return Value(214 * (d - improving));
-  }
-
   // Reductions lookup table, initialized at startup
   int Reductions[MAX_MOVES]; // [depth or moveNumber]
+
+  // JanggiModern keeps Fairy-Stockfish's rule/position/NNUE code, but uses a
+  // dedicated search profile.  The profile is deliberately centralized so the
+  // variant search is not a scattered collection of pruning exceptions.
+  bool janggimodern_search(const Position& pos) {
+    return pos.material_counting() == JANGGI_MATERIAL
+        && !pos.variant()->bikjangRule
+        && pos.variant()->moveRepetitionIllegal
+        && pos.variant()->nFoldRule == 4
+        && pos.variant()->nnueAlias == "janggi";
+  }
+
+  struct SearchProfile {
+    bool jm;
+
+    explicit SearchProfile(const Position& pos) : jm(janggimodern_search(pos)) {}
+
+    Value futility_margin(Depth d, bool improving) const {
+      // JanggiModern has many quiet screen/interposition moves that are not
+      // well represented by immediate SEE. Keep shallow margins compact, but
+      // let deeper margins grow enough to retain pruning pressure.
+      return jm ? Value(172 * d + 42 * std::max(Depth(0), d - 2) * std::max(Depth(0), d - 2) - 96 * improving)
+                : Value(214 * (d - improving));
+    }
+
+    int futility_move_count(bool improving, Depth depth, const Position& pos) const {
+      int base = (3 + depth * depth * (1 + pos.walling()) + 2 * pos.blast_on_capture()) / (2 - improving + pos.blast_on_capture());
+      if (!jm)
+          return base;
+
+      // Use a smoother depth allocation than chess-like move-count pruning:
+      // JanggiModern quiets often change cannon screens, horse/elephant legs,
+      // palace lines and defensive interpositions, so the first extra quiets are
+      // valuable; after that the high branching factor still needs firm pruning.
+      return std::max(base + 2, (3 * base + depth + 3) / 2);
+    }
+
+    Depth reduction(bool improving, Depth depth, int moveNumber, bool pvNode, bool captureOrPromotion, bool givesCheck, int statScore) const {
+      int raw = Reductions[depth] * Reductions[moveNumber];
+      Depth base = (raw + 534) / 1024 + (!improving && raw > 904);
+      if (!jm)
+          return base;
+
+      // Dedicated JanggiModern LMR: reduce less because a quiet can radically
+      // alter attack geometry, but compensate by allowing good history to carry
+      // more of the selectivity decision instead of globally searching more.
+      Depth rr = base;
+      if (depth <= 5)
+          rr = std::max(Depth(0), rr - 1);
+      if (pvNode)
+          rr = std::max(Depth(0), rr - 1);
+      if (givesCheck)
+          rr = std::max(Depth(0), rr - 1);
+      if (!captureOrPromotion)
+      {
+          if (statScore > 9000) rr = std::max(Depth(0), rr - 1);
+          if (statScore < -12000 && moveNumber > 8) rr++;
+      }
+      return rr;
+    }
+
+    Value quiet_see_margin(Depth lmrDepth, const Position& pos) const {
+      Value margin = Value(-(30 - std::min(lmrDepth, 18) + 10 * !!pos.flag_region(pos.side_to_move())) * lmrDepth * lmrDepth);
+      if (jm)
+          margin = Value(margin * 3 / 2 - 16 * lmrDepth);
+      return margin;
+    }
+
+    Value capture_see_margin(Depth depth, const Position& pos) const {
+      Value margin = Value(-218 - 120 * pos.captures_to_hand()) * depth;
+      if (jm)
+          margin = Value(margin * 5 / 4);
+      return margin;
+    }
+  };
 
   Depth reduction(bool i, Depth d, int mn) {
     int r = Reductions[d] * Reductions[mn];
     return (r + 534) / 1024 + (!i && r > 904);
-  }
-
-  int futility_move_count(bool improving, Depth depth, const Position& pos) {
-    return (3 + depth * depth * (1 + pos.walling()) + 2 * pos.blast_on_capture()) / (2 - improving + pos.blast_on_capture());
   }
 
   // History and stats update bonus, based on depth
@@ -928,7 +994,7 @@ namespace {
     // Step 7. Futility pruning: child node (~50 Elo)
     if (   !PvNode
         &&  depth < 9 - 3 * pos.blast_on_capture()
-        &&  eval - futility_margin(depth, improving) * (1 + pos.check_counting() + 2 * pos.must_capture() + pos.extinction_single_piece() + !pos.checking_permitted()) >= beta
+        &&  eval - SearchProfile(pos).futility_margin(depth, improving) * (1 + pos.check_counting() + 2 * pos.must_capture() + pos.extinction_single_piece() + !pos.checking_permitted()) >= beta
         &&  eval < VALUE_KNOWN_WIN) // Do not return unproven wins
         return eval;
 
@@ -1145,10 +1211,10 @@ moves_loop: // When in check, search starts from here
           && bestValue > VALUE_TB_LOSS_IN_MAX_PLY)
       {
           // Skip quiet moves if movecount exceeds our FutilityMoveCount threshold
-          moveCountPruning = moveCount >= futility_move_count(improving, depth, pos);
+          moveCountPruning = moveCount >= SearchProfile(pos).futility_move_count(improving, depth, pos);
 
           // Reduced depth of the next LMR search
-          int lmrDepth = std::max(newDepth - reduction(improving, depth, moveCount), 0);
+          int lmrDepth = std::max(newDepth - SearchProfile(pos).reduction(improving, depth, moveCount, PvNode, captureOrPromotion, givesCheck, 0), 0);
 
           if (pos.must_capture() && pos.attackers_to(to_sq(move), ~us))
           {}
@@ -1164,7 +1230,7 @@ moves_loop: // When in check, search starts from here
                   continue;
 
               // SEE based pruning
-              if (!pos.see_ge(move, Value(-218 - 120 * pos.captures_to_hand()) * depth)) // (~25 Elo)
+              if (!pos.see_ge(move, SearchProfile(pos).capture_see_margin(depth, pos))) // (~25 Elo)
                   continue;
           }
           else
@@ -1187,7 +1253,7 @@ moves_loop: // When in check, search starts from here
                   continue;
 
               // Prune moves with negative SEE (~20 Elo)
-              if (!(pos.walling_rule() == DUCK) && !pos.see_ge(move, Value(-(30 - std::min(lmrDepth, 18) + 10 * !!pos.flag_region(pos.side_to_move())) * lmrDepth * lmrDepth)))
+              if (!(pos.walling_rule() == DUCK) && !pos.see_ge(move, SearchProfile(pos).quiet_see_margin(lmrDepth, pos)))
                   continue;
           }
       }
@@ -1337,6 +1403,10 @@ moves_loop: // When in check, search starts from here
               if (!ss->inCheck)
                   r -= ss->statScore / (14721 - 4434 * pos.captures_to_hand());
           }
+
+          if (SearchProfile(pos).jm)
+              r = SearchProfile(pos).reduction(improving, depth, moveCount, PvNode, captureOrPromotion, givesCheck,
+                                               !captureOrPromotion ? ss->statScore : 0);
 
           // In general we want to cap the LMR depth search at newDepth. But if
           // reductions are really negative and movecount is low, we allow this move
