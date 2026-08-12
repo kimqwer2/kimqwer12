@@ -138,7 +138,7 @@ if (process.env.NODE_ENV !== 'production') {
 if (process.env.NODE_ENV === 'production') {
   delete rendererConfig.devtool
 
-  rendererConfig.plugins.push(
+  const productionPlugins = [
     new CopyWebpackPlugin({
       patterns: [
         {
@@ -154,17 +154,22 @@ if (process.env.NODE_ENV === 'production') {
         }
       ]
     }),
-    new ESLintPlugin({
-      extensions: ['js', 'vue'],
-      formatter: require('eslint-friendly-formatter')
-    }),
     new webpack.DefinePlugin({
       'process.env.NODE_ENV': '"production"'
     }),
     new webpack.LoaderOptionsPlugin({
       minimize: true
     })
-  )
+  ]
+
+  if (process.env.SKIP_ESLINT !== 'true') {
+    productionPlugins.splice(1, 0, new ESLintPlugin({
+      extensions: ['js', 'vue'],
+      formatter: require('eslint-friendly-formatter')
+    }))
+  }
+
+  rendererConfig.plugins.push(...productionPlugins)
 }
 
 module.exports = rendererConfig
