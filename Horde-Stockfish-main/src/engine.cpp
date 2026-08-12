@@ -1,0 +1,578 @@
+/*
+  Stockfish, a UCI chess playing engine derived from Glaurung 2.1
+  Copyright (C) 2004-2026 The Stockfish developers (see AUTHORS file)
+
+  Stockfish is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+
+  Stockfish is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU General Public License for more details.
+
+  You should have received a copy of the GNU General Public License
+  along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+#include "engine.h"
+
+#include <algorithm>
+#include <cassert>
+#include <cstdlib>
+#include <filesystem>
+#include <deque>
+#include <iosfwd>
+#include <memory>
+#include <ostream>
+#include <sstream>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+#include "evaluate.h"
+#include "misc.h"
+#include "nnue/network.h"
+#include "nnue/nnue_common.h"
+#if defined(HORDE_V2_CANDIDATE)
+#include "nnue/horde_v2_container.h"
+#endif
+#if defined(HORDE_V2_PERF)
+#include "nnue/horde_v2_performance.h"
+#endif
+#include "numa.h"
+#include "perft.h"
+#include "position.h"
+#include "search.h"
+#include "shm.h"
+#include "syzygy/tbprobe.h"
+#include "types.h"
+#include "uci.h"
+#include "ucioption.h"
+
+namespace Stockfish {
+
+namespace NN = Eval::NNUE;
+
+#if defined(HORDE_V2_CANDIDATE)
+#ifndef HORDE_V2_EVALFILE
+#error HORDE_V2_CANDIDATE requires HORDE_V2_EVALFILE
+#endif
+constexpr const char* EngineEvalFileDefaultName = HORDE_V2_EVALFILE;
+#else
+constexpr const char* EngineEvalFileDefaultName = EvalFileDefaultName;
+#endif
+
+constexpr int MaxHashMB  = Is64Bit ? 33554432 : 2048;
+int           MaxThreads = std::max(1024, 4 * int(get_hardware_concurrency()));
+
+// The default configuration will attempt to group L3 domains up to 32 threads.
+// This size was found to be a good balance between the Elo gain of increased
+// history sharing and the speed loss from more cross-cache accesses (see
+// PR#6526). The user can always explicitly override this behavior.
+constexpr NumaAutoPolicy DefaultNumaPolicy = BundledL3Policy{32};
+
+Engine::Engine(std::optional<std::filesystem::path> path) :
+    binaryDirectory(path ? CommandLine::get_binary_directory(*path) : std::filesystem::path{}),
+    numaContext(NumaConfig::from_system(DefaultNumaPolicy)),
+    states(new std::deque<StateInfo>(1)),
+    threads(),
+    networkFile{std::nullopt, ""},
+    network(numaContext, get_default_network())
+#if defined(HORDE_V2_CANDIDATE)
+    , candidateNetworkParameters(),
+    candidateNetwork(candidateNetworkParameters)
+#endif
+{
+
+    pos.set(StartFEN, false, &states->back());
+
+    options.add(  //
+      "Debug Log File", Option("", [](const Option& o) {
+          start_logger(path_from_utf8(std::string(o)));
+          return std::nullopt;
+      }));
+
+    options.add(  //
+      "NumaPolicy", Option("auto", [this](const Option& o) {
+          if (!set_numa_config_from_option(o))
+              return "NumaPolicy: invalid value '" + std::string(o) + "', keeping previous config.";
+          return numa_config_information_as_string() + "\n"
+               + thread_allocation_information_as_string();
+      }));
+
+    options.add(  //
+      "Threads", Option(1, 1, MaxThreads, [this](const Option&) {
+          resize_threads();
+          return thread_allocation_information_as_string();
+      }));
+
+    options.add(  //
+      "Hash", Option(16, 1, MaxHashMB, [this](const Option& o) {
+          set_tt_size(o);
+          return std::nullopt;
+      }));
+
+    options.add(  //
+      "Clear Hash", Option([this](const Option&) {
+          search_clear();
+          return std::nullopt;
+      }));
+
+    options.add(  //
+      "Ponder", Option(false));
+
+    options.add(  //
+      "MultiPV", Option(1, 1, MAX_MOVES));
+
+    options.add("Skill Level", Option(20, 0, 20));
+
+    options.add("Move Overhead", Option(10, 0, 5000));
+
+    options.add("nodestime", Option(0, 0, 10000));
+
+    options.add("UCI_Chess960", Option(false, [](const Option& o) {
+                    return int(o) ? std::optional<std::string>(
+                                      "UCI_Chess960=true is unsupported for Horde.")
+                                  : std::nullopt;
+                }));
+
+    options.add("UCI_Variant", Option("horde var horde", "horde"));
+
+    options.add("UCI_LimitStrength", Option(false));
+
+    options.add("UCI_Elo",
+                Option(Stockfish::Search::Skill::LowestElo, Stockfish::Search::Skill::LowestElo,
+                       Stockfish::Search::Skill::HighestElo));
+
+    options.add("UCI_ShowWDL", Option(false));
+
+    options.add("HordePreservePawnQsearchCaptureSee", Option(false));
+
+#if defined(HORDE_SEARCH_TELEMETRY)
+    options.add("HordeSearchTelemetry", Option(false));
+    options.add("HordeSearchExperimentMask", Option(0, 0, Search::HordeExperimentMaskMax));
+#endif
+
+    options.add(  //
+      "SyzygyPath",
+      Option("", [](const Option&) { return "Syzygy tablebases are disabled for Horde."; }));
+
+    options.add("SyzygyProbeDepth", Option(1, 1, 100));
+
+    options.add("Syzygy50MoveRule", Option(true));
+
+    // Orthodox tablebases do not model Horde's kingless side or extinction win.
+    options.add("SyzygyProbeLimit", Option(0, 0, 0));
+
+    options.add(  //
+      "EvalFile", Option(EngineEvalFileDefaultName, [this](const Option& o) {
+          load_network(path_from_utf8(std::string(o)));
+          return std::nullopt;
+      }));
+
+    threads.clear();
+#if defined(HORDE_V2_CANDIDATE)
+    resize_threads();
+    load_network(path_from_utf8(EngineEvalFileDefaultName));
+#else
+    threads.ensure_network_replicated();
+    resize_threads();
+#endif
+}
+
+std::variant<u64, PositionSetError>
+Engine::perft(const std::string& fen, Depth depth, bool isChess960) {
+    verify_network();
+
+    (void) isChess960;
+    return Benchmark::perft(fen, depth, false);
+}
+
+void Engine::go(Search::LimitsType& limits) {
+    assert(limits.perft == 0);
+    verify_network();
+
+    threads.start_thinking(options, pos, states, limits);
+}
+void Engine::stop() { threads.stop = true; }
+
+void Engine::search_clear() {
+    wait_for_search_finished();
+
+    tt.clear(threads);
+    threads.clear();
+
+    // TODO: does not work with multiple instances
+    Tablebases::init("");  // Free any mapped files without loading orthodox tables
+}
+
+void Engine::set_on_update_no_moves(std::function<void(const Engine::InfoShort&)>&& f) {
+    updateContext.onUpdateNoMoves = std::move(f);
+}
+
+void Engine::set_on_update_full(std::function<void(const Engine::InfoFull&)>&& f) {
+    updateContext.onUpdateFull = std::move(f);
+}
+
+void Engine::set_on_iter(std::function<void(const Engine::InfoIter&)>&& f) {
+    updateContext.onIter = std::move(f);
+}
+
+void Engine::set_on_bestmove(std::function<void(std::string_view, std::string_view)>&& f) {
+    updateContext.onBestmove = std::move(f);
+}
+
+void Engine::set_on_start(std::function<void()>&& f) { updateContext.onStart = std::move(f); }
+
+void Engine::set_on_verify_network(std::function<void(std::string_view)>&& f) {
+    onVerifyNetwork = std::move(f);
+}
+
+void Engine::wait_for_search_finished() { threads.main_thread()->wait_for_search_finished(); }
+
+std::optional<PositionSetError> Engine::set_position(const std::string&              fen,
+                                                     const std::vector<std::string>& moves) {
+    // Drop the old state and create a new one
+    states   = StateListPtr(new std::deque<StateInfo>(1));
+    auto err = pos.set(fen, false, &states->back());
+    if (err.has_value())
+        return err;
+
+    for (const auto& move : moves)
+    {
+        auto m = UCIEngine::to_move(pos, move);
+
+        if (m == Move::none())
+            return PositionSetError("Illegal move: " + move);
+
+        states->emplace_back();
+        pos.do_move(m, states->back());
+    }
+
+    return std::nullopt;
+}
+
+// modifiers
+
+bool Engine::set_numa_config_from_option(const std::string& o) {
+    if (o == "auto" || o == "system")
+    {
+        numaContext.set_numa_config(NumaConfig::from_system(DefaultNumaPolicy));
+    }
+    else if (o == "hardware")
+    {
+        // Don't respect affinity set in the system.
+        numaContext.set_numa_config(NumaConfig::from_system(DefaultNumaPolicy, false));
+    }
+    else if (o == "none")
+    {
+        numaContext.set_numa_config(NumaConfig{});
+    }
+    else
+    {
+        auto parsed = NumaConfig::from_string(o);
+        if (!parsed.has_value())
+            return false;
+        numaContext.set_numa_config(std::move(*parsed));
+    }
+
+    // Force reallocation of threads in case affinities need to change.
+    resize_threads();
+    threads.ensure_network_replicated();
+    return true;
+}
+
+void Engine::resize_threads() {
+    threads.wait_for_search_finished();
+#if defined(HORDE_V2_CANDIDATE)
+    threads.set(numaContext.get_numa_config(),
+                {options, threads, tt, sharedHists, candidateNetwork}, updateContext);
+#else
+    threads.set(numaContext.get_numa_config(), {options, threads, tt, sharedHists, network},
+                updateContext);
+#endif
+
+    // Reallocate the hash with the new threadpool size
+    set_tt_size(options["Hash"]);
+    threads.ensure_network_replicated();
+}
+
+void Engine::set_tt_size(usize mb) {
+    wait_for_search_finished();
+    tt.resize(mb, threads);
+}
+
+void Engine::set_ponderhit(bool b) { threads.main_manager()->ponder = b; }
+
+// network related
+
+void Engine::verify_network() const {
+    const auto file = path_from_utf8(std::string(options["EvalFile"]));
+#if defined(HORDE_V2_CANDIDATE)
+    if (candidateNetworkFile != file || !candidateNetwork.valid())
+    {
+        if (onVerifyNetwork)
+        {
+            std::string message =
+              "ERROR: A registered Horde V2 integer container must be available.\n"
+              "ERROR: The network file "
+              + file.string() + " was not loaded successfully.\n";
+            if (!candidateNetworkLoadError.empty())
+                message += "ERROR: " + candidateNetworkLoadError + "\n";
+            message += "ERROR: Search was not started.\n";
+            onVerifyNetwork(message);
+        }
+        std::exit(EXIT_FAILURE);
+    }
+
+    if (onVerifyNetwork)
+        onVerifyNetwork("NNUE evaluation using " + file.string() + " ["
+                        + candidateNetworkParameters.schemaName + ", SHA-256 "
+                        + candidateNetworkParameters.fileSha256 + ", parameter SHA-256 "
+                        + candidateNetworkParameters.parameterSha256 + ", (64, 192, 32, 32, 2)]");
+#else
+    network->verify(onVerifyNetwork, networkFile, file);
+
+    auto statuses = network.get_status_and_errors();
+    for (usize i = 0; i < statuses.size(); ++i)
+    {
+        const auto [status, error] = statuses[i];
+        std::string message        = "Network replica " + std::to_string(i + 1) + ": ";
+        if (status == SystemWideSharedConstantAllocationStatus::NoAllocation)
+        {
+            message += "No allocation.";
+        }
+        else if (status == SystemWideSharedConstantAllocationStatus::LocalMemory)
+        {
+            message += "Local memory.";
+        }
+        else if (status == SystemWideSharedConstantAllocationStatus::SharedMemory)
+        {
+            message += "Shared memory.";
+        }
+        else
+        {
+            message += "Unknown status.";
+        }
+
+        if (error.has_value())
+        {
+            message += " " + *error;
+        }
+
+        onVerifyNetwork(message);
+    }
+#endif
+}
+
+std::unique_ptr<Eval::NNUE::Network> Engine::get_default_network() {
+
+    auto network_ = std::make_unique<NN::Network>();
+
+    network_->load(binaryDirectory, std::filesystem::path{}, networkFile);
+
+    return network_;
+}
+
+void Engine::load_network(const std::filesystem::path& file) {
+#if defined(HORDE_V2_CANDIDATE)
+    wait_for_search_finished();
+    auto loaded = NN::HordeV2::load_integer_container(file);
+
+    candidateNetworkFile = file;
+    if (loaded)
+    {
+        candidateNetworkParameters = std::move(loaded.parameters);
+        candidateNetworkLoadError.clear();
+    }
+    else
+    {
+        candidateNetworkParameters = NN::HordeV2::ContainerParameters{};
+        candidateNetworkLoadError =
+          std::string(NN::HordeV2::container_load_error_name(loaded.error));
+        if (!loaded.message.empty())
+            candidateNetworkLoadError += ": " + loaded.message;
+    }
+
+    // Never retain evaluations or accumulator frames across an artifact or
+    // schema transition, including a failed transition.
+    tt.clear(threads);
+    threads.clear();
+#else
+    network.modify_and_replicate(
+      [this, &file](NN::Network& network_) { network_.load(binaryDirectory, file, networkFile); });
+
+    // A schema or network transition must not reuse evaluations derived from
+    // the previous artifact. Thread clear resets accumulator refresh caches.
+    tt.clear(threads);
+    threads.clear();
+    threads.ensure_network_replicated();
+#endif
+}
+
+void Engine::save_network(const std::optional<std::filesystem::path>& file) {
+#if defined(HORDE_V2_CANDIDATE)
+    (void) file;
+    sync_cout << "Exporting authenticated Horde V2 candidate containers is disabled." << sync_endl;
+#else
+    network.modify_and_replicate(
+      [&file, this](NN::Network& network_) { network_.save(networkFile, file); });
+#endif
+}
+
+// utility functions
+
+void Engine::trace_eval() const {
+#if defined(HORDE_V2_CANDIDATE)
+    verify_network();
+    const auto trace = candidateNetwork.evaluate_full_refresh(pos.piece_array(), pos.side_to_move(),
+                                                              pos.rule50_count());
+    if (!trace.valid())
+    {
+        sync_cout << "horde-v2-candidate-eval invalid" << sync_endl;
+        return;
+    }
+    sync_cout << "horde-v2-candidate-eval schema=" << candidateNetworkParameters.schemaName
+              << " file_sha256=" << candidateNetworkParameters.fileSha256
+              << " parameter_sha256=" << candidateNetworkParameters.parameterSha256
+              << " output_affine=" << trace.outputAffine << " pre_rule50=" << trace.preRule50Value
+              << " value=" << int(trace.value) << sync_endl;
+#elif defined(HORDE_V2_PERF)
+    const auto features = Eval::NNUE::HordeV2::extract_full_refresh_features(pos);
+    if (!features.valid())
+    {
+        sync_cout << "horde-v2-perf-eval invalid" << sync_endl;
+        return;
+    }
+
+    using PerformanceNetwork = Eval::NNUE::HordeV2::PerformanceNetwork;
+    PerformanceNetwork::Frame   frame{};
+    PerformanceNetwork::Scratch scratch{};
+    const auto&                 performanceNetwork = Eval::NNUE::HordeV2::performance_network();
+    performanceNetwork.full_refresh(frame, features);
+    const auto result = performanceNetwork.propagate(frame, scratch, pos.side_to_move(),
+                                                     pos.rule50_count());
+    sync_cout << "horde-v2-perf-eval " << int(result.value) << sync_endl;
+#else
+    StateListPtr trace_states(new std::deque<StateInfo>(1));
+    Position     p;
+    p.set(pos.fen(), false, &trace_states->back());
+
+    verify_network();
+
+    sync_cout << "\n" << Eval::trace(p, *network) << sync_endl;
+#endif
+}
+
+Eval::NNUE::RawNetworkOutput Engine::raw_evaluation() const {
+#if defined(HORDE_V2_CANDIDATE)
+    verify_network();
+    const auto trace = candidateNetwork.evaluate_full_refresh(pos.piece_array(), pos.side_to_move(),
+                                                              pos.rule50_count());
+    if (!trace.valid())
+        std::exit(EXIT_FAILURE);
+    return {0, trace.outputAffine};
+#else
+    auto accumulators = std::make_unique<Eval::NNUE::AccumulatorStack>();
+    auto caches       = std::make_unique<Eval::NNUE::AccumulatorCaches>(*network);
+
+    verify_network();
+    return network->evaluate_raw(pos, *accumulators, *caches);
+#endif
+}
+
+Value Engine::static_evaluation() const {
+#if defined(HORDE_V2_CANDIDATE)
+    verify_network();
+    const auto trace = candidateNetwork.evaluate_full_refresh(pos.piece_array(), pos.side_to_move(),
+                                                              pos.rule50_count());
+    if (!trace.valid())
+        std::exit(EXIT_FAILURE);
+    return trace.value;
+#else
+    auto accumulators = std::make_unique<Eval::NNUE::AccumulatorStack>();
+    auto caches       = std::make_unique<Eval::NNUE::AccumulatorCaches>(*network);
+
+    verify_network();
+    return Eval::evaluate(*network, pos, *accumulators, *caches, VALUE_ZERO);
+#endif
+}
+
+const OptionsMap& Engine::get_options() const { return options; }
+OptionsMap&       Engine::get_options() { return options; }
+
+std::string Engine::fen() const { return pos.fen(); }
+
+bool Engine::side_has_insufficient_winning_material(Color c) const {
+    return pos.side_has_insufficient_winning_material(c);
+}
+
+std::optional<PositionSetError> Engine::flip() { return pos.flip(); }
+
+std::string Engine::visualize() const {
+    std::stringstream ss;
+    ss << pos;
+    return ss.str();
+}
+
+int Engine::get_hashfull(int maxAge) const { return tt.hashfull(maxAge); }
+
+std::vector<std::pair<usize, usize>> Engine::get_bound_thread_count_by_numa_node() const {
+    auto                                 counts = threads.get_bound_thread_count_by_numa_node();
+    const NumaConfig&                    cfg    = numaContext.get_numa_config();
+    std::vector<std::pair<usize, usize>> ratios;
+    NumaIndex                            n = 0;
+    for (; n < counts.size(); ++n)
+        ratios.emplace_back(counts[n], cfg.num_cpus_in_numa_node(n));
+    if (!counts.empty())
+        for (; n < cfg.num_numa_nodes(); ++n)
+            ratios.emplace_back(0, cfg.num_cpus_in_numa_node(n));
+    return ratios;
+}
+
+std::string Engine::get_numa_config_as_string() const {
+    return numaContext.get_numa_config().to_string();
+}
+
+std::string Engine::numa_config_information_as_string() const {
+    auto cfgStr = get_numa_config_as_string();
+    return "Available processors: " + cfgStr;
+}
+
+std::string Engine::thread_binding_information_as_string() const {
+    auto              boundThreadsByNode = get_bound_thread_count_by_numa_node();
+    std::stringstream ss;
+    if (boundThreadsByNode.empty())
+        return ss.str();
+
+    bool isFirst = true;
+
+    for (auto&& [current, total] : boundThreadsByNode)
+    {
+        if (!isFirst)
+            ss << ":";
+        ss << current << "/" << total;
+        isFirst = false;
+    }
+
+    return ss.str();
+}
+
+std::string Engine::thread_allocation_information_as_string() const {
+    std::stringstream ss;
+
+    usize threadsSize = threads.size();
+    ss << "Using " << threadsSize << (threadsSize > 1 ? " threads" : " thread");
+
+    auto boundThreadsByNodeStr = thread_binding_information_as_string();
+    if (boundThreadsByNodeStr.empty())
+        return ss.str();
+
+    ss << " with NUMA node thread binding: ";
+    ss << boundThreadsByNodeStr;
+
+    return ss.str();
+}
+}
