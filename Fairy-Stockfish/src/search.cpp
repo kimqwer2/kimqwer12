@@ -66,6 +66,124 @@ namespace {
   constexpr uint64_t TtHitAverageWindow     = 4096;
   constexpr uint64_t TtHitAverageResolution = 1024;
 
+
+  bool is_janggimodern(const Position& pos) {
+    const Variant* v = pos.variant();
+    return v->variantTemplate == "janggi"
+        && !v->bikjangRule
+        && v->materialCounting == JANGGI_MATERIAL
+        && v->moveRepetitionIllegal;
+  }
+
+  bool janggimodern_see_sensitive(const Position& pos, Move move, bool givesCheck) {
+    // JanggiModern cannon screens and palace diagonals make orthodox SEE a
+    // noisy predictor. Keep legality/rules intact, but do not let SEE-based
+    // forward pruning discard cannon moves or forcing checks before search.
+    return is_janggimodern(pos)
+        && (givesCheck || type_of(pos.moved_piece(move)) == JANGGI_CANNON || type_of(pos.piece_on(to_sq(move))) == JANGGI_CANNON);
+  }
+
+  Value janggimodern_probcut_margin(const Position& pos, Value margin) {
+    // Require more proof before ProbCut in JanggiModern: many tactical refutations
+    // are cannon-screen changes that shallow capture-only verification can miss.
+    return is_janggimodern(pos) ? Value(margin + 96) : margin;
+  }
+
+
+  int janggimodern_correction_value(const Position& pos, Stack* ss) {
+    if (!is_janggimodern(pos))
+        return 0;
+
+    Thread* th = pos.this_thread();
+    Color us = pos.side_to_move();
+    int pawn = th->janggiPawnCorrectionHistory[us][pos.pawn_key() & 0x3fff];
+    int nonPawn = th->janggiNonPawnCorrectionHistory[us][pos.key() & 0x3fff];
+    int cont = 0;
+
+    if (is_ok((ss - 1)->currentMove))
+    {
+        Piece pc = pos.piece_on(to_sq((ss - 1)->currentMove));
+        if (pc != NO_PIECE)
+            cont += th->janggiContinuationCorrectionHistory[history_slot(pc)][to_sq((ss - 1)->currentMove)];
+    }
+
+    return (pawn + nonPawn + cont / 2) / 256;
+  }
+
+  Value janggimodern_correct_static_eval(const Position& pos, Value raw, Stack* ss) {
+    if (!is_janggimodern(pos) || raw == VALUE_NONE)
+        return raw;
+    return Value(std::clamp(int(raw) + janggimodern_correction_value(pos, ss),
+                            int(VALUE_TB_LOSS_IN_MAX_PLY + 1), int(VALUE_TB_WIN_IN_MAX_PLY - 1)));
+  }
+
+
+
+  int janggimodern_tactical_weight(const Position& pos, Move move, bool givesCheck, bool captureOrPromotion) {
+    if (!is_janggimodern(pos) || !is_ok(move))
+        return 0;
+
+    Piece moved = pos.moved_piece(move);
+    Piece captured = pos.piece_on(to_sq(move));
+    int w = 0;
+    if (givesCheck)
+        w += type_of(moved) == JANGGI_CANNON ? 5 : type_of(moved) == ROOK ? 4 : 2;
+    if (type_of(moved) == JANGGI_CANNON)
+        w += captureOrPromotion ? 4 : 2;
+    if (captured != NO_PIECE && type_of(captured) == JANGGI_CANNON)
+        w += 3;
+    if (type_of(moved) == KNIGHT || type_of(moved) == JANGGI_ELEPHANT)
+        w += givesCheck || captureOrPromotion ? 2 : 1;
+    if (type_of(moved) == ROOK)
+        w += givesCheck || captureOrPromotion ? 2 : 1;
+    return w;
+  }
+
+  bool janggimodern_pruning_exempt(const Position& pos, Move move, bool givesCheck, bool captureOrPromotion, int histScore) {
+    int w = janggimodern_tactical_weight(pos, move, givesCheck, captureOrPromotion);
+    return w >= 4 || (w >= 2 && histScore > -4000);
+  }
+
+  Depth janggimodern_lmr_adjustment(const Position& pos, Move move, bool givesCheck, bool captureOrPromotion,
+                                    int statScore, Depth r, int moveCount, bool improving) {
+    if (!is_janggimodern(pos))
+        return r;
+
+    int w = janggimodern_tactical_weight(pos, move, givesCheck, captureOrPromotion);
+    if (w >= 5)
+        r -= 2;
+    else if (w >= 2)
+        r -= 1;
+
+    // Bad-history non-tactical quiets can be reduced more: JanggiModern has many
+    // low-impact palace shuffles, while cannon/rook/horse tactics are exempted above.
+    if (!captureOrPromotion && !givesCheck && w == 0 && statScore < -9000 && moveCount > 5 && !improving)
+        r += 1;
+
+    return std::max(Depth(0), r);
+  }
+
+  void update_janggimodern_correction_history(const Position& pos, Stack* ss, Value bestValue, Value beta, Depth depth, Move bestMove) {
+    if (!is_janggimodern(pos) || ss->uncorrectedStaticEval == VALUE_NONE || !is_ok(bestMove)
+        || pos.capture_or_promotion(bestMove) || bestValue >= VALUE_TB_WIN_IN_MAX_PLY || bestValue <= VALUE_TB_LOSS_IN_MAX_PLY)
+        return;
+
+    bool shouldUpdate = (bestValue < beta && ss->uncorrectedStaticEval >= beta)
+                     || (bestValue >= beta && ss->uncorrectedStaticEval < beta)
+                     || std::abs(int(bestValue - ss->uncorrectedStaticEval)) > 64;
+    if (!shouldUpdate)
+        return;
+
+    int diff = std::clamp(int(bestValue - ss->uncorrectedStaticEval), -512, 512);
+    int bonus = std::clamp(diff * std::min(int(depth), 16) / 2, -2048, 2048);
+    Thread* th = pos.this_thread();
+    Color us = pos.side_to_move();
+
+    th->janggiPawnCorrectionHistory[us][pos.pawn_key() & 0x3fff] << bonus;
+    th->janggiNonPawnCorrectionHistory[us][pos.key() & 0x3fff] << bonus;
+    th->janggiContinuationCorrectionHistory[history_slot(pos.moved_piece(bestMove))][to_sq(bestMove)] << bonus / 2;
+  }
+
   // Futility margin
   Value futility_margin(Depth d, bool improving) {
     return Value(214 * (d - improving));
@@ -333,7 +451,10 @@ void Thread::search() {
 
   std::memset(ss-7, 0, 10 * sizeof(Stack));
   for (int i = 7; i > 0; i--)
+  {
       (ss-i)->continuationHistory = &this->continuationHistory[0][0][NO_PIECE][0]; // Use as a sentinel
+      (ss-i)->uncorrectedStaticEval = VALUE_NONE;
+  }
 
   for (int i = 0; i <= MAX_PLY + 2; ++i)
       (ss+i)->ply = i;
@@ -880,9 +1001,10 @@ namespace {
     else if (ss->ttHit)
     {
         // Never assume anything about values stored in TT
-        ss->staticEval = eval = tte->eval();
-        if (eval == VALUE_NONE)
-            ss->staticEval = eval = evaluate(pos);
+        ss->uncorrectedStaticEval = tte->eval();
+        if (ss->uncorrectedStaticEval == VALUE_NONE)
+            ss->uncorrectedStaticEval = evaluate(pos);
+        ss->staticEval = eval = janggimodern_correct_static_eval(pos, ss->uncorrectedStaticEval, ss);
 
         // Randomize draw evaluation
         if (eval == VALUE_DRAW)
@@ -898,12 +1020,13 @@ namespace {
         // In case of null move search use previous static eval with a different sign
         // and addition of two tempos
         if ((ss-1)->currentMove != MOVE_NULL)
-            ss->staticEval = eval = evaluate(pos);
+            ss->uncorrectedStaticEval = evaluate(pos);
         else
-            ss->staticEval = eval = -(ss-1)->staticEval;
+            ss->uncorrectedStaticEval = -(ss-1)->staticEval;
+        ss->staticEval = eval = janggimodern_correct_static_eval(pos, ss->uncorrectedStaticEval, ss);
 
         // Save static evaluation into transposition table
-        tte->save(posKey, VALUE_NONE, ss->ttPv, BOUND_NONE, DEPTH_NONE, MOVE_NONE, eval);
+        tte->save(posKey, VALUE_NONE, ss->ttPv, BOUND_NONE, DEPTH_NONE, MOVE_NONE, ss->uncorrectedStaticEval);
     }
 
     // Use static evaluation difference to improve quiet move ordering
@@ -984,7 +1107,7 @@ namespace {
         }
     }
 
-    probCutBeta = beta + (209 + 20 * !!pos.flag_region(~pos.side_to_move()) + 50 * pos.captures_to_hand()) * (1 + pos.check_counting() + pos.extinction_single_piece()) - 44 * improving;
+    probCutBeta = beta + janggimodern_probcut_margin(pos, Value((209 + 20 * !!pos.flag_region(~pos.side_to_move()) + 50 * pos.captures_to_hand()) * (1 + pos.check_counting() + pos.extinction_single_piece()) - 44 * improving));
 
     // Step 9. ProbCut (~4 Elo)
     // If we have a good enough capture and a reduced search returns a value
@@ -1164,13 +1287,17 @@ moves_loop: // When in check, search starts from here
                   continue;
 
               // SEE based pruning
-              if (!pos.see_ge(move, Value(-218 - 120 * pos.captures_to_hand()) * depth)) // (~25 Elo)
+              if (!janggimodern_see_sensitive(pos, move, givesCheck)
+                  && !pos.see_ge(move, Value(-218 - 120 * pos.captures_to_hand()) * depth)) // (~25 Elo)
                   continue;
           }
           else
           {
               // Continuation history based pruning (~20 Elo)
+              int quietHist = (*contHist[0])[history_slot(movedPiece)][to_sq(move)]
+                            + (*contHist[1])[history_slot(movedPiece)][to_sq(move)];
               if (   lmrDepth < 5
+                  && !janggimodern_pruning_exempt(pos, move, givesCheck, captureOrPromotion, quietHist)
                   && (*contHist[0])[history_slot(movedPiece)][to_sq(move)] < CounterMovePruneThreshold
                   && (*contHist[1])[history_slot(movedPiece)][to_sq(move)] < CounterMovePruneThreshold)
                   continue;
@@ -1179,6 +1306,7 @@ moves_loop: // When in check, search starts from here
               if (   lmrDepth < 7
                   && !ss->inCheck
                   && !pos.extinction_single_piece()
+                  && !janggimodern_pruning_exempt(pos, move, givesCheck, captureOrPromotion, quietHist)
                   && ss->staticEval + (174 + 157 * lmrDepth) * (1 + pos.check_counting()) <= alpha
                   &&  (*contHist[0])[history_slot(movedPiece)][to_sq(move)]
                     + (*contHist[1])[history_slot(movedPiece)][to_sq(move)]
@@ -1187,7 +1315,9 @@ moves_loop: // When in check, search starts from here
                   continue;
 
               // Prune moves with negative SEE (~20 Elo)
-              if (!(pos.walling_rule() == DUCK) && !pos.see_ge(move, Value(-(30 - std::min(lmrDepth, 18) + 10 * !!pos.flag_region(pos.side_to_move())) * lmrDepth * lmrDepth)))
+              if (!(pos.walling_rule() == DUCK)
+                  && !janggimodern_see_sensitive(pos, move, givesCheck)
+                  && !pos.see_ge(move, Value(-(30 - std::min(lmrDepth, 18) + 10 * !!pos.flag_region(pos.side_to_move())) * lmrDepth * lmrDepth)))
                   continue;
           }
       }
@@ -1252,7 +1382,8 @@ moves_loop: // When in check, search starts from here
       }
       else if (   givesCheck
                && depth > 6
-               && abs(ss->staticEval) > Value(100))
+               && abs(ss->staticEval) > Value(100)
+               && (!is_janggimodern(pos) || type_of(movedPiece) == JANGGI_CANNON || captureOrPromotion))
           extension = 1;
 
       // Losing chess capture extension
@@ -1320,6 +1451,7 @@ moves_loop: // When in check, search starts from here
           if (cutNode)
               r += 1 + !captureOrPromotion;
 
+          ss->statScore = 0;
           if (!captureOrPromotion)
           {
               // Increase reduction if ttMove is a capture (~3 Elo)
@@ -1337,6 +1469,8 @@ moves_loop: // When in check, search starts from here
               if (!ss->inCheck)
                   r -= ss->statScore / (14721 - 4434 * pos.captures_to_hand());
           }
+
+          r = janggimodern_lmr_adjustment(pos, move, givesCheck, captureOrPromotion, ss->statScore, r, moveCount, improving);
 
           // In general we want to cap the LMR depth search at newDepth. But if
           // reductions are really negative and movecount is low, we allow this move
@@ -1477,8 +1611,11 @@ moves_loop: // When in check, search starts from here
 
     // If there is a move which produces search value greater than alpha we update stats of searched moves
     else if (bestMove)
+    {
         update_all_stats(pos, ss, bestMove, bestValue, beta, prevSq,
                          quietsSearched, quietCount, capturesSearched, captureCount, depth);
+        update_janggimodern_correction_history(pos, ss, bestValue, beta, depth, bestMove);
+    }
 
     // Bonus for prior countermove that caused the fail low
     else if (   (depth >= 3 || PvNode)
@@ -1502,7 +1639,7 @@ moves_loop: // When in check, search starts from here
         tte->save(posKey, value_to_tt(bestValue, ss->ply), ss->ttPv,
                   bestValue >= beta ? BOUND_LOWER :
                   PvNode && bestMove ? BOUND_EXACT : BOUND_UPPER,
-                  depth, bestMove, ss->staticEval);
+                  depth, bestMove, ss->uncorrectedStaticEval);
 
     assert(bestValue > -VALUE_INFINITE && bestValue < VALUE_INFINITE);
 
@@ -1591,8 +1728,10 @@ moves_loop: // When in check, search starts from here
         if (ss->ttHit)
         {
             // Never assume anything about values stored in TT
-            if ((ss->staticEval = bestValue = tte->eval()) == VALUE_NONE)
-                ss->staticEval = bestValue = evaluate(pos);
+            ss->uncorrectedStaticEval = tte->eval();
+            if (ss->uncorrectedStaticEval == VALUE_NONE)
+                ss->uncorrectedStaticEval = evaluate(pos);
+            ss->staticEval = bestValue = janggimodern_correct_static_eval(pos, ss->uncorrectedStaticEval, ss);
 
             // Can ttValue be used as a better position evaluation?
             if (    ttValue != VALUE_NONE
@@ -1600,11 +1739,14 @@ moves_loop: // When in check, search starts from here
                 bestValue = ttValue;
         }
         else
+        {
             // In case of null move search use previous static eval with a different sign
             // and addition of two tempos
-            ss->staticEval = bestValue =
+            ss->uncorrectedStaticEval =
             (ss-1)->currentMove != MOVE_NULL ? evaluate(pos)
                                              : -(ss-1)->staticEval;
+            ss->staticEval = bestValue = janggimodern_correct_static_eval(pos, ss->uncorrectedStaticEval, ss);
+        }
 
         // Stand pat. Return immediately if static value is at least beta
         if (bestValue >= beta)
@@ -1612,7 +1754,7 @@ moves_loop: // When in check, search starts from here
             // Save gathered info in transposition table
             if (!ss->ttHit)
                 tte->save(posKey, value_to_tt(bestValue, ss->ply), false, BOUND_LOWER,
-                          DEPTH_NONE, MOVE_NONE, ss->staticEval);
+                          DEPTH_NONE, MOVE_NONE, ss->uncorrectedStaticEval);
 
             return bestValue;
         }

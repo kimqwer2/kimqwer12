@@ -111,6 +111,9 @@ typedef Stats<int16_t, 29952, 2 * PIECE_SLOTS, SQUARE_NB> PieceToHistory;
 /// PieceToHistory instead of ButterflyBoards.
 typedef Stats<PieceToHistory, NOT_USED, 2 * PIECE_SLOTS, SQUARE_NB> ContinuationHistory;
 
+/// JanggiModern correction history stores search feedback for static evaluation.
+typedef Stats<int16_t, 16384, COLOR_NB, 16384> JanggiCorrectionHistory;
+
 int history_slot(Piece pc);
 
 /// MovePicker class is used to pick one pseudo-legal move at a time from the

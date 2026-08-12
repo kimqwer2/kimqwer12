@@ -75,6 +75,9 @@ public:
   LowPlyHistory lowPlyHistory;
   CapturePieceToHistory captureHistory;
   ContinuationHistory continuationHistory[2][2];
+  JanggiCorrectionHistory janggiPawnCorrectionHistory;
+  JanggiCorrectionHistory janggiNonPawnCorrectionHistory;
+  PieceToHistory janggiContinuationCorrectionHistory;
   Score trend;
 };
 
