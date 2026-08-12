@@ -89,6 +89,55 @@ namespace {
     return is_janggimodern(pos) ? Value(margin + 96) : margin;
   }
 
+
+  int janggimodern_correction_value(const Position& pos, Stack* ss) {
+    if (!is_janggimodern(pos))
+        return 0;
+
+    Thread* th = pos.this_thread();
+    Color us = pos.side_to_move();
+    int pawn = th->janggiPawnCorrectionHistory[us][pos.pawn_key() & 0x3fff];
+    int nonPawn = th->janggiNonPawnCorrectionHistory[us][pos.key() & 0x3fff];
+    int cont = 0;
+
+    if (is_ok((ss - 1)->currentMove))
+    {
+        Piece pc = pos.piece_on(to_sq((ss - 1)->currentMove));
+        if (pc != NO_PIECE)
+            cont += th->janggiContinuationCorrectionHistory[history_slot(pc)][to_sq((ss - 1)->currentMove)];
+    }
+
+    return (pawn + nonPawn + cont / 2) / 256;
+  }
+
+  Value janggimodern_correct_static_eval(const Position& pos, Value raw, Stack* ss) {
+    if (!is_janggimodern(pos) || raw == VALUE_NONE)
+        return raw;
+    return Value(std::clamp(int(raw) + janggimodern_correction_value(pos, ss),
+                            int(VALUE_TB_LOSS_IN_MAX_PLY + 1), int(VALUE_TB_WIN_IN_MAX_PLY - 1)));
+  }
+
+  void update_janggimodern_correction_history(const Position& pos, Stack* ss, Value bestValue, Value beta, Depth depth, Move bestMove) {
+    if (!is_janggimodern(pos) || ss->uncorrectedStaticEval == VALUE_NONE || !is_ok(bestMove)
+        || pos.capture_or_promotion(bestMove) || bestValue >= VALUE_TB_WIN_IN_MAX_PLY || bestValue <= VALUE_TB_LOSS_IN_MAX_PLY)
+        return;
+
+    bool shouldUpdate = (bestValue < beta && ss->uncorrectedStaticEval >= beta)
+                     || (bestValue >= beta && ss->uncorrectedStaticEval < beta)
+                     || std::abs(int(bestValue - ss->uncorrectedStaticEval)) > 64;
+    if (!shouldUpdate)
+        return;
+
+    int diff = std::clamp(int(bestValue - ss->uncorrectedStaticEval), -512, 512);
+    int bonus = std::clamp(diff * std::min(int(depth), 16) / 2, -2048, 2048);
+    Thread* th = pos.this_thread();
+    Color us = pos.side_to_move();
+
+    th->janggiPawnCorrectionHistory[us][pos.pawn_key() & 0x3fff] << bonus;
+    th->janggiNonPawnCorrectionHistory[us][pos.key() & 0x3fff] << bonus;
+    th->janggiContinuationCorrectionHistory[history_slot(pos.moved_piece(bestMove))][to_sq(bestMove)] << bonus / 2;
+  }
+
   // Futility margin
   Value futility_margin(Depth d, bool improving) {
     return Value(214 * (d - improving));
@@ -356,7 +405,10 @@ void Thread::search() {
 
   std::memset(ss-7, 0, 10 * sizeof(Stack));
   for (int i = 7; i > 0; i--)
+  {
       (ss-i)->continuationHistory = &this->continuationHistory[0][0][NO_PIECE][0]; // Use as a sentinel
+      (ss-i)->uncorrectedStaticEval = VALUE_NONE;
+  }
 
   for (int i = 0; i <= MAX_PLY + 2; ++i)
       (ss+i)->ply = i;
@@ -903,9 +955,10 @@ namespace {
     else if (ss->ttHit)
     {
         // Never assume anything about values stored in TT
-        ss->staticEval = eval = tte->eval();
-        if (eval == VALUE_NONE)
-            ss->staticEval = eval = evaluate(pos);
+        ss->uncorrectedStaticEval = tte->eval();
+        if (ss->uncorrectedStaticEval == VALUE_NONE)
+            ss->uncorrectedStaticEval = evaluate(pos);
+        ss->staticEval = eval = janggimodern_correct_static_eval(pos, ss->uncorrectedStaticEval, ss);
 
         // Randomize draw evaluation
         if (eval == VALUE_DRAW)
@@ -921,12 +974,13 @@ namespace {
         // In case of null move search use previous static eval with a different sign
         // and addition of two tempos
         if ((ss-1)->currentMove != MOVE_NULL)
-            ss->staticEval = eval = evaluate(pos);
+            ss->uncorrectedStaticEval = evaluate(pos);
         else
-            ss->staticEval = eval = -(ss-1)->staticEval;
+            ss->uncorrectedStaticEval = -(ss-1)->staticEval;
+        ss->staticEval = eval = janggimodern_correct_static_eval(pos, ss->uncorrectedStaticEval, ss);
 
         // Save static evaluation into transposition table
-        tte->save(posKey, VALUE_NONE, ss->ttPv, BOUND_NONE, DEPTH_NONE, MOVE_NONE, eval);
+        tte->save(posKey, VALUE_NONE, ss->ttPv, BOUND_NONE, DEPTH_NONE, MOVE_NONE, ss->uncorrectedStaticEval);
     }
 
     // Use static evaluation difference to improve quiet move ordering
@@ -1504,8 +1558,11 @@ moves_loop: // When in check, search starts from here
 
     // If there is a move which produces search value greater than alpha we update stats of searched moves
     else if (bestMove)
+    {
         update_all_stats(pos, ss, bestMove, bestValue, beta, prevSq,
                          quietsSearched, quietCount, capturesSearched, captureCount, depth);
+        update_janggimodern_correction_history(pos, ss, bestValue, beta, depth, bestMove);
+    }
 
     // Bonus for prior countermove that caused the fail low
     else if (   (depth >= 3 || PvNode)
@@ -1529,7 +1586,7 @@ moves_loop: // When in check, search starts from here
         tte->save(posKey, value_to_tt(bestValue, ss->ply), ss->ttPv,
                   bestValue >= beta ? BOUND_LOWER :
                   PvNode && bestMove ? BOUND_EXACT : BOUND_UPPER,
-                  depth, bestMove, ss->staticEval);
+                  depth, bestMove, ss->uncorrectedStaticEval);
 
     assert(bestValue > -VALUE_INFINITE && bestValue < VALUE_INFINITE);
 

@@ -68,3 +68,31 @@ No local self-play or fishtest harness was found or run in this pass, so no stre
 ## Remaining uncertainty
 
 The changes are tactical-risk reductions rather than proven Elo gains. The most important next validation is a controlled self-play match against an unchanged all-variants/largeboards JanggiModern baseline using the same NNUE, hash, threads, time control, openings, color swaps, and adjudication.
+
+## Second-pass rewrite additions
+
+After the review feedback, the implementation was expanded beyond the initial safety patch:
+
+* Added a JanggiModern correction-history implementation in the existing Fairy architecture. It keeps pawn-key, full-position/non-pawn-key, and continuation correction tables in each search thread and applies the learned correction to static evaluation only for JanggiModern.
+* Stored both corrected and uncorrected static evals in the search stack so TT eval storage and correction-history updates can preserve the raw evaluator/NNUE output while pruning and improving logic consume the corrected value.
+* Updated correction history after quiet best moves when search results disagree with the raw static eval or cross the beta boundary. Captures are intentionally excluded because Janggi cannon exchanges and tactical captures are already handled by capture search/history rather than static correction.
+* Kept all correction-history state in normal in-memory thread structures; no debug logging or file I/O was added.
+
+### Additional files/functions changed
+
+* `src/movepick.h`: added `JanggiCorrectionHistory` based on the existing `Stats` gravity/clamping framework.
+* `src/thread.h` / `src/thread.cpp`: added and cleared per-thread JanggiModern correction tables.
+* `src/search.h`: added `Stack::uncorrectedStaticEval`.
+* `src/search.cpp`: added correction calculation/application/update helpers; raw-eval TT storage; corrected static-eval use for JanggiModern pruning, improving, and LMR inputs.
+
+### Additional validation
+
+* `make -j2 ARCH=x86-64 largeboards=yes all=yes build` passed after correction-history integration.
+* `./stockfish bench` passed after correction-history integration: 6,424,691 nodes, 14,229 ms, 451,520 NPS in the all-variants/largeboards build.
+* `make -j2 ARCH=x86-64 largeboards=yes all=yes nnue=yes build` passed far enough to build and run with `nnue: yes`; the default chess NNUE download failed checksum/network validation, but explicit JanggiModern EvalFile loading was validated.
+* `setoption name EvalFile value /workspace/kimqwer12/janggimodern-18.nnue` followed by `go depth 1` printed `NNUE evaluation using /workspace/kimqwer12/janggimodern-18.nnue enabled` and returned a best move.
+* `setoption name EvalFile value /workspace/kimqwer12/janggimodern-19.nnue` followed by `go depth 1` printed `NNUE evaluation using /workspace/kimqwer12/janggimodern-19.nnue enabled` and returned a best move.
+
+### Updated remaining weaknesses
+
+This is now a broader JanggiModern search/evaluation integration change, but still not a proven +Elo result. No self-play harness was found in the repository, so strength remains unclaimed pending controlled matches. Further work should tune correction-history scaling, evaluate independent toggles for LMR/ProbCut/qsearch, and run SPRT or at least fixed-game self-play against the previous commit with identical NNUE/hash/threads/time controls.
