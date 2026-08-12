@@ -265,22 +265,11 @@ top:
       cur = moves;
       endMoves = generate<QUIET_CHECKS>(pos, cur);
 
-      // In Janggi-family positions, quiet checks are often screen, palace-line,
-      // horse-leg or elephant-leg geometry changes rather than ordinary chess
-      // checks.  Search them in the same history order as main-search quiets
-      // instead of raw generator order so qsearch tacticals inherit the
-      // dedicated history architecture.
-      if (pos.material_counting() == JANGGI_MATERIAL && !pos.variant()->bikjangRule)
-      {
-          score<QUIETS>();
-          partial_insertion_sort(cur, endMoves, -3000 * std::max(Depth(1), -depth + 1));
-      }
-
       ++stage;
       [[fallthrough]];
 
   case QCHECK:
-      return select<Best>([](){ return true; });
+      return select<Next>([](){ return true; });
   }
 
   assert(false);
