@@ -64,6 +64,7 @@ void Thread::clear() {
   gateHistory.fill(0);
   lowPlyHistory.fill(0);
   captureHistory.fill(0);
+  janggiRoleHistory.fill(0);
 
   for (bool inCheck : { false, true })
       for (StatsType c : { NoCaptures, Captures })
