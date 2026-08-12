@@ -96,3 +96,30 @@ After the review feedback, the implementation was expanded beyond the initial sa
 ### Updated remaining weaknesses
 
 This is now a broader JanggiModern search/evaluation integration change, but still not a proven +Elo result. No self-play harness was found in the repository, so strength remains unclaimed pending controlled matches. Further work should tune correction-history scaling, evaluate independent toggles for LMR/ProbCut/qsearch, and run SPRT or at least fixed-game self-play against the previous commit with identical NNUE/hash/threads/time controls.
+
+## Final-pass architecture review and changes
+
+The final self-review found that the previous version still left MovePicker, LMR, pruning confidence, and qsearch static-eval handling too close to old Fairy behavior. The final pass therefore added:
+
+* A JanggiModern tactical move-ordering model in `src/movepick.cpp`. Captures, quiets, and evasions now receive explicit ordering bonuses for cannon checks, rook checks, cannon captures, captures of cannons, horse/elephant tactics, and low-value palace shuffles. This is not a rules change; it changes only the order in which existing legal moves are searched.
+* A JanggiModern tactical-weight model in `src/search.cpp` shared by pruning and LMR decisions. It classifies cannon, rook, horse, elephant, check, and cannon-capture moves so pruning can be informed by Janggi tactical context instead of only generic chess SEE/history.
+* History-aware pruning exemptions for JanggiModern tactical moves. Continuation-history pruning and parent futility pruning now avoid pruning moves with enough tactical weight unless history is strongly negative.
+* JanggiModern LMR adjustment. Tactical cannon/check/rook/horse/elephant moves receive reduced reductions; bad-history, non-tactical, non-checking quiet moves can be reduced more aggressively. This turns LMR into a selective Janggi policy rather than a single global scalar.
+* QSearch static-eval correction. JanggiModern qsearch now applies the same correction-history layer as main search while preserving uncorrected eval for TT storage.
+
+### Final architecture answers
+
+1. Major Fairy subsystems replaced/redesigned: JanggiModern static-eval handling, correction history, tactical move ordering, tactical pruning exemptions, LMR adjustment, and qsearch static-eval integration.
+2. Alice ideas implemented: variant-specific SEE distrust, variant-local search policy, and correction-history-style static-eval feedback.
+3. Horde ideas implemented: newer search/eval feedback concept, stronger capture/continuation-history dependence, and history-informed pruning/reduction behavior.
+4. JanggiModern-specific redesign: cannon/check/rook/horse/elephant tactical weighting, cannon-prioritized ordering, tactical pruning exemptions, and selective LMR.
+5. Old Fairy assumptions remaining: alpha-beta framework, TT format, generic legal move generation, base MovePicker stages, and existing NNUE feature pipeline.
+6. Why remaining assumptions are safe: they are protocol/search-framework mechanisms or already-correct rules/NNUE systems; Janggi-specific risk points are now intercepted above the rules layer.
+7. Code changed: final amended commit changes `JANGGIMODERN_SEARCH_ANALYSIS.md`, `src/movepick.cpp`, `src/movepick.h`, `src/search.cpp`, `src/search.h`, `src/thread.cpp`, and `src/thread.h`.
+8. NNUE loaded: both `/workspace/kimqwer12/janggimodern-18.nnue` and `/workspace/kimqwer12/janggimodern-19.nnue` printed `NNUE evaluation using ... enabled` and returned best moves.
+9. UCI worked: JanggiModern initialized, perft 1 returned 32 root moves, and depth search returned a best move.
+10. WinBoard worked: `xboard/protover 2/variant janggimodern/new` returned feature negotiation and setup output.
+11. Legal move generation remained unchanged by source scope: no movegen, legality, make/undo, FEN, or variant-registration files were changed; start-position perft 1 remained 32 moves.
+12. NPS: final all-variants/largeboards bench reported 6,264,613 nodes, 15,839 ms, 395,518 NPS. The NPS cost is expected from more tactical ordering and correction integration; no strength claim is made without games.
+13. Self-play: no self-play/fishtest/cutechess harness was found in the repository or environment, so no Elo result is reported.
+14. If strength does not improve: the next controlled investigation should tune tactical weights and LMR/pruning thresholds independently, using the JanggiModern NNUE files and fixed opening/FEN suites.

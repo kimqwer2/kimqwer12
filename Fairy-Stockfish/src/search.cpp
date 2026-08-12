@@ -117,6 +117,52 @@ namespace {
                             int(VALUE_TB_LOSS_IN_MAX_PLY + 1), int(VALUE_TB_WIN_IN_MAX_PLY - 1)));
   }
 
+
+
+  int janggimodern_tactical_weight(const Position& pos, Move move, bool givesCheck, bool captureOrPromotion) {
+    if (!is_janggimodern(pos) || !is_ok(move))
+        return 0;
+
+    Piece moved = pos.moved_piece(move);
+    Piece captured = pos.piece_on(to_sq(move));
+    int w = 0;
+    if (givesCheck)
+        w += type_of(moved) == JANGGI_CANNON ? 5 : type_of(moved) == ROOK ? 4 : 2;
+    if (type_of(moved) == JANGGI_CANNON)
+        w += captureOrPromotion ? 4 : 2;
+    if (captured != NO_PIECE && type_of(captured) == JANGGI_CANNON)
+        w += 3;
+    if (type_of(moved) == KNIGHT || type_of(moved) == JANGGI_ELEPHANT)
+        w += givesCheck || captureOrPromotion ? 2 : 1;
+    if (type_of(moved) == ROOK)
+        w += givesCheck || captureOrPromotion ? 2 : 1;
+    return w;
+  }
+
+  bool janggimodern_pruning_exempt(const Position& pos, Move move, bool givesCheck, bool captureOrPromotion, int histScore) {
+    int w = janggimodern_tactical_weight(pos, move, givesCheck, captureOrPromotion);
+    return w >= 4 || (w >= 2 && histScore > -4000);
+  }
+
+  Depth janggimodern_lmr_adjustment(const Position& pos, Move move, bool givesCheck, bool captureOrPromotion,
+                                    int statScore, Depth r, int moveCount, bool improving) {
+    if (!is_janggimodern(pos))
+        return r;
+
+    int w = janggimodern_tactical_weight(pos, move, givesCheck, captureOrPromotion);
+    if (w >= 5)
+        r -= 2;
+    else if (w >= 2)
+        r -= 1;
+
+    // Bad-history non-tactical quiets can be reduced more: JanggiModern has many
+    // low-impact palace shuffles, while cannon/rook/horse tactics are exempted above.
+    if (!captureOrPromotion && !givesCheck && w == 0 && statScore < -9000 && moveCount > 5 && !improving)
+        r += 1;
+
+    return std::max(Depth(0), r);
+  }
+
   void update_janggimodern_correction_history(const Position& pos, Stack* ss, Value bestValue, Value beta, Depth depth, Move bestMove) {
     if (!is_janggimodern(pos) || ss->uncorrectedStaticEval == VALUE_NONE || !is_ok(bestMove)
         || pos.capture_or_promotion(bestMove) || bestValue >= VALUE_TB_WIN_IN_MAX_PLY || bestValue <= VALUE_TB_LOSS_IN_MAX_PLY)
@@ -1248,7 +1294,10 @@ moves_loop: // When in check, search starts from here
           else
           {
               // Continuation history based pruning (~20 Elo)
+              int quietHist = (*contHist[0])[history_slot(movedPiece)][to_sq(move)]
+                            + (*contHist[1])[history_slot(movedPiece)][to_sq(move)];
               if (   lmrDepth < 5
+                  && !janggimodern_pruning_exempt(pos, move, givesCheck, captureOrPromotion, quietHist)
                   && (*contHist[0])[history_slot(movedPiece)][to_sq(move)] < CounterMovePruneThreshold
                   && (*contHist[1])[history_slot(movedPiece)][to_sq(move)] < CounterMovePruneThreshold)
                   continue;
@@ -1257,6 +1306,7 @@ moves_loop: // When in check, search starts from here
               if (   lmrDepth < 7
                   && !ss->inCheck
                   && !pos.extinction_single_piece()
+                  && !janggimodern_pruning_exempt(pos, move, givesCheck, captureOrPromotion, quietHist)
                   && ss->staticEval + (174 + 157 * lmrDepth) * (1 + pos.check_counting()) <= alpha
                   &&  (*contHist[0])[history_slot(movedPiece)][to_sq(move)]
                     + (*contHist[1])[history_slot(movedPiece)][to_sq(move)]
@@ -1401,6 +1451,7 @@ moves_loop: // When in check, search starts from here
           if (cutNode)
               r += 1 + !captureOrPromotion;
 
+          ss->statScore = 0;
           if (!captureOrPromotion)
           {
               // Increase reduction if ttMove is a capture (~3 Elo)
@@ -1418,6 +1469,8 @@ moves_loop: // When in check, search starts from here
               if (!ss->inCheck)
                   r -= ss->statScore / (14721 - 4434 * pos.captures_to_hand());
           }
+
+          r = janggimodern_lmr_adjustment(pos, move, givesCheck, captureOrPromotion, ss->statScore, r, moveCount, improving);
 
           // In general we want to cap the LMR depth search at newDepth. But if
           // reductions are really negative and movecount is low, we allow this move
@@ -1675,8 +1728,10 @@ moves_loop: // When in check, search starts from here
         if (ss->ttHit)
         {
             // Never assume anything about values stored in TT
-            if ((ss->staticEval = bestValue = tte->eval()) == VALUE_NONE)
-                ss->staticEval = bestValue = evaluate(pos);
+            ss->uncorrectedStaticEval = tte->eval();
+            if (ss->uncorrectedStaticEval == VALUE_NONE)
+                ss->uncorrectedStaticEval = evaluate(pos);
+            ss->staticEval = bestValue = janggimodern_correct_static_eval(pos, ss->uncorrectedStaticEval, ss);
 
             // Can ttValue be used as a better position evaluation?
             if (    ttValue != VALUE_NONE
@@ -1684,11 +1739,14 @@ moves_loop: // When in check, search starts from here
                 bestValue = ttValue;
         }
         else
+        {
             // In case of null move search use previous static eval with a different sign
             // and addition of two tempos
-            ss->staticEval = bestValue =
+            ss->uncorrectedStaticEval =
             (ss-1)->currentMove != MOVE_NULL ? evaluate(pos)
                                              : -(ss-1)->staticEval;
+            ss->staticEval = bestValue = janggimodern_correct_static_eval(pos, ss->uncorrectedStaticEval, ss);
+        }
 
         // Stand pat. Return immediately if static value is at least beta
         if (bestValue >= beta)
@@ -1696,7 +1754,7 @@ moves_loop: // When in check, search starts from here
             // Save gathered info in transposition table
             if (!ss->ttHit)
                 tte->save(posKey, value_to_tt(bestValue, ss->ply), false, BOUND_LOWER,
-                          DEPTH_NONE, MOVE_NONE, ss->staticEval);
+                          DEPTH_NONE, MOVE_NONE, ss->uncorrectedStaticEval);
 
             return bestValue;
         }
