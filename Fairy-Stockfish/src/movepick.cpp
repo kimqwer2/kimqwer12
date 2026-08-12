@@ -31,6 +31,33 @@ int history_slot(Piece pc) {
 
 namespace {
 
+  bool janggimodern_search(const Position& pos) {
+    return pos.variant()->variantTemplate == "janggi"
+        && pos.variant()->materialCounting == JANGGI_MATERIAL
+        && !pos.variant()->bikjangRule
+        && pos.variant()->moveRepetitionIllegal;
+  }
+
+  int janggi_move_order_bonus(const Position& pos, Move m) {
+    if (!janggimodern_search(pos))
+        return 0;
+
+    PieceType pt = type_of(pos.moved_piece(m));
+    int bonus = 0;
+
+    // Screens and long rays dominate JanggiModern tactics. Prefer moves that
+    // change cannon/rook topology or interact with contested squares, even when
+    // they are quiet.
+    if (pt == JANGGI_CANNON) bonus += 7000;
+    if (pt == ROOK)         bonus += 4500;
+    if (pt == KNIGHT)       bonus += 2500;
+    if (pt == JANGGI_ELEPHANT) bonus += 2000;
+    if (pos.gives_check(m)) bonus += 9000;
+    if (pos.attackers_to(to_sq(m), ~pos.side_to_move())) bonus += 1800;
+    if (pos.attackers_to(from_sq(m), ~pos.side_to_move())) bonus += 1200;
+    return bonus;
+  }
+
   enum Stages {
     MAIN_TT, CAPTURE_INIT, GOOD_CAPTURE, REFUTATION, QUIET_INIT, QUIET, BAD_CAPTURE,
     EVASION_TT, EVASION_INIT, EVASION,
@@ -109,12 +136,14 @@ void MovePicker::score() {
 
   for (auto& m : *this)
       if constexpr (Type == CAPTURES)
-          m.value =  int(PieceValue[MG][pos.piece_on(to_sq(m))]) * 6
+          m.value =  int(PieceValue[MG][pos.piece_on(to_sq(m))]) * (janggimodern_search(pos) ? 4 : 6)
+                   + janggi_move_order_bonus(pos, m)
                    + (*gateHistory)[pos.side_to_move()][gating_square(m)]
                    + (*captureHistory)[pos.moved_piece(m)][to_sq(m)][type_of(pos.piece_on(to_sq(m)))];
 
       else if constexpr (Type == QUIETS)
           m.value =      (*mainHistory)[pos.side_to_move()][from_to(m)]
+                   + janggi_move_order_bonus(pos, m)
                    +     (*gateHistory)[pos.side_to_move()][gating_square(m)]
                    + 2 * (*continuationHistory[0])[history_slot(pos.moved_piece(m))][to_sq(m)]
                    +     (*continuationHistory[1])[history_slot(pos.moved_piece(m))][to_sq(m)]
@@ -126,7 +155,8 @@ void MovePicker::score() {
       {
           if (pos.capture(m))
               m.value =  PieceValue[MG][pos.piece_on(to_sq(m))]
-                       - Value(type_of(pos.moved_piece(m)));
+                       - Value(type_of(pos.moved_piece(m)))
+                       + janggi_move_order_bonus(pos, m);
           else
               m.value =      (*mainHistory)[pos.side_to_move()][from_to(m)]
                        + 2 * (*continuationHistory[0])[history_slot(pos.moved_piece(m))][to_sq(m)]
@@ -180,7 +210,7 @@ top:
 
   case GOOD_CAPTURE:
       if (select<Best>([&](){
-                       return pos.see_ge(*cur, Value(-69 * cur->value / 1024 - 500 * (pos.captures_to_hand() && pos.gives_check(*cur))))?
+                       return (janggimodern_search(pos) && (type_of(pos.moved_piece(*cur)) == JANGGI_CANNON || pos.gives_check(*cur))) || pos.see_ge(*cur, Value(-69 * cur->value / 1024 - 500 * (pos.captures_to_hand() && pos.gives_check(*cur))))?
                               // Move losing capture to endBadCaptures to be tried later
                               true : (*endBadCaptures++ = *cur, false); }))
           return *(cur - 1);
@@ -212,7 +242,7 @@ top:
           endMoves = generate<QUIETS>(pos, cur);
 
           score<QUIETS>();
-          partial_insertion_sort(cur, endMoves, -3000 * depth);
+          partial_insertion_sort(cur, endMoves, (janggimodern_search(pos) ? -8000 : -3000) * depth);
       }
 
       ++stage;

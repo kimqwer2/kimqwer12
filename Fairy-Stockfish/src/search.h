@@ -53,6 +53,12 @@ struct Stack {
   bool ttPv;
   bool ttHit;
   int doubleExtensions;
+
+  // Variant-search context. For JanggiModern this carries a compact
+  // tactical volatility score from parent to child so pruning, LMR, and
+  // qsearch can react coherently to cannon screens, blocked leapers, and
+  // palace/check forcing geometry without changing the variant rules or NNUE.
+  int variantTactical;
 };
 
 
