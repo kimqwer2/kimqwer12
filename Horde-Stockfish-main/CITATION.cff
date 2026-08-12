@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+title: Horde-Stockfish
+message: >-
+  Please cite this software using the metadata in this file.
+type: software
+authors:
+  - name: The Horde-Stockfish developers (see AUTHORS)
+repository-code: 'https://github.com/Belzedar94/Horde-Stockfish'
+repository-artifact: 'https://github.com/Belzedar94/Horde-Stockfish/releases'
+abstract: >-
+  Horde-Stockfish is a UCI chess engine specialized for Lichess Horde chess.
+keywords:
+  - Horde chess
+  - chess engine
+  - Stockfish
+  - alpha-beta search
+  - NNUE
+license: GPL-3.0
