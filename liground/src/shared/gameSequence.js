@@ -1,5 +1,15 @@
 export const GAMESEQ_PREFIX = 'LIGROUND-GAMESEQ/1'
 export const GAMESEQ_PREFIX_V2 = 'LIGROUND-GAMESEQ/2'
+export const PASS_MOVE = '0000'
+export const PASS_TOKEN = 'PASS'
+
+export function moveToSequenceToken (move) {
+  return String(move || '').trim() === PASS_MOVE ? PASS_TOKEN : String(move || '').trim()
+}
+
+export function sequenceTokenToMove (token) {
+  return String(token || '').trim().toUpperCase() === PASS_TOKEN ? PASS_MOVE : String(token || '').trim()
+}
 
 export function buildMainlineFromMove (move) {
   if (!move) return []
@@ -13,7 +23,7 @@ export function buildMainlineFromMove (move) {
 }
 
 export function serializeGameSequence ({ variant, startFen, moves, metadata = {} }) {
-  const safeMoves = Array.isArray(moves) ? moves.filter(Boolean).map(String) : []
+  const safeMoves = Array.isArray(moves) ? moves.filter(Boolean).map(moveToSequenceToken) : []
   return [
     GAMESEQ_PREFIX_V2,
     `variant: ${variant || 'janggi'}`,
@@ -53,7 +63,7 @@ export function parseGameSequence (text) {
         inMeta = true
       } else if (inMoves) {
         const move = line.replace(/^\d+\.\s*/, '').trim()
-        if (move) moves.push(move)
+        if (move) moves.push(sequenceTokenToMove(move))
       } else if (inMeta && line.includes(':')) {
         const idx = line.indexOf(':')
         metadata[line.slice(0, idx).trim()] = line.slice(idx + 1).trim()
@@ -68,7 +78,7 @@ export function parseGameSequence (text) {
     if (eq <= 0) continue
     map[line.slice(0, eq)] = line.slice(eq + 1)
   }
-  const moves = (map.moves || '').trim() === '' ? [] : map.moves.trim().split(/\s+/)
+  const moves = (map.moves || '').trim() === '' ? [] : map.moves.trim().split(/\s+/).map(sequenceTokenToMove)
   let metadata = {}
   if (map.meta) {
     try {

@@ -59,61 +59,71 @@
         class="processing-bar"
         :class="{ animate: isEngineActive }"
       />
-      <PVLines
-        v-if="QuickTourIndex !== 12"
-        ref="pvlines"
-        class="panel"
-      />
-      <PVLines
-        v-else
-        ref="pvlines"
-        class="panel-qt"
-      />
-      <AnalysisVisualizationSettings />
-      <FutureExplorerPanel />
-      <div
-        v-if="QuickTourIndex !== 13"
-        class="game-window panel noselect"
-      >
-        <div id="move-history">
-          <MoveHistoryNode
-            v-if="movesExist"
-            :move="mainFirstMove"
-          />
-        </div>
+      <div class="resizable-section" :style="sectionStyle('pv')">
+        <PVLines
+          v-if="QuickTourIndex !== 12"
+          ref="pvlines"
+          class="panel fill-section"
+        />
+        <PVLines
+          v-else
+          ref="pvlines"
+          class="panel-qt fill-section"
+        />
       </div>
-      <div
-        v-else
-        class="game-window-qt"
-      >
+      <div class="analysis-splitter" title="Drag to resize. Double-click to reset." @mousedown="startResize($event, 'pv')" @dblclick="resetSection('pv')" />
+      <div class="resizable-section" :style="sectionStyle('visualization')"><AnalysisVisualizationSettings /></div>
+      <div class="analysis-splitter" title="Drag to resize. Double-click to reset." @mousedown="startResize($event, 'visualization')" @dblclick="resetSection('visualization')" />
+      <div class="resizable-section" :style="sectionStyle('future')"><FutureExplorerPanel /></div>
+      <div class="analysis-splitter" title="Drag to resize. Double-click to reset." @mousedown="startResize($event, 'future')" @dblclick="resetSection('future')" />
+      <div class="resizable-section" :style="sectionStyle('history')">
         <div
-          id="move-history"
+          v-if="QuickTourIndex !== 13"
+          class="game-window panel noselect fill-section"
         >
-          <MoveHistoryNode
-            v-if="movesExist"
-            :move="mainFirstMove"
-          />
+          <div id="move-history">
+            <MoveHistoryNode
+              v-if="movesExist"
+              :move="mainFirstMove"
+            />
+          </div>
+        </div>
+        <div
+          v-else
+          class="game-window-qt fill-section"
+        >
+          <div id="move-history">
+            <MoveHistoryNode
+              v-if="movesExist"
+              :move="mainFirstMove"
+            />
+          </div>
         </div>
       </div>
-      <EngineConsole
-        v-if="QuickTourIndex !== 16"
-        ref="console"
-        @reInitEngineOptions="changeState"
-        @calculateEngineStats="fillEngineStats($event)"
-        @calculateEngineInfo="fillEngineInfo($event)"
-        @calculateMultiPV="fillMultiPV($event)"
-        @sendMultiPvCount="fillMultiPVCount($event)"
-      />
-      <EngineConsole
-        v-else
-        id="EngineConsole-qt"
-        ref="console"
-        @reInitEngineOptions="changeState"
-        @calculateEngineStats="fillEngineStats($event)"
-        @calculateEngineInfo="fillEngineInfo($event)"
-        @calculateMultiPV="fillMultiPV($event)"
-        @sendMultiPvCount="fillMultiPVCount($event)"
-      />
+      <div class="analysis-splitter" title="Drag to resize. Double-click to reset." @mousedown="startResize($event, 'history')" @dblclick="resetSection('history')" />
+      <div class="resizable-section" :style="sectionStyle('console')">
+        <EngineConsole
+          v-if="QuickTourIndex !== 16"
+          ref="console"
+          class="fill-section"
+          @reInitEngineOptions="changeState"
+          @calculateEngineStats="fillEngineStats($event)"
+          @calculateEngineInfo="fillEngineInfo($event)"
+          @calculateMultiPV="fillMultiPV($event)"
+          @sendMultiPvCount="fillMultiPVCount($event)"
+        />
+        <EngineConsole
+          v-else
+          id="EngineConsole-qt"
+          ref="console"
+          class="fill-section"
+          @reInitEngineOptions="changeState"
+          @calculateEngineStats="fillEngineStats($event)"
+          @calculateEngineInfo="fillEngineInfo($event)"
+          @calculateMultiPV="fillMultiPV($event)"
+          @sendMultiPvCount="fillMultiPVCount($event)"
+        />
+      </div>
     </div>
   </div>
 </template>
@@ -172,7 +182,15 @@ export default {
           ucimove: ''
         }
       ],
-      multipvCount: 5
+      multipvCount: 5,
+      sectionHeights: {
+        pv: 180,
+        visualization: 170,
+        future: 220,
+        history: 180,
+        console: 240
+      },
+      resizeState: null
     }
   },
   computed: {
@@ -244,8 +262,47 @@ export default {
     this.$refs.console.setEngineIndex(this.engineID)
     this.$refs.enginestats.fillID(this.engineID)
     this.$refs.engineselect.setEngineIndex(this.engineIndex)
+    this.loadSectionHeights()
+  },
+  beforeDestroy () {
+    this.stopResize()
   },
   methods: {
+    sectionStyle (key) {
+      return { height: `${this.sectionHeights[key]}px` }
+    },
+    loadSectionHeights () {
+      try {
+        const saved = JSON.parse(window.localStorage.getItem('liground.analysisPanelHeights') || '{}')
+        this.sectionHeights = { ...this.sectionHeights, ...saved }
+      } catch (err) {}
+    },
+    saveSectionHeights () {
+      window.localStorage.setItem('liground.analysisPanelHeights', JSON.stringify(this.sectionHeights))
+    },
+    startResize (event, key) {
+      event.preventDefault()
+      this.resizeState = { key, startY: event.clientY, startHeight: this.sectionHeights[key] }
+      window.addEventListener('mousemove', this.resizeSection)
+      window.addEventListener('mouseup', this.stopResize)
+    },
+    resizeSection (event) {
+      if (!this.resizeState) return
+      const next = Math.max(80, this.resizeState.startHeight + event.clientY - this.resizeState.startY)
+      this.$set(this.sectionHeights, this.resizeState.key, next)
+    },
+    stopResize () {
+      if (!this.resizeState) return
+      window.removeEventListener('mousemove', this.resizeSection)
+      window.removeEventListener('mouseup', this.stopResize)
+      this.resizeState = null
+      this.saveSectionHeights()
+    },
+    resetSection (key) {
+      const defaults = { pv: 180, visualization: 170, future: 220, history: 180, console: 240 }
+      this.$set(this.sectionHeights, key, defaults[key])
+      this.saveSectionHeights()
+    },
     async resetThisEngine () {
       await this.$refs.console.resetEngine(this.isEngineActive)
       if (this.isEngineActive) {
@@ -326,12 +383,12 @@ input {
   border: 5px solid var(--quicktour-highlight);
 }
 .game-window {
-  height: 20%;
+  height: 100%;
   overflow-y: scroll;
   background-color: var(--second-bg-color);
 }
 .game-window-qt {
-  height: 20%;
+  height: 100%;
   overflow-y: scroll;
   background-color: var(--second-bg-color);
   border: 5px solid var(--quicktour-highlight);
@@ -384,6 +441,24 @@ input {
   transition: background-color 0.4s; /* same as engine start/stop button */
   animation: bar-anim 1000s linear infinite;
   animation-play-state: paused;
+}
+.resizable-section {
+  min-height: 80px;
+  overflow: hidden;
+}
+.fill-section {
+  height: 100%;
+  overflow: auto;
+}
+.analysis-splitter {
+  height: 7px;
+  margin: 2px 0;
+  cursor: row-resize;
+  border-radius: 3px;
+  background: var(--main-border-color);
+}
+.analysis-splitter:hover {
+  background: var(--highlight-color);
 }
 .processing-bar.animate {
   background-color: var(--highlight-color);
