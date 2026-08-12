@@ -66,6 +66,29 @@ namespace {
   constexpr uint64_t TtHitAverageWindow     = 4096;
   constexpr uint64_t TtHitAverageResolution = 1024;
 
+
+  bool is_janggimodern(const Position& pos) {
+    const Variant* v = pos.variant();
+    return v->variantTemplate == "janggi"
+        && !v->bikjangRule
+        && v->materialCounting == JANGGI_MATERIAL
+        && v->moveRepetitionIllegal;
+  }
+
+  bool janggimodern_see_sensitive(const Position& pos, Move move, bool givesCheck) {
+    // JanggiModern cannon screens and palace diagonals make orthodox SEE a
+    // noisy predictor. Keep legality/rules intact, but do not let SEE-based
+    // forward pruning discard cannon moves or forcing checks before search.
+    return is_janggimodern(pos)
+        && (givesCheck || type_of(pos.moved_piece(move)) == JANGGI_CANNON || type_of(pos.piece_on(to_sq(move))) == JANGGI_CANNON);
+  }
+
+  Value janggimodern_probcut_margin(const Position& pos, Value margin) {
+    // Require more proof before ProbCut in JanggiModern: many tactical refutations
+    // are cannon-screen changes that shallow capture-only verification can miss.
+    return is_janggimodern(pos) ? Value(margin + 96) : margin;
+  }
+
   // Futility margin
   Value futility_margin(Depth d, bool improving) {
     return Value(214 * (d - improving));
@@ -984,7 +1007,7 @@ namespace {
         }
     }
 
-    probCutBeta = beta + (209 + 20 * !!pos.flag_region(~pos.side_to_move()) + 50 * pos.captures_to_hand()) * (1 + pos.check_counting() + pos.extinction_single_piece()) - 44 * improving;
+    probCutBeta = beta + janggimodern_probcut_margin(pos, Value((209 + 20 * !!pos.flag_region(~pos.side_to_move()) + 50 * pos.captures_to_hand()) * (1 + pos.check_counting() + pos.extinction_single_piece()) - 44 * improving));
 
     // Step 9. ProbCut (~4 Elo)
     // If we have a good enough capture and a reduced search returns a value
@@ -1164,7 +1187,8 @@ moves_loop: // When in check, search starts from here
                   continue;
 
               // SEE based pruning
-              if (!pos.see_ge(move, Value(-218 - 120 * pos.captures_to_hand()) * depth)) // (~25 Elo)
+              if (!janggimodern_see_sensitive(pos, move, givesCheck)
+                  && !pos.see_ge(move, Value(-218 - 120 * pos.captures_to_hand()) * depth)) // (~25 Elo)
                   continue;
           }
           else
@@ -1187,7 +1211,9 @@ moves_loop: // When in check, search starts from here
                   continue;
 
               // Prune moves with negative SEE (~20 Elo)
-              if (!(pos.walling_rule() == DUCK) && !pos.see_ge(move, Value(-(30 - std::min(lmrDepth, 18) + 10 * !!pos.flag_region(pos.side_to_move())) * lmrDepth * lmrDepth)))
+              if (!(pos.walling_rule() == DUCK)
+                  && !janggimodern_see_sensitive(pos, move, givesCheck)
+                  && !pos.see_ge(move, Value(-(30 - std::min(lmrDepth, 18) + 10 * !!pos.flag_region(pos.side_to_move())) * lmrDepth * lmrDepth)))
                   continue;
           }
       }
@@ -1252,7 +1278,8 @@ moves_loop: // When in check, search starts from here
       }
       else if (   givesCheck
                && depth > 6
-               && abs(ss->staticEval) > Value(100))
+               && abs(ss->staticEval) > Value(100)
+               && (!is_janggimodern(pos) || type_of(movedPiece) == JANGGI_CANNON || captureOrPromotion))
           extension = 1;
 
       // Losing chess capture extension
