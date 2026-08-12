@@ -2698,16 +2698,32 @@ bool Position::is_optional_game_end(Value& result, int ply, int countStarted) co
 
               // Return a draw score if a position repeats once earlier but strictly
               // after the root, or repeats twice before or at the root.
-              if (   stp->key == st->key
-                  && ++cnt + 1 >= (ply > i && !moveRepetition && !chaseUs && !chaseThem && !perpetualUs && !perpetualThem ? 2 : n_fold_rule()))
+              if (stp->key == st->key)
               {
-                  result = convert_mate_value(  (perpetualThem || perpetualUs) ? (!perpetualUs ? VALUE_MATE : !perpetualThem ? -VALUE_MATE : VALUE_DRAW)
-                                              : (chaseThem || chaseUs) ? (!chaseUs ? VALUE_MATE : !chaseThem ? -VALUE_MATE : VALUE_DRAW)
-                                              : var->nFoldValueAbsolute && sideToMove == BLACK ? -var->nFoldValue
-                                              : var->nFoldValue, ply);
-                  if (result == VALUE_DRAW && var->materialCounting)
-                      result = convert_mate_value(material_counting_result(), ply);
-                  return true;
+                  ++cnt;
+
+                  const bool afterRootDrawShortcut = ply > i
+                                                  && var->nFoldValue == VALUE_DRAW
+                                                  && !var->nFoldValueAbsolute
+                                                  && !var->materialCounting
+                                                  && !var->moveRepetitionIllegal
+                                                  && !moveRepetition
+                                                  && !chaseUs
+                                                  && !chaseThem
+                                                  && !perpetualUs
+                                                  && !perpetualThem;
+                  const int repetitionThreshold = afterRootDrawShortcut ? 2 : n_fold_rule();
+
+                  if (cnt + 1 >= repetitionThreshold)
+                  {
+                      result = convert_mate_value(  (perpetualThem || perpetualUs) ? (!perpetualUs ? VALUE_MATE : !perpetualThem ? -VALUE_MATE : VALUE_DRAW)
+                                                  : (chaseThem || chaseUs) ? (!chaseUs ? VALUE_MATE : !chaseThem ? -VALUE_MATE : VALUE_DRAW)
+                                                  : var->nFoldValueAbsolute && sideToMove == BLACK ? -var->nFoldValue
+                                                  : var->nFoldValue, ply);
+                      if (result == VALUE_DRAW && var->materialCounting)
+                          result = convert_mate_value(material_counting_result(), ply);
+                      return true;
+                  }
               }
 
               if (i + 1 <= end)
