@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """FJACE Advanced Statistical Analyzer for Janggi.
-[ 단일/다중 기보 하이브리드 AI 유사도 프로파일링 도구 - v12.2 ]
+[ 단일/다중 기보 하이브리드 AI 유사도 프로파일링 도구 - v12.3 ]
 - MultiPV=5 실질 엔진 탑재 및 Top-1 -> Top-3 -> Top-5 선택 깔때기(Funnel) 추적
 - 순위 볼록 감쇄(Convex Rank Decay) & CP 근접도(Proximity Decay) 평가 시스템
 - 후보수 선택 분산도(Candidate Dispersion)를 통한 프로 기사 오탐(False-Positive) 정밀 방어
 - 2D 경험적 LLR 순차 우도비(SPRT) 궤적 앙상블
 - Ledoit-Wolf 적응형 수축 공분산 기반 Mahalanobis DB 클러스터링 보정
 - MultiPV 섀넌 정책 엔트로피(Policy Entropy) 산출 및 승부처 CNAI 표본 게이팅 판독
-- ASCII 터미널 형세 곡선 시각화 & 4중 윈도우 국지 스캔 엔진 완벽 탑재
+- ASCII 형세 곡선 및 5/10/15/20/30/40수 다중 스케일 국지 상관 분석
 - 모든 서술형 리포트, 용어 설명, 판독 가이드라인 100% 보존
 """
 
@@ -1519,7 +1519,7 @@ def calculate_tactical_burst(moves: List[HistoryEntry]) -> Tuple[float, List[Tac
     return best.score, filtered, verdict
 
 # ==============================================================================
-# 4중 윈도우 스캔 탐색 엔진
+# 기존 정밀도 윈도우 스캔 탐색 엔진 (다중 스케일 상관 분석과 병행)
 # ==============================================================================
 @dataclass
 class SuspiciousSegment:
@@ -1533,7 +1533,143 @@ class SuspiciousSegment:
     suspicion_score: float
     verdict: str
 
+@dataclass
+class LocalCorrelationResult:
+    """Interpretable, false-positive-aware summary of one multi-scale window."""
+    start_ply: int
+    end_ply: int
+    game_id: int
+    window_size: int
+    phase: str
+    score: float
+    confidence: float
+    acpl: float
+    baseline_acpl: float
+    top1_rate: float
+    top3_rate: float
+    top5_rate: float
+    critical_agreement: float
+    preference_weighted_agreement: float
+    longest_exact_streak: int
+    longest_engine_like_streak: int
+    cluster_score: float
+    baseline_lift: float
+    contributions: Dict[str, float]
+
+def _longest_streak(values: Sequence[bool], allowed_misses: int = 0) -> int:
+    """Longest run, optionally allowing isolated misses (useful for every-few-moves use)."""
+    left = misses = best = 0
+    for right, value in enumerate(values):
+        if not value: misses += 1
+        while misses > allowed_misses:
+            if not values[left]: misses -= 1
+            left += 1
+        best = max(best, right - left + 1)
+    return best
+
+def analyze_local_engine_correlation(moves: List[HistoryEntry]) -> Optional[LocalCorrelationResult]:
+    """Find the strongest corroborated local engine-correlation window.
+
+    Unlike the legacy maximum-ACPL scan, this measures exact and candidate-set
+    imitation, intermittent clusters, difficult-position accuracy, and the
+    change from the player's own same-game baseline.  Reliability and a modest
+    scan penalty prevent a lucky five-move sequence from dominating the report.
+    """
+    def scale(value: float, low: float, high: float) -> float:
+        if high == low: return 0.0
+        return max(0.0, min(100.0, (value - low) * 100.0 / (high - low)))
+
+    by_game: Dict[int, List[HistoryEntry]] = {}
+    for move in sorted(moves, key=lambda x: (x.game_id, x.ply)):
+        if not move.is_forced:
+            by_game.setdefault(move.game_id, []).append(move)
+
+    candidates: List[LocalCorrelationResult] = []
+    tested_windows = sum(
+        max(0, len(game_moves) - size + 1)
+        for game_moves in by_game.values() for size in (5, 10, 15, 20, 30, 40)
+    )
+    for game_id, game_moves in by_game.items():
+        for size in (5, 10, 15, 20, 30, 40):
+            if len(game_moves) < size: continue
+            for start in range(len(game_moves) - size + 1):
+                window = game_moves[start:start + size]
+                # Do not silently bridge a large unanalyzed/forced section.
+                if window[-1].ply - window[0].ply > size * 3: continue
+                outside = game_moves[:start] + game_moves[start + size:]
+                losses = [m.eval_loss for m in window]
+                acpl = sum(losses) / size
+                baseline_acpl = (sum(m.eval_loss for m in outside) / len(outside)) if len(outside) >= 5 else acpl
+                baseline_lift = max(0.0, baseline_acpl - acpl)
+
+                top1 = sum(m.is_top_1 for m in window) / size * 100.0
+                top3 = sum(m.is_top_3 for m in window) / size * 100.0
+                top5 = sum(m.is_top_5 for m in window) / size * 100.0
+                critical = [m for m in window if m.is_critical or m.eval_gap <= 60]
+                critical_good = sum(m.is_top_3 and m.eval_loss <= 35 for m in critical)
+                critical_rate = critical_good / len(critical) * 100.0 if critical else 0.0
+
+                # A moderately large gap is informative, but forced moves have
+                # already been removed and the weight is capped to avoid tactics.
+                pref_weights = [1.0 + min(max(m.eval_gap, 0), 180) / 180.0 for m in window]
+                pref_hits = [1.0 if m.is_top_1 else (0.68 if m.engine_rank == 2 else
+                             (0.42 if m.engine_rank == 3 else (0.18 if m.is_top_5 else 0.0))) for m in window]
+                pref_agreement = sum(w * h for w, h in zip(pref_weights, pref_hits)) / sum(pref_weights) * 100.0
+
+                exact_flags = [m.is_top_1 for m in window]
+                engine_like = [m.is_top_3 or m.eval_loss <= 20 for m in window]
+                exact_streak = _longest_streak(exact_flags)
+                tolerant_streak = _longest_streak(engine_like, allowed_misses=1)
+                cluster = max(
+                    scale(tolerant_streak / size, 0.35, 0.85),
+                    scale(sum(engine_like) / size, 0.60, 0.92),
+                )
+
+                contributions = {
+                    "exact_top1": scale(top1, 55.0, 88.0) * 0.20,
+                    "candidate_set": scale(top3, 78.0, 98.0) * 0.18,
+                    "low_loss": scale(acpl, 28.0, 5.0) * 0.17,
+                    "preference_weighted": scale(pref_agreement, 48.0, 82.0) * 0.14,
+                    "critical_positions": scale(critical_rate, 55.0, 92.0) * 0.11 if len(critical) >= 3 else 0.0,
+                    "baseline_change": scale(baseline_lift, 10.0, 45.0) * 0.12 if len(outside) >= 5 else 0.0,
+                    "cluster": cluster * 0.08,
+                }
+                raw = sum(contributions.values())
+                corroboration = sum(value >= 6.0 for value in contributions.values())
+                if corroboration < 3: raw = min(raw, 58.0)
+
+                # Shrink short samples and maxima selected from many overlapping windows.
+                reliability = min(1.0, math.sqrt(size / 15.0))
+                scan_factor = 1.0 / (1.0 + 0.015 * math.log1p(tested_windows))
+                score = 25.0 + (raw - 25.0) * reliability * scan_factor
+                opening_fraction = sum(m.ply < 20 for m in window) / size
+                score *= 1.0 - 0.25 * opening_fraction
+                if baseline_acpl <= 18.0 and baseline_lift < 10.0:
+                    score *= 0.78  # sustained elite play is not a switch-in signal
+                score = max(0.0, min(99.0, score))
+                confidence = min(100.0, reliability * 70.0 + min(30.0, corroboration * 5.0))
+                mid_ply = (window[0].ply + window[-1].ply) / 2.0
+                phase = "opening" if mid_ply < 30 else ("middlegame" if mid_ply < 70 else "endgame")
+                candidates.append(LocalCorrelationResult(
+                    window[0].ply + 1, window[-1].ply + 1, game_id, size, phase,
+                    score, confidence, acpl, baseline_acpl, top1, top3, top5,
+                    critical_rate, pref_agreement, exact_streak, tolerant_streak,
+                    cluster, baseline_lift, contributions
+                ))
+    return max(candidates, key=lambda result: result.score) if candidates else None
+
 def scan_suspicious_segments(moves: List[HistoryEntry], max_segments: int = 5) -> List[SuspiciousSegment]:
+    # Aggregated target reports contain several games.  Never manufacture a
+    # window by joining the end of one game to the beginning of the next.
+    game_ids = {m.game_id for m in moves}
+    if len(game_ids) > 1:
+        per_game: List[SuspiciousSegment] = []
+        for game_id in game_ids:
+            per_game.extend(scan_suspicious_segments(
+                [m for m in moves if m.game_id == game_id], max_segments=max_segments
+            ))
+        per_game.sort(key=lambda segment: segment.suspicion_score, reverse=True)
+        return per_game[:max_segments]
     unforced_moves = [m for m in moves if not m.is_forced]
     if len(unforced_moves) < 4: return []
 
@@ -1661,9 +1797,28 @@ def scan_suspicious_segments(moves: List[HistoryEntry], max_segments: int = 5) -
 
 def calculate_partial_ai_probability(moves: List[HistoryEntry]) -> Tuple[float, str, List[int]]:
     segs = scan_suspicious_segments(moves, max_segments=1)
-    if not segs: return 0.0, "🟢 특이 구간 없음 (자연스러운 수순)", [0, 0]
-    best = segs[0]
-    return best.suspicion_score, best.verdict, [best.start_ply, best.end_ply]
+    local = analyze_local_engine_correlation(moves)
+    legacy_score = segs[0].suspicion_score if segs else 0.0
+    local_score = local.score if local else 0.0
+    if not segs and not local:
+        return 0.0, "🟢 특이 구간 없음 (자연스러운 수순)", [0, 0]
+
+    # The two scanners are deliberately different. Agreement is stronger than
+    # either maximum alone; disagreement receives only a small uplift.
+    if legacy_score >= 45.0 and local_score >= 45.0:
+        combined = max(legacy_score, local_score) + 0.20 * min(legacy_score, local_score)
+    else:
+        combined = max(legacy_score, local_score)
+    combined = min(99.0, combined)
+    if local and local_score >= legacy_score:
+        bounds = [local.start_ply, local.end_ply]
+    else:
+        bounds = [segs[0].start_ply, segs[0].end_ply]
+    if combined >= 90.0: verdict = "🔴 다중 지표가 일치하는 극단적 국지 엔진 상관"
+    elif combined >= 65.0: verdict = "🟡 정밀 검토가 필요한 국지 엔진 상관"
+    elif combined >= 40.0: verdict = "🟠 참고용 국지 정밀도 상승"
+    else: verdict = "🟢 자연스러운 인간 대국자의 흐름 및 정밀도"
+    return combined, verdict, bounds
 
 def calculate_cheat_probability(moves: List[HistoryEntry]) -> Tuple[float, float, str]:
     if len(moves) < 5: return 0.0, 0.0, "⚪ 판독 불가 (수순 부족)"
@@ -1719,7 +1874,10 @@ def calculate_cheat_probability(moves: List[HistoryEntry]) -> Tuple[float, float
     unforced_all = [m for m in moves if not m.is_forced]
     if unforced_all:
         total_llr = sum(get_empirical_binned_llr(m.eval_gap, m.eval_loss) for m in unforced_all)
-        sprt_score = 1.0 / (1.0 + math.exp(-total_llr / 6.0)) * 100.0
+        # Normalize evidence growth: raw summation otherwise saturates merely
+        # because a game is long.  sqrt(n) still rewards persistent evidence.
+        llr_scale = max(6.0, math.sqrt(len(unforced_all)) * 1.5)
+        sprt_score = 1.0 / (1.0 + math.exp(-total_llr / llr_scale)) * 100.0
     else:
         sprt_score = 0.0
 
@@ -1894,6 +2052,28 @@ def print_suspicious_segments_report(moves: List[HistoryEntry], name: str):
         print(row)
     print("-" * 115)
 
+def print_local_correlation_report(rows: Dict[str, List[HistoryEntry]]) -> None:
+    """Print the strongest multi-scale window and the reasons it scored highly."""
+    print("\n [ 다중 스케일 국지 엔진 상관 진단 (5/10/15/20/30/40수) ]")
+    header = f" {pad_korean('진영', 12)} | {pad_korean('최강 구간', 14)} | {pad_korean('크기/국면', 15)} | {pad_korean('점수/신뢰도', 16)} | {pad_korean('Top1/3/5', 22)} | {pad_korean('연속/군집', 14)}"
+    print(header)
+    print("-" * 115)
+    for name, moves in rows.items():
+        result = analyze_local_engine_correlation(moves)
+        if not result:
+            print(f" {pad_korean(name, 12)} | {pad_korean('표본 부족', 99)}")
+            continue
+        ranks = f"{result.top1_rate:.0f}/{result.top3_rate:.0f}/{result.top5_rate:.0f}%"
+        streaks = f"{result.longest_exact_streak}/{result.longest_engine_like_streak} ({result.cluster_score:.0f})"
+        print(f" {pad_korean(name, 12)} | {pad_korean(f'{result.start_ply}~{result.end_ply}', 14)} | "
+              f"{pad_korean(f'{result.window_size}/{result.phase}', 15)} | "
+              f"{pad_korean(f'{result.score:.1f}/{result.confidence:.0f}%', 16)} | "
+              f"{pad_korean(ranks, 22)} | {pad_korean(streaks, 14)}")
+        strongest = sorted(result.contributions.items(), key=lambda item: item[1], reverse=True)[:4]
+        reasons = ", ".join(f"{key} +{value:.1f}" for key, value in strongest if value > 0.0) or "corroborating signal 없음"
+        print(f" {'':12} | ↳ ACPL {result.acpl:.1f} (동일게임 기준 {result.baseline_acpl:.1f}, 향상 {result.baseline_lift:.1f}); "
+              f"승부처 Top-3 {result.critical_agreement:.0f}%; 선호강도 가중 {result.preference_weighted_agreement:.0f}%; 기여: {reasons}")
+    print("-" * 115)
 def print_candidate_profile_report(moves_dict: Dict[str, List[HistoryEntry]]):
     """[진단 핵심] Top-1 -> Top-3 -> Top-5 선택 깔때기 및 순위 분산 진단표"""
     print("\n [ 후보수 순위 분포 및 CP 근접도 심층 진단 (Top-5 Selection Profile) ]")
@@ -1992,6 +2172,7 @@ def print_target_report(target_moves: List[HistoryEntry], opp_moves: List[Histor
 
     print_candidate_profile_report({"타겟(분석)": target_moves, "상대방(평균)": opp_moves})
     print_suspicious_segments_report(target_moves, "타겟(분석)")
+    print_local_correlation_report({"타겟(분석)": target_moves, "상대방(평균)": opp_moves})
 
     print_tactical_burst_details([
         ("타겟(분석)", t_burst_score, t_bursts, t_burst_verdict),
@@ -2113,6 +2294,7 @@ def print_single_report(cho_moves: List[HistoryEntry], han_moves: List[HistoryEn
     print_candidate_profile_report({"초(Red)": cho_moves, "한(Grn)": han_moves})
     print_suspicious_segments_report(cho_moves, "초(Red)")
     print_suspicious_segments_report(han_moves, "한(Grn)")
+    print_local_correlation_report({"초(Red)": cho_moves, "한(Grn)": han_moves})
 
     print_tactical_burst_details([
         ("초(Red)", c_burst_score, c_bursts, c_burst_verdict),
@@ -2374,7 +2556,7 @@ def prompt_label_for_anonymous(side_name: str) -> Optional[Tuple[int, str]]:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     init_db()
-    parser = argparse.ArgumentParser(description="FJACE Analyzer v12.2 (Top-5 Engine)")
+    parser = argparse.ArgumentParser(description="FJACE Analyzer v12.3 (Top-5 + Multi-scale Windows)")
     parser.add_argument("inputs", nargs='+', help="Path to PGN files. 'filename:cho' or 'filename:han'")
     parser.add_argument("--engine", default="./stockfish.exe", help="Path to engine")
     parser.add_argument("--depth", type=int, default=15, help="Search depth")
