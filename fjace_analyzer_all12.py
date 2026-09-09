@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """FJACE Advanced Statistical Analyzer for Janggi.
-[ 단일/다중 기보 하이브리드 AI 유사도 프로파일링 도구 - v12.2 ]
+[ 단일/다중 기보 하이브리드 AI 유사도 프로파일링 도구 - v12.4 ]
 - MultiPV=5 실질 엔진 탑재 및 Top-1 -> Top-3 -> Top-5 선택 깔때기(Funnel) 추적
 - 순위 볼록 감쇄(Convex Rank Decay) & CP 근접도(Proximity Decay) 평가 시스템
 - 후보수 선택 분산도(Candidate Dispersion)를 통한 프로 기사 오탐(False-Positive) 정밀 방어
 - 2D 경험적 LLR 순차 우도비(SPRT) 궤적 앙상블
 - Ledoit-Wolf 적응형 수축 공분산 기반 Mahalanobis DB 클러스터링 보정
 - MultiPV 섀넌 정책 엔트로피(Policy Entropy) 산출 및 승부처 CNAI 표본 게이팅 판독
-- ASCII 터미널 형세 곡선 시각화 & 4중 윈도우 국지 스캔 엔진 완벽 탑재
+- ASCII 형세 곡선 및 5/10/15/20/30/40수 다중 스케일 국지 상관 분석
 - 모든 서술형 리포트, 용어 설명, 판독 가이드라인 100% 보존
 """
 
@@ -365,8 +365,9 @@ def calibrate_with_db(nickname: str, base_prob: float, base_part_prob: float, st
             
             if closest_label_id in (3, 4): 
                 new_part_prob = (base_part_prob * (1.0 - db_influence)) + (target_probs[closest_label_id] * db_influence)
-            elif closest_label_id == 1:
-                new_part_prob = max(base_part_prob, (base_part_prob * (1.0 - db_influence)) + (95.0 * db_influence))
+            # Global ACPL/Top-1/variance labels are not independent evidence for
+            # a localized switch-in. Human labels may safely dampen a local
+            # alert, but machine-like global labels must not inflate it.
 
             msg += f" [DB패턴: '{closest_name}' (Mahalanobis={min_dist:.2f}, 신뢰도 {db_influence*100:.0f}% 적용)]"
         else:
@@ -380,8 +381,7 @@ def calibrate_with_db(nickname: str, base_prob: float, base_part_prob: float, st
             hist_acpl = row[1]
             if hist_acpl - u_acpl > 15 and new_prob > 50:
                 new_prob = min(99.9, new_prob + 10.0)
-                new_part_prob = min(99.9, new_part_prob + 10.0)
-                msg += f" [!개인DB: 평소 실력 대비 극단적 성능 급등]"
+                msg += f" [!개인DB: 평소 대비 전체 성능 급등(국지 도움 증거에는 미가산)]"
 
     conn.close()
     return min(99.9, max(0.0, new_prob)), min(99.9, max(0.0, new_part_prob)), msg
@@ -1519,7 +1519,7 @@ def calculate_tactical_burst(moves: List[HistoryEntry]) -> Tuple[float, List[Tac
     return best.score, filtered, verdict
 
 # ==============================================================================
-# 4중 윈도우 스캔 탐색 엔진
+# 기존 정밀도 윈도우 스캔 탐색 엔진 (다중 스케일 상관 분석과 병행)
 # ==============================================================================
 @dataclass
 class SuspiciousSegment:
@@ -1533,7 +1533,243 @@ class SuspiciousSegment:
     suspicion_score: float
     verdict: str
 
+@dataclass
+class LocalCorrelationResult:
+    """Correlation diagnostics separated from engine-assistance evidence."""
+    start_ply: int
+    end_ply: int
+    game_id: int
+    window_size: int
+    phase: str
+    score: float  # final assistance-evidence score, not a calibrated probability
+    confidence: float
+    raw_local_correlation: float
+    sample_reliability: float
+    look_elsewhere_significance: float
+    position_information: float
+    quality_burst_score: float
+    engine_specific_choice: float
+    persistence_score: float
+    acpl: float
+    baseline_acpl: float
+    top1_rate: float
+    top3_rate: float
+    top5_rate: float
+    critical_agreement: float
+    preference_weighted_agreement: float
+    longest_exact_streak: int
+    longest_engine_like_streak: int
+    cluster_score: float
+    baseline_lift: float
+    contributions: Dict[str, float]
+
+def _longest_streak(values: Sequence[bool], allowed_misses: int = 0) -> int:
+    """Longest run, optionally allowing isolated misses (useful for every-few-moves use)."""
+    left = misses = best = 0
+    for right, value in enumerate(values):
+        if not value: misses += 1
+        while misses > allowed_misses:
+            if not values[left]: misses -= 1
+            left += 1
+        best = max(best, right - left + 1)
+    return best
+
+def analyze_local_engine_correlation(moves: List[HistoryEntry]) -> Optional[LocalCorrelationResult]:
+    """Find the strongest corroborated local engine-correlation window.
+
+    Unlike the legacy maximum-ACPL scan, this measures exact and candidate-set
+    imitation, intermittent clusters, difficult-position accuracy, and the
+    change from an information-matched same-game baseline. Reliability and an
+    explicit look-elsewhere correction prevent a lucky maximum from dominating.
+    """
+    def scale(value: float, low: float, high: float) -> float:
+        if high == low: return 0.0
+        return max(0.0, min(100.0, (value - low) * 100.0 / (high - low)))
+
+    def position_information(move: HistoryEntry) -> float:
+        """Identification value, not generic playing difficulty.
+
+        eval_gap is best minus second-best: small gaps are ambiguous and carry
+        little identity information.  Very large gaps approach forcing play and
+        are also discounted.  Entropy refines the estimate when it survived the
+        cache path, but gap remains the conservative fallback.
+        """
+        gap = max(0.0, float(move.eval_gap))
+        separated = max(0.0, min(1.0, (gap - 45.0) / 105.0))
+        forcing_discount = 1.0 if gap <= 170.0 else max(0.35, 1.0 - (gap - 170.0) / 130.0)
+        gap_information = separated * forcing_discount
+        if move.entropy > 0.0:
+            max_entropy = math.log(5.0)
+            entropy_information = max(0.0, min(1.0, (max_entropy - move.entropy) / 1.10))
+            return max(0.0, min(1.0, 0.75 * gap_information + 0.25 * entropy_information))
+        return gap_information
+
+    def adjusted_normal_significance(z_score: float, opportunities: float) -> float:
+        """Bonferroni-style look-elsewhere adjustment expressed on a 0-100 scale."""
+        if z_score <= 0.0: return 0.0
+        one_sided_p = 0.5 * math.erfc(z_score / math.sqrt(2.0))
+        adjusted_p = min(1.0, one_sided_p * max(1.0, opportunities))
+        log_significance = -math.log10(max(adjusted_p, 1e-12))
+        return scale(log_significance, 1.30, 4.50)
+
+    by_game: Dict[int, List[HistoryEntry]] = {}
+    for move in sorted(moves, key=lambda x: (x.game_id, x.ply)):
+        if not move.is_forced:
+            by_game.setdefault(move.game_id, []).append(move)
+
+    candidates: List[LocalCorrelationResult] = []
+    # Overlapping windows are not independent.  Use an effective trial count
+    # based on half-window strides rather than either ignoring selection or
+    # applying an unrealistically huge raw-window count.
+    effective_trials = sum(
+        max(1.0, max(0, len(game_moves) - size + 1) / max(1.0, size / 2.0))
+        for game_moves in by_game.values() for size in (5, 10, 15, 20, 30, 40)
+        if len(game_moves) >= size
+    )
+    for game_id, game_moves in by_game.items():
+        for size in (5, 10, 15, 20, 30, 40):
+            if len(game_moves) < size: continue
+            for start in range(len(game_moves) - size + 1):
+                window = game_moves[start:start + size]
+                # Do not silently bridge a large unanalyzed/forced section.
+                if window[-1].ply - window[0].ply > size * 3: continue
+                outside = game_moves[:start] + game_moves[start + size:]
+                losses = [m.eval_loss for m in window]
+                acpl = sum(losses) / size
+                baseline_acpl = (sum(m.eval_loss for m in outside) / len(outside)) if len(outside) >= 5 else acpl
+                baseline_lift = max(0.0, baseline_acpl - acpl)
+
+                top1 = sum(m.is_top_1 for m in window) / size * 100.0
+                top3 = sum(m.is_top_3 for m in window) / size * 100.0
+                top5 = sum(m.is_top_5 for m in window) / size * 100.0
+                infos = [position_information(m) for m in window]
+                mean_information = sum(infos) / size
+                discriminating = [m for m, info in zip(window, infos) if info >= 0.45]
+                critical_good = sum(m.is_top_1 and m.eval_loss <= 20 for m in discriminating)
+                critical_rate = critical_good / len(discriminating) * 100.0 if discriminating else 0.0
+
+                # Ranks 2-5 are descriptive but weak unless the position itself
+                # is discriminating. Generic 100% Top-3 is not strong evidence.
+                pref_weights = [0.05 + info for info in infos]
+                pref_hits = [1.0 if m.is_top_1 else (0.68 if m.engine_rank == 2 else
+                             (0.42 if m.engine_rank == 3 else (0.18 if m.is_top_5 else 0.0))) for m in window]
+                pref_agreement = sum(w * h for w, h in zip(pref_weights, pref_hits)) / sum(pref_weights) * 100.0
+
+                exact_flags = [m.is_top_1 for m in window]
+                engine_like = [m.is_top_3 or m.eval_loss <= 20 for m in window]
+                exact_streak = _longest_streak(exact_flags)
+                tolerant_streak = _longest_streak(engine_like, allowed_misses=1)
+                cluster = max(scale(tolerant_streak / size, 0.55, 0.90),
+                              scale(sum(engine_like) / size, 0.72, 0.96))
+
+                outside_info = [position_information(m) for m in outside]
+                outside_weights = [0.05 + info for info in outside_info]
+                baseline_top1 = ((sum(w for m, w in zip(outside, outside_weights) if m.is_top_1) + 1.0) /
+                                 (sum(outside_weights) + 2.0)) if outside else 0.55
+                local_weight = sum(pref_weights)
+                local_top1_weight = sum(w for m, w in zip(window, pref_weights) if m.is_top_1)
+                variance = max(0.04, baseline_top1 * (1.0 - baseline_top1))
+                choice_z = ((local_top1_weight - baseline_top1 * local_weight) /
+                            math.sqrt(variance * sum(w * w for w in pref_weights)))
+                choice_significance = adjusted_normal_significance(choice_z, effective_trials)
+                outside_rank_values = [1.0 if m.is_top_1 else (0.68 if m.engine_rank == 2 else
+                                       (0.42 if m.engine_rank == 3 else (0.18 if m.is_top_5 else 0.0)))
+                                       for m in outside]
+                if outside_rank_values:
+                    baseline_rank_value = sum(w * value for w, value in zip(outside_weights, outside_rank_values)) / sum(outside_weights)
+                    rank_variance = max(0.04, sum(w * (value - baseline_rank_value) ** 2
+                                                  for w, value in zip(outside_weights, outside_rank_values)) / sum(outside_weights))
+                else:
+                    baseline_rank_value, rank_variance = 0.45, 0.12
+                rank_z = (sum(w * (value - baseline_rank_value) for w, value in zip(pref_weights, pref_hits)) /
+                          math.sqrt(rank_variance * sum(w * w for w in pref_weights)))
+                rank_significance = adjusted_normal_significance(rank_z, effective_trials)
+
+                # Compare quality only with outside positions in the same
+                # information band. This avoids calling an easy sequence a
+                # switch-in merely because the rest of the game was difficult.
+                def band(info: float) -> int:
+                    return 0 if info < 0.25 else (1 if info < 0.55 else 2)
+                expected_losses = []
+                global_expected = baseline_acpl
+                for info in infos:
+                    matched = [m.eval_loss for m, oi in zip(outside, outside_info) if band(oi) == band(info)]
+                    expected_losses.append(sum(matched) / len(matched) if len(matched) >= 4 else global_expected)
+                residuals = [expected - actual for expected, actual in zip(expected_losses, losses)]
+                weighted_residual = sum((0.10 + info) * residual for info, residual in zip(infos, residuals)) / sum(0.10 + info for info in infos)
+                outside_loss_std = math.sqrt(sum((m.eval_loss - baseline_acpl) ** 2 for m in outside) / len(outside)) if outside else 40.0
+                quality_z = weighted_residual / max(8.0, outside_loss_std / math.sqrt(max(1.0, sum(infos))))
+                quality_significance = adjusted_normal_significance(quality_z, effective_trials)
+                quality_burst = scale(acpl, 25.0, 2.0)
+
+                # A baseline-conditioned exact streak: 5/5 at a 55% baseline
+                # is expected somewhere in a scanned game and has near-zero
+                # adjusted surprise.
+                streak_opportunities = max(1, len(game_moves) - exact_streak + 1)
+                streak_p = min(1.0, streak_opportunities * (baseline_top1 ** max(1, exact_streak)))
+                streak_surprise = scale(-math.log10(max(streak_p, 1e-12)), 1.30, 4.50)
+                informative_hits = sum(info >= 0.45 and like for info, like in zip(infos, engine_like))
+                persistence = 0.55 * scale(informative_hits, 6.0, 18.0) + 0.30 * scale(size, 10.0, 30.0) + 0.15 * streak_surprise
+
+                # Four bounded families prevent Top-1 from being counted again
+                # as Top-3, low loss, preference rank, and critical accuracy.
+                candidate_excess = max(0.0, pref_agreement - 55.0)
+                engine_choice = min(100.0, 0.80 * max(choice_significance, rank_significance) +
+                                    0.20 * scale(candidate_excess, 8.0, 30.0))
+                position_family = scale(mean_information, 0.28, 0.72)
+                temporal_family = min(100.0, 0.70 * persistence + 0.30 * cluster)
+                quality_family = min(100.0, 0.75 * quality_significance + 0.25 * quality_burst)
+                raw_correlation = min(100.0, 0.55 * top1 + 0.25 * top3 + 0.20 * (100.0 - min(acpl, 100.0)))
+                family_score = (0.40 * engine_choice + 0.20 * quality_family +
+                                0.25 * temporal_family + 0.15 * position_family)
+                family_support = sum(x >= 45.0 for x in (engine_choice, quality_family, temporal_family, position_family))
+                if family_support < 3:
+                    family_score = min(family_score, 49.0)
+
+                # Smooth effective-sample reliability: 5 moves can locate a
+                # burst but cannot provide strong assistance evidence alone.
+                informative_n = sum(infos)
+                reliability = (size / (size + 15.0)) * (0.35 + 0.65 * mean_information)
+                reliability *= min(1.0, math.sqrt(max(1.0, informative_n) / 8.0))
+                # Even persistent evidence retains a 50% uncertainty reserve;
+                # reliability controls the other half. This caps isolated short
+                # bursts while allowing 15-25 informative decisions to matter.
+                score = family_score * (0.50 + 0.50 * reliability)
+                opening_fraction = sum(m.ply < 20 for m in window) / size
+                score *= 1.0 - 0.25 * opening_fraction
+                score = max(0.0, min(99.0, score))
+                look_elsewhere = max(choice_significance, rank_significance, quality_significance, streak_surprise)
+                confidence = min(100.0, reliability * look_elsewhere)
+                contributions = {
+                    "engine_choice_family": engine_choice,
+                    "quality_family": quality_family,
+                    "temporal_family": temporal_family,
+                    "position_information_family": position_family,
+                }
+                mid_ply = (window[0].ply + window[-1].ply) / 2.0
+                phase = "opening" if mid_ply < 30 else ("middlegame" if mid_ply < 70 else "endgame")
+                candidates.append(LocalCorrelationResult(
+                    window[0].ply + 1, window[-1].ply + 1, game_id, size, phase,
+                    score, confidence, raw_correlation, reliability * 100.0,
+                    look_elsewhere, mean_information * 100.0, quality_burst,
+                    engine_choice, temporal_family, acpl, baseline_acpl, top1, top3, top5,
+                    critical_rate, pref_agreement, exact_streak, tolerant_streak,
+                    cluster, baseline_lift, contributions
+                ))
+    return max(candidates, key=lambda result: result.score) if candidates else None
+
 def scan_suspicious_segments(moves: List[HistoryEntry], max_segments: int = 5) -> List[SuspiciousSegment]:
+    # Aggregated target reports contain several games.  Never manufacture a
+    # window by joining the end of one game to the beginning of the next.
+    game_ids = {m.game_id for m in moves}
+    if len(game_ids) > 1:
+        per_game: List[SuspiciousSegment] = []
+        for game_id in game_ids:
+            per_game.extend(scan_suspicious_segments(
+                [m for m in moves if m.game_id == game_id], max_segments=max_segments
+            ))
+        per_game.sort(key=lambda segment: segment.suspicion_score, reverse=True)
+        return per_game[:max_segments]
     unforced_moves = [m for m in moves if not m.is_forced]
     if len(unforced_moves) < 4: return []
 
@@ -1661,9 +1897,28 @@ def scan_suspicious_segments(moves: List[HistoryEntry], max_segments: int = 5) -
 
 def calculate_partial_ai_probability(moves: List[HistoryEntry]) -> Tuple[float, str, List[int]]:
     segs = scan_suspicious_segments(moves, max_segments=1)
-    if not segs: return 0.0, "🟢 특이 구간 없음 (자연스러운 수순)", [0, 0]
-    best = segs[0]
-    return best.suspicion_score, best.verdict, [best.start_ply, best.end_ply]
+    local = analyze_local_engine_correlation(moves)
+    legacy_score = segs[0].suspicion_score if segs else 0.0
+    local_score = local.score if local else 0.0
+    if not segs and not local:
+        return 0.0, "🟢 특이 구간 없음 (자연스러운 수순)", [0, 0]
+
+    # Both scanners use the same engine analysis and are not independent.
+    # Keep the legacy scanner as a locator only; never add its score as
+    # statistical corroboration. With too few informative moves, its result is
+    # explicitly capped as a burst diagnostic.
+    combined = local_score if local else min(25.0, legacy_score)
+    if local:
+        bounds = [local.start_ply, local.end_ply]
+    else:
+        bounds = [segs[0].start_ply, segs[0].end_ply]
+    if combined >= 80.0: verdict = "🔴 지속적·고정보량 선택에서 강한 도움 증거"
+    elif combined >= 65.0: verdict = "🟡 복수 증거군이 지지하는 도움 가능성 검토"
+    elif local and local.raw_local_correlation >= 70.0:
+        verdict = "🟠 높은 국지 엔진 상관이나 도움 추론에는 증거 불충분"
+    elif combined >= 35.0: verdict = "🟠 엘리트 정밀도 버스트(도움 증거 불충분)"
+    else: verdict = "🟢 도움 추론에 충분한 국지 증거 없음"
+    return combined, verdict, bounds
 
 def calculate_cheat_probability(moves: List[HistoryEntry]) -> Tuple[float, float, str]:
     if len(moves) < 5: return 0.0, 0.0, "⚪ 판독 불가 (수순 부족)"
@@ -1719,7 +1974,10 @@ def calculate_cheat_probability(moves: List[HistoryEntry]) -> Tuple[float, float
     unforced_all = [m for m in moves if not m.is_forced]
     if unforced_all:
         total_llr = sum(get_empirical_binned_llr(m.eval_gap, m.eval_loss) for m in unforced_all)
-        sprt_score = 1.0 / (1.0 + math.exp(-total_llr / 6.0)) * 100.0
+        # Normalize evidence growth: raw summation otherwise saturates merely
+        # because a game is long.  sqrt(n) still rewards persistent evidence.
+        llr_scale = max(6.0, math.sqrt(len(unforced_all)) * 1.5)
+        sprt_score = 1.0 / (1.0 + math.exp(-total_llr / llr_scale)) * 100.0
     else:
         sprt_score = 0.0
 
@@ -1882,18 +2140,45 @@ def analyze_move_range(moves: List[HistoryEntry], start_ply: int, end_ply: int) 
 
 def print_suspicious_segments_report(moves: List[HistoryEntry], name: str):
     segs = scan_suspicious_segments(moves, max_segments=5)
-    print(f"\n [ {name} - Top 5 비중복 국지적 의심 구간 상세 ]")
-    header = f" {pad_korean('의심 순위', 10)} | {pad_korean('범위(수)', 12)} | {pad_korean('윈도우', 8)} | {pad_korean('의심도', 11)} | {pad_korean('구간 ACPL', 11)} | {pad_korean('가중 일치율', 13)} | 판독 소견"
+    print(f"\n [ {name} - Top 5 비중복 국지 정밀도 버스트 locator ]")
+    header = f" {pad_korean('버스트 순위', 10)} | {pad_korean('범위(수)', 12)} | {pad_korean('윈도우', 8)} | {pad_korean('상관 참고값', 11)} | {pad_korean('구간 ACPL', 11)} | {pad_korean('가중 일치율', 13)} | 구간 탐색 참고"
     print(header)
     print("-" * 115)
+    print(" ※ 이 표는 정밀 구간을 찾는 기존 locator이며, 점수는 독립적인 엔진 도움 확률이 아닙니다.")
     if not segs:
         print(f" {pad_korean('기록 없음', 115)}")
         return
     for idx, s in enumerate(segs, 1):
-        row = f" {pad_korean(f'# {idx}', 10)} | {pad_korean(f'{s.start_ply}~{s.end_ply}', 12)} | {pad_korean(f'{s.window_size}수', 8)} | {pad_korean(f'{s.suspicion_score:.1f}%', 11)} | {s.acpl:11.2f} | {pad_korean(f'{s.weighted_top1:.1f}%', 13)} | {s.verdict}"
+        row = f" {pad_korean(f'# {idx}', 10)} | {pad_korean(f'{s.start_ply}~{s.end_ply}', 12)} | {pad_korean(f'{s.window_size}수', 8)} | {pad_korean(f'{s.suspicion_score:.1f}/100', 11)} | {s.acpl:11.2f} | {pad_korean(f'{s.weighted_top1:.1f}%', 13)} | {s.verdict}"
         print(row)
     print("-" * 115)
 
+def print_local_correlation_report(rows: Dict[str, List[HistoryEntry]]) -> None:
+    """Print the strongest multi-scale window and the reasons it scored highly."""
+    print("\n [ 다중 스케일 국지 엔진 상관 진단 (5/10/15/20/30/40수) ]")
+    header = f" {pad_korean('진영', 12)} | {pad_korean('최강 구간', 14)} | {pad_korean('크기/국면', 15)} | {pad_korean('상관/도움증거', 16)} | {pad_korean('표본신뢰/보정유의', 18)} | {pad_korean('Top1/3/5', 18)}"
+    print(header)
+    print("-" * 115)
+    for name, moves in rows.items():
+        result = analyze_local_engine_correlation(moves)
+        if not result:
+            print(f" {pad_korean(name, 12)} | {pad_korean('표본 부족', 99)}")
+            continue
+        ranks = f"{result.top1_rate:.0f}/{result.top3_rate:.0f}/{result.top5_rate:.0f}%"
+        print(f" {pad_korean(name, 12)} | {pad_korean(f'{result.start_ply}~{result.end_ply}', 14)} | "
+              f"{pad_korean(f'{result.window_size}/{result.phase}', 15)} | "
+              f"{pad_korean(f'{result.raw_local_correlation:.1f}/{result.score:.1f}', 16)} | "
+              f"{pad_korean(f'{result.sample_reliability:.0f}/{result.look_elsewhere_significance:.0f}', 18)} | "
+              f"{pad_korean(ranks, 18)}")
+        reasons = ", ".join(f"{key} {value:.0f}" for key, value in result.contributions.items())
+        print(f" {'':12} | ↳ ACPL {result.acpl:.1f} (동일게임 기준 {result.baseline_acpl:.1f}, 향상 {result.baseline_lift:.1f}); "
+              f"정보량 {result.position_information:.0f}, quality-burst {result.quality_burst_score:.0f}, "
+              f"engine-specific {result.engine_specific_choice:.0f}, persistence {result.persistence_score:.0f}")
+        print(f" {'':12} | ↳ 식별국면 Top-1 {result.critical_agreement:.0f}%; 정보가중 순위 {result.preference_weighted_agreement:.0f}%; "
+              f"연속 exact/engine-like {result.longest_exact_streak}/{result.longest_engine_like_streak}; 증거군: {reasons}")
+        if result.raw_local_correlation >= 70.0 and result.score < 65.0:
+            print(f" {'':12} | ↳ 높은 국지 엔진 상관이지만 엔진 도움을 추론하기에는 표본·정보량·지속성 증거가 불충분합니다.")
+    print("-" * 115)
 def print_candidate_profile_report(moves_dict: Dict[str, List[HistoryEntry]]):
     """[진단 핵심] Top-1 -> Top-3 -> Top-5 선택 깔때기 및 순위 분산 진단표"""
     print("\n [ 후보수 순위 분포 및 CP 근접도 심층 진단 (Top-5 Selection Profile) ]")
@@ -1959,7 +2244,7 @@ def print_target_report(target_moves: List[HistoryEntry], opp_moves: List[Histor
     print("-" * 115)
 
     print(f" [ 핵심 지표 (강제수 필터링 & MultiPV=5 순위 확장 적용) ]")
-    header = f" {pad_korean('진영', 12)} | {pad_korean('전체ACPL', 11)} | {pad_korean('비강제ACPL', 12)} | {pad_korean('편차(기복)', 11)} | {pad_korean('전체Top-3', 11)} | {pad_korean('전체Top-5', 11)} | {pad_korean('비강제Top-1', 12)} | {pad_korean('난전Top-1', 11)}"
+    header = f" {pad_korean('진영', 12)} | {pad_korean('전체ACPL', 11)} | {pad_korean('비강제ACPL', 12)} | {pad_korean('편차(기복)', 11)} | {pad_korean('전체Top-3', 11)} | {pad_korean('전체Top-5', 11)} | {pad_korean('비강제Top-1', 12)} | {pad_korean('후보대등Top-1', 11)}"
     print(header)
     print("-" * 115)
     for name, s in [("타겟(분석)", t_stats), ("상대방(평균)", o_stats)]:
@@ -1983,7 +2268,7 @@ def print_target_report(target_moves: List[HistoryEntry], opp_moves: List[Histor
         print(row)
 
     print("\n [ 특정 구간 AI 밀착도 심층 지표 ]")
-    header4 = f" {pad_korean('진영', 12)} | {pad_korean('최고성능구간(10수) ACPL', 26)} | {pad_korean('어려운 포지션(격차<50) Top-1', 30)} | {pad_korean('치명적실수 직후(3수) 회복률', 30)}"
+    header4 = f" {pad_korean('진영', 12)} | {pad_korean('최고성능구간(10수) ACPL', 26)} | {pad_korean('후보대등 국면(격차≤50) Top-1', 30)} | {pad_korean('치명적실수 직후(3수) 회복률', 30)}"
     print(header4)
     print("-" * 115)
     for name, a in [("타겟(분석)", t_adv), ("상대방(평균)", o_adv)]:
@@ -1992,6 +2277,7 @@ def print_target_report(target_moves: List[HistoryEntry], opp_moves: List[Histor
 
     print_candidate_profile_report({"타겟(분석)": target_moves, "상대방(평균)": opp_moves})
     print_suspicious_segments_report(target_moves, "타겟(분석)")
+    print_local_correlation_report({"타겟(분석)": target_moves, "상대방(평균)": opp_moves})
 
     print_tactical_burst_details([
         ("타겟(분석)", t_burst_score, t_bursts, t_burst_verdict),
@@ -2001,17 +2287,17 @@ def print_target_report(target_moves: List[HistoryEntry], opp_moves: List[Histor
     print("="*115)
     print(pad_korean("[ 종합 참고 소견 (Reference Verdict) ]", 115))
     print("-" * 115)
-    print(f" {pad_korean('진영', 12)} | {pad_korean('전체 AI 유사도', 20)} | {pad_korean('구간 AI 유사도', 20)} | 통계적 분석 소견")
+    print(f" {pad_korean('진영', 12)} | {pad_korean('전체 엔진 상관', 20)} | {pad_korean('국지 도움 증거', 20)} | 통계적 분석 소견")
     print("-" * 115)
-    print(f" {pad_korean('타겟(분석)', 12)} | {pad_korean(f'{t_fprob:.1f}%', 20)} | {pad_korean(f'{t_pprob:.1f}%', 20)} | {t_verdict}")
-    print(f" {pad_korean('상대방(평균)', 12)} | {pad_korean(f'{o_fprob:.1f}%', 20)} | {pad_korean(f'{o_pprob:.1f}%', 20)} | {o_verdict}")
+    print(f" {pad_korean('타겟(분석)', 12)} | {pad_korean(f'{t_fprob:.1f}%', 20)} | {pad_korean(f'{t_pprob:.1f}/100', 20)} | {t_verdict}")
+    print(f" {pad_korean('상대방(평균)', 12)} | {pad_korean(f'{o_fprob:.1f}%', 20)} | {pad_korean(f'{o_pprob:.1f}/100', 20)} | {o_verdict}")
     print("="*115)
 
     print("\n[ 용어 설명 ]")
     print("■ 비강제수: 누구나 둬야 하는 뻔한 강제수(유일수 등)를 제외하고, 다양한 선택의 여지가 있는 수순입니다.")
-    print("■ 난전 Top-1: 국면이 팽팽한 복잡한 상황(1~2순위 수 격차가 적은 경우)에서의 AI 1위수 일치율입니다.")
+    print("■ 후보대등 Top-1: 1~2순위 평가 격차가 작아 여러 수가 비슷한 국면의 품질 지표이며, 엔진 식별 증거로는 약합니다.")
     print("■ 최고성능구간 ACPL: 비강제수 10수 단위로 쪼갰을 때 가장 점수 손실이 적었던(가장 AI와 유사했던) 구간의 평균 손실입니다.")
-    print("■ 어려운 포지션 Top-1: AI 1위수와 2위수의 평가값 격차가 50 이하인 매우 난해한 승부처에서의 1위수 일치율입니다.")
+    print("■ 식별 국면: 최선수가 대안보다 의미 있게 우수하되 강제수는 아닌 국면입니다. 새 도움 증거는 이런 국면을 더 중시합니다.")
     print("■ 치명적실수 직후 회복률: 200 이상 손해를 본 큰 실수 직후의 다음 3수가 완벽한 방어 수준(손실 10 이하)을 기록한 빈도입니다.")
     print("■ Top-5 선택 깔때기: Top-1 ➔ Top-3 ➔ Top-5로 확장 시 일치율 누적 추세(Funnel)로, 인간은 완만한 계단식을 이룹니다.")
     print("■ CP 근접도(Proximity): 둔 수가 최선수 평가치 대비 몇 cp 내에 머물렀는지를 지수 감쇄로 환산한 점수입니다.")
@@ -2023,7 +2309,7 @@ def print_target_report(target_moves: List[HistoryEntry], opp_moves: List[Histor
     print("2. 스파이크 감지(Spike Detection): 게임 전체 평균은 15~20 수준의 보편적 수치인데, 특정 위기 상황 등")
     print("   특정 10수 구간이나 3~6수 전술 버스트에서 주변 흐름과 다른 정밀도 상승이 반복될 때만 참고 신호로 봅니다.")
     print("3. 난이도 대비 정확도(Complexity Accuracy): 인간은 포지션이 복잡할수록 보통 정확도가 하락하지만,")
-    print("   AI는 복잡성에 관계없이 항시 1위 수를 찾아냅니다. 어려운 포지션 일치율이 60%를 상회하면 유의미한 수치입니다.")
+    print("   다만 후보가 거의 동등한 국면의 높은 일치율만으로는 도움을 추론하지 않으며, 식별력 있는 선택의 반복을 함께 봅니다.")
     print("4. 비대칭 분포 및 방어 회복: 누적 치명적실수(Blunder)는 0인데 의문수만 유독 많거나, 큰 실수를 한 직후")
     print("   심리적 흔들림 없이 갑자기 완벽한 최선의 수로만 방어한다면, 특이 패턴으로 분류될 수 있습니다.")
     print("5. 기복 및 편차(Variance): 일반적인 인간은 포지션에 따라 25~40 수준의 편차(기복)를 보입니다.")
@@ -2079,7 +2365,7 @@ def print_single_report(cho_moves: List[HistoryEntry], han_moves: List[HistoryEn
     print("-" * 115)
 
     print(f"\n [ 핵심 지표 (강제수 필터링 & MultiPV=5 순위 확장 적용) ]")
-    header = f" {pad_korean('진영', 10)} | {pad_korean('전체ACPL', 11)} | {pad_korean('비강제ACPL', 12)} | {pad_korean('편차(기복)', 11)} | {pad_korean('전체Top-3', 11)} | {pad_korean('전체Top-5', 11)} | {pad_korean('비강제Top-1', 12)} | {pad_korean('난전Top-1', 11)}"
+    header = f" {pad_korean('진영', 10)} | {pad_korean('전체ACPL', 11)} | {pad_korean('비강제ACPL', 12)} | {pad_korean('편차(기복)', 11)} | {pad_korean('전체Top-3', 11)} | {pad_korean('전체Top-5', 11)} | {pad_korean('비강제Top-1', 12)} | {pad_korean('후보대등Top-1', 11)}"
     print(header)
     print("-" * 115)
     for name, s in [("초(Red)", c_stats), ("한(Grn)", h_stats)]:
@@ -2103,7 +2389,7 @@ def print_single_report(cho_moves: List[HistoryEntry], han_moves: List[HistoryEn
         print(row)
 
     print("\n [ 특정 구간 AI 밀착도 심층 지표 ]")
-    header4 = f" {pad_korean('진영', 10)} | {pad_korean('최고성능구간(10수) ACPL', 26)} | {pad_korean('어려운 포지션(격차<50) Top-1', 30)} | {pad_korean('치명적실수 직후(3수) 회복률', 30)}"
+    header4 = f" {pad_korean('진영', 10)} | {pad_korean('최고성능구간(10수) ACPL', 26)} | {pad_korean('후보대등 국면(격차≤50) Top-1', 30)} | {pad_korean('치명적실수 직후(3수) 회복률', 30)}"
     print(header4)
     print("-" * 115)
     for name, a in [("초(Red)", c_adv), ("한(Grn)", h_adv)]:
@@ -2113,6 +2399,7 @@ def print_single_report(cho_moves: List[HistoryEntry], han_moves: List[HistoryEn
     print_candidate_profile_report({"초(Red)": cho_moves, "한(Grn)": han_moves})
     print_suspicious_segments_report(cho_moves, "초(Red)")
     print_suspicious_segments_report(han_moves, "한(Grn)")
+    print_local_correlation_report({"초(Red)": cho_moves, "한(Grn)": han_moves})
 
     print_tactical_burst_details([
         ("초(Red)", c_burst_score, c_bursts, c_burst_verdict),
@@ -2123,26 +2410,26 @@ def print_single_report(cho_moves: List[HistoryEntry], han_moves: List[HistoryEn
     print(pad_korean("[ 종합 참고 소견 (Reference Verdict) ]", 115))
     print("-" * 115)
     if use_db:
-        print(f" {pad_korean('진영', 10)} | {pad_korean('전체 유사도 (수학➔DB보정)', 30)} | {pad_korean('구간 유사도 (수학➔DB보정)', 30)} | 통계적 분석 소견")
+        print(f" {pad_korean('진영', 10)} | {pad_korean('전체 상관 (수학➔DB보정)', 30)} | {pad_korean('국지 도움 증거 (보호보정)', 30)} | 통계적 분석 소견")
         print("-" * 115)
         c_full_str = f"{c_fprob:.1f}% ➔ {c_calib_full:.1f}%"
-        c_part_str = f"{c_pprob:.1f}% ➔ {c_calib_part:.1f}%"
+        c_part_str = f"{c_pprob:.1f} ➔ {c_calib_part:.1f}/100"
         print(f" {pad_korean('초(Red)', 10)} | {pad_korean(c_full_str, 30)} | {pad_korean(c_part_str, 30)} | {c_verdict}{c_db_msg}")
         h_full_str = f"{h_fprob:.1f}% ➔ {h_calib_full:.1f}%"
-        h_part_str = f"{h_pprob:.1f}% ➔ {h_calib_part:.1f}%"
+        h_part_str = f"{h_pprob:.1f} ➔ {h_calib_part:.1f}/100"
         print(f" {pad_korean('한(Grn)', 10)} | {pad_korean(h_full_str, 30)} | {pad_korean(h_part_str, 30)} | {h_verdict}{h_db_msg}")
     else:
-        print(f" {pad_korean('진영', 10)} | {pad_korean('전체 AI 유사도', 20)} | {pad_korean('구간 AI 유사도', 20)} | 통계적 분석 소견")
+        print(f" {pad_korean('진영', 10)} | {pad_korean('전체 엔진 상관', 20)} | {pad_korean('국지 도움 증거', 20)} | 통계적 분석 소견")
         print("-" * 115)
-        print(f" {pad_korean('초(Red)', 10)} | {pad_korean(f'{c_fprob:.1f}%', 20)} | {pad_korean(f'{c_pprob:.1f}%', 20)} | {c_verdict}")
-        print(f" {pad_korean('한(Grn)', 10)} | {pad_korean(f'{h_fprob:.1f}%', 20)} | {pad_korean(f'{h_pprob:.1f}%', 20)} | {h_verdict}")
+        print(f" {pad_korean('초(Red)', 10)} | {pad_korean(f'{c_fprob:.1f}%', 20)} | {pad_korean(f'{c_pprob:.1f}/100', 20)} | {c_verdict}")
+        print(f" {pad_korean('한(Grn)', 10)} | {pad_korean(f'{h_fprob:.1f}%', 20)} | {pad_korean(f'{h_pprob:.1f}/100', 20)} | {h_verdict}")
     print("="*115)
 
     print("\n[ 용어 설명 ]")
     print("■ 비강제수: 누구나 둬야 하는 뻔한 강제수(유일수 등)를 제외하고, 다양한 선택의 여지가 있는 수순입니다.")
-    print("■ 난전 Top-1: 국면이 팽팽한 복잡한 상황(1~2순위 수 격차가 적은 경우)에서의 AI 1위수 일치율입니다.")
+    print("■ 후보대등 Top-1: 1~2순위 평가 격차가 작아 여러 수가 비슷한 국면의 품질 지표이며, 엔진 식별 증거로는 약합니다.")
     print("■ 최고성능구간 ACPL: 비강제수 10수 단위로 쪼갰을 때 가장 점수 손실이 적었던(가장 AI와 유사했던) 구간의 평균 손실입니다.")
-    print("■ 어려운 포지션 Top-1: AI 1위수와 2위수의 평가값 격차가 50 이하인 매우 난해한 승부처에서의 1위수 일치율입니다.")
+    print("■ 식별 국면: 최선수가 대안보다 의미 있게 우수하되 강제수는 아닌 국면입니다. 새 도움 증거는 이런 국면을 더 중시합니다.")
     print("■ 치명적실수 직후 회복률: 200 이상 손해를 본 큰 실수 직후의 다음 3수가 완벽한 방어 수준(손실 10 이하)을 기록한 빈도입니다.")
     print("■ Top-5 선택 깔때기: Top-1 ➔ Top-3 ➔ Top-5로 확장 시 일치율 누적 추세(Funnel)로, 인간은 완만한 계단식을 이룹니다.")
     print("■ CP 근접도(Proximity): 둔 수가 최선수 평가치 대비 몇 cp 내에 머물렀는지를 지수 감쇄로 환산한 점수입니다.")
@@ -2374,7 +2661,7 @@ def prompt_label_for_anonymous(side_name: str) -> Optional[Tuple[int, str]]:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     init_db()
-    parser = argparse.ArgumentParser(description="FJACE Analyzer v12.2 (Top-5 Engine)")
+    parser = argparse.ArgumentParser(description="FJACE Analyzer v12.4 (Calibrated Local Evidence)")
     parser.add_argument("inputs", nargs='+', help="Path to PGN files. 'filename:cho' or 'filename:han'")
     parser.add_argument("--engine", default="./stockfish.exe", help="Path to engine")
     parser.add_argument("--depth", type=int, default=15, help="Search depth")
