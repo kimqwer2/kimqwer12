@@ -6,6 +6,7 @@ import EngineSender from './sender'
 
 // create sender with 50ms interval
 const msg = new EngineSender(50)
+const ENGINE_TRACE_ENABLED = typeof process !== 'undefined' && process.env && process.env.LIGROUND_ENGINE_TRACE === '1'
 
 /** @type {import('child_process').ChildProcess} */
 let child = null
@@ -16,6 +17,8 @@ let engineCwd = ''
 let pendingEvalFile = null
 let deepAnalysisCancelled = false
 let reviewRequestSeq = 0
+let activeJobId = null
+let cancelledJobIds = new Set()
 let trackedOptions = {
   UCI_Variant: null,
   EvalFile: null,
@@ -55,7 +58,7 @@ function emitNnueRuntimeSnapshot (source, extra = {}) {
  * @param {string} cwd working directory to use
  * @param {string[]} listeners listeners to attach to driver
  */
-async function run (binary, cwd, listeners) {
+async function run (binary, cwd, listeners, requestId) {
   // kill old engine
   if (engine) {
     msg.debug('Killing...')
@@ -75,23 +78,29 @@ async function run (binary, cwd, listeners) {
   // spawn engine process
   if (!fs.existsSync(binary)) {
     msg.error(`Could not find engine binary "${binary}"`)
+    msg.queue('startup-failed', { requestId, error: `Could not find engine binary "${binary}"` })
     return
   }
   engineCwd = cwd
   msg.debug('Running:', { binary, cwd })
-  child = spawn(binary, [], { cwd }).on('error', err => msg.error(err.message))
+  child = spawn(binary, [], { cwd }).on('error', err => {
+    msg.error(err.message)
+    msg.queue('startup-failed', { requestId, error: err.message })
+  })
   const workerLabel = Array.isArray(listeners) && listeners.includes('io') ? 'main' : 'eval'
 
   // success
   if (typeof child.pid === 'number') {
-    child.stdout.on('data', chunk => {
-      const text = chunk && chunk.toString ? chunk.toString() : ''
-      if (!text) return
-      const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
-      for (const line of lines) {
-        msg.debug(`[engine raw][${workerLabel}] ${line}`)
-      }
-    })
+    if (ENGINE_TRACE_ENABLED) {
+      child.stdout.on('data', chunk => {
+        const text = chunk && chunk.toString ? chunk.toString() : ''
+        if (!text) return
+        const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+        for (const line of lines) {
+          msg.debug(`[engine raw][${workerLabel}] ${line}`)
+        }
+      })
+    }
 
     // create engine
     engine = new EngineDriver(child.stdin, child.stdout)
@@ -179,7 +188,7 @@ function resolveEvalFilePath (value) {
 
 async function exec (cmd) {
   cmd = cmd.trim()
-  msg.debug(`Received command "${cmd}"`)
+  if (ENGINE_TRACE_ENABLED) msg.debug(`Received command "${cmd}"`)
   if (cmd.toLowerCase() === 'stop') {
     deepAnalysisCancelled = true
   }
@@ -249,9 +258,25 @@ async function exec (cmd) {
   }
 }
 
-function evalPos (fen, depth) {
+function queueJobResult (type, requestId, result) {
+  if (requestId !== activeJobId) return
+  activeJobId = null
+  cancelledJobIds.delete(requestId)
+  msg.queue(type, { requestId, result })
+}
+
+async function prepareJob (payload) {
+  for (const [name, value] of Object.entries(payload.optionSnapshot || {})) {
+    const suffix = value === null ? '' : ` value ${value}`
+    await exec(`setoption name ${name}${suffix}`)
+  }
+  await engine.waitForReady()
+}
+
+async function evalPos (fen, depth, requestId, payload) {
   msg.debug(`Evaluating "${fen}" with depth ${depth}`)
   if (engine) {
+    await prepareJob(payload)
     let result = ''
     engine.exec('setoption name MultiPV value 1')
     engine.exec(`position fen ${fen}`)
@@ -266,11 +291,12 @@ function evalPos (fen, depth) {
     engine.events.once('bestmove', () => {
       engine.events.off('info', listener)
       msg.debug(`Eval finished with result: ${result}`)
-      msg.queue('evaluated', result)
+      queueJobResult('evaluated', requestId, cancelledJobIds.has(requestId) ? { cancelled: true, error: 'Evaluation cancelled' } : result)
     })
     engine.exec(`go depth ${depth}`)
   } else {
     msg.error('Engine not running')
+    queueJobResult('evaluated', requestId, { error: 'Engine not running', failed: true })
   }
 }
 
@@ -533,6 +559,7 @@ function selectDeepCandidates (root, count) {
 }
 
 async function deepAnalyze (payload) {
+  const requestId = payload.requestId
   deepAnalysisCancelled = false
   if (!engine) {
     msg.error('Engine not running')
@@ -547,6 +574,7 @@ async function deepAnalyze (payload) {
   const startedAt = Date.now()
 
   try {
+    await prepareJob(payload)
     if (variant) await engine.exec(`setoption name UCI_Variant value ${variant}`)
     await engine.exec(`setoption name MultiPV value ${candidateCount}`)
     await engine.exec('setoption name UCI_ShowWDL value true')
@@ -554,7 +582,7 @@ async function deepAnalyze (payload) {
 
     const root = await collectSearch(`position fen ${fen}`, `go movetime ${rootTime}`, rootTime + 5000)
     if (deepAnalysisCancelled) {
-      msg.queue('deep-analysis', { error: 'Deep analysis cancelled', cancelled: true, fen, variant, settings, elapsedMs: Date.now() - startedAt })
+      queueJobResult('deep-analysis', requestId, { error: 'Deep analysis cancelled', cancelled: true, fen, variant, settings, elapsedMs: Date.now() - startedAt })
       return
     }
     const selected = selectDeepCandidates(root, candidateCount)
@@ -562,7 +590,7 @@ async function deepAnalyze (payload) {
 
     for (let idx = 0; idx < selected.length; idx++) {
       if (deepAnalysisCancelled) {
-        msg.queue('deep-analysis', { error: 'Deep analysis cancelled', cancelled: true, fen, variant, settings, partial: results, elapsedMs: Date.now() - startedAt })
+        queueJobResult('deep-analysis', requestId, { error: 'Deep analysis cancelled', cancelled: true, fen, variant, settings, partial: results, elapsedMs: Date.now() - startedAt })
         return
       }
       const candidate = selected[idx]
@@ -576,14 +604,14 @@ async function deepAnalyze (payload) {
       const timeout = (Number(settings.depthPerCandidate) > 0 ? Number(settings.maxDurationMs) || 300000 : Math.max(Number(settings.maxDurationMs) || 300000, (Number(settings.timePerCandidateMs) || 30000) + 5000))
       let analyzed = await collectDeepSearch(`position fen ${fen} moves ${candidate.move}`, goCommand, timeout, sensitivity, -1, candidate.move)
       if (deepAnalysisCancelled) {
-        msg.queue('deep-analysis', { error: 'Deep analysis cancelled', cancelled: true, fen, variant, settings, partial: results, elapsedMs: Date.now() - startedAt })
+        queueJobResult('deep-analysis', requestId, { error: 'Deep analysis cancelled', cancelled: true, fen, variant, settings, partial: results, elapsedMs: Date.now() - startedAt })
         return
       }
       if (settings.scheduleMode === 'dynamic-instability' && analyzed.stability !== 'stable' && !(Number(settings.depthPerCandidate) > 0)) {
         const extensionMs = Math.min(Number(settings.maxDurationMs) || 300000, Number(settings.timePerCandidateMs) || 30000)
         const extra = await collectDeepSearch(`position fen ${fen} moves ${candidate.move}`, `go movetime ${extensionMs}`, extensionMs + 5000, sensitivity, -1, candidate.move)
         if (deepAnalysisCancelled) {
-          msg.queue('deep-analysis', { error: 'Deep analysis cancelled', cancelled: true, fen, variant, settings, partial: results, elapsedMs: Date.now() - startedAt })
+          queueJobResult('deep-analysis', requestId, { error: 'Deep analysis cancelled', cancelled: true, fen, variant, settings, partial: results, elapsedMs: Date.now() - startedAt })
           return
         }
         analyzed = mergeDeepResults(analyzed, extra, sensitivity)
@@ -605,7 +633,7 @@ async function deepAnalyze (payload) {
     })
     ranked.forEach((item, idx) => { item.finalRank = idx + 1; item.rankingChange = item.initialRank - item.finalRank })
 
-    msg.queue('deep-analysis', {
+    queueJobResult('deep-analysis', requestId, {
       fen,
       variant,
       settings,
@@ -624,11 +652,16 @@ async function deepAnalyze (payload) {
       }
     })
   } catch (err) {
-    msg.queue('deep-analysis', { error: err.message, fen, variant, settings, elapsedMs: Date.now() - startedAt })
+    queueJobResult('deep-analysis', requestId, { error: err.message, failed: true, fen, variant, settings, elapsedMs: Date.now() - startedAt })
+  } finally {
+    if (activeJobId === requestId && cancelledJobIds.has(requestId)) {
+      queueJobResult('deep-analysis', requestId, { error: 'Deep analysis cancelled', cancelled: true })
+    }
   }
 }
 
 async function reviewAnalyze (payload) {
+  const jobRequestId = payload.requestId
   const requestSeq = ++reviewRequestSeq
   if (!engine) {
     msg.error('Engine not running')
@@ -649,6 +682,7 @@ async function reviewAnalyze (payload) {
   const positionAfter = joinedLine ? `position fen ${fen} moves ${joinedLine}` : positionRoot
 
   try {
+    await prepareJob(payload)
     const isCancelled = () => requestSeq !== reviewRequestSeq
     if (isCancelled()) return
     if (variant) {
@@ -696,7 +730,7 @@ async function reviewAnalyze (payload) {
     }
     await engine.exec(`setoption name MultiPV value ${multiPv}`)
     if (isCancelled()) return
-    msg.queue('reviewed', {
+    queueJobResult('reviewed', jobRequestId, {
       depth,
       multiPv,
       root,
@@ -711,28 +745,50 @@ async function reviewAnalyze (payload) {
       finalPositionCommand: positionAfter
     })
   } catch (err) {
-    msg.queue('reviewed', { error: err.message })
+    queueJobResult('reviewed', jobRequestId, { error: err.message, failed: true })
+  } finally {
+    if (activeJobId === jobRequestId && cancelledJobIds.has(jobRequestId)) {
+      queueJobResult('reviewed', jobRequestId, { error: 'Review cancelled', cancelled: true })
+    }
   }
 }
 
 self.addEventListener('message', ({ data: { type, payload } }) => {
   switch (type) {
     case 'run':
-      run(payload.binary, payload.cwd, payload.listeners || [])
+      run(payload.binary, payload.cwd, payload.listeners || [], payload.requestId)
       break
     case 'cmd':
       exec(payload)
       break
     case 'eval': {
-      const { fen, depth } = payload
-      evalPos(fen, depth)
+      const { fen, depth, requestId } = payload
+      activeJobId = requestId
+      evalPos(fen, depth, requestId, payload).catch(err => queueJobResult('evaluated', requestId, { error: err.message, failed: true }))
       break
     }
     case 'review':
+      activeJobId = payload.requestId
       reviewAnalyze(payload)
       break
     case 'deep-analysis':
+      activeJobId = payload.requestId
       deepAnalyze(payload)
+      break
+    case 'cancel-job':
+      if (payload && payload.requestId) cancelledJobIds.add(payload.requestId)
+      deepAnalysisCancelled = true
+      reviewRequestSeq += 1
+      try { engine.exec('stop') } catch (err) {}
+      break
+    case 'barrier':
+      if (!engine) {
+        msg.queue('barrier', { requestId: payload.requestId, error: 'Engine not running' })
+        break
+      }
+      engine.exec('stop').then(() => engine.barrier()).then(() => {
+        msg.queue('barrier', { requestId: payload.requestId })
+      }).catch(err => msg.queue('barrier', { requestId: payload.requestId, error: err.message }))
       break
     case 'cancel-review':
       reviewRequestSeq += 1

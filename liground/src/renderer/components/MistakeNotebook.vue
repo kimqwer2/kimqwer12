@@ -27,11 +27,17 @@
           <option v-for="depth in verificationDepths" :key="depth" :value="depth">{{ depth }}</option>
         </select>
       </label>
-      <label><input :checked="fastMode.enabled" type="checkbox" @change="updateFastMode({ enabled: $event.target.checked })"> Fast Mode</label>
-      <template v-if="fastMode.enabled">
+      <label>Move-selection budget
+        <select :value="fastMode.mode" @change="updateFastMode({ mode: $event.target.value })">
+          <option value="fast">Fast</option>
+          <option value="balanced">Balanced</option>
+          <option value="full">Normal</option>
+        </select>
+      </label>
+      <template v-if="fastMode.mode !== 'full'">
         <label>Search Depth <input class="small-input" :value="fastMode.depth" min="1" max="30" type="number" @change="updateFastMode({ depth: Number($event.target.value) })"></label>
         <label>MultiPV <input class="small-input" :value="fastMode.multiPv" min="1" max="20" type="number" @change="updateFastMode({ multiPv: Number($event.target.value) })"></label>
-        <small class="mode-help">Fast Mode only changes Mistake Prevention move selection and does not overwrite normal engine analysis settings.</small>
+        <small class="mode-help">Fast uses root MultiPV only. Balanced adds a small human-like sample. Normal keeps the full verification behavior.</small>
       </template>
       <label><input :checked="settings.opponentTraining" type="checkbox" @change="update({ opponentTraining: $event.target.checked })"> 상대 난이도</label>
       <label v-if="settings.opponentTraining">상대 수준
@@ -203,7 +209,10 @@ export default {
     chaosValidation () { return this.settings.chaosValidation || { preset: 'Normal', stage1Depth: 4, stage2Depth: 10, maxAttempts: 24 } },
     openingStabilizer () { return this.settings.openingStabilizer || { enabled: true, phase1Moves: 5, phase1Cp: 25, phase2Moves: 10, phase2Cp: 75, phase3Moves: 20 } },
     recoveryMode () { return { enabled: true, recoveryRatio: 0.75, windowRatio: 0.2, windowRatioUserOverride: false, durationPlies: 2, thresholdCp: null, cpWindow: null, ...(this.settings.recoveryMode || {}) } },
-    fastMode () { return { enabled: false, depth: 10, multiPv: 3, ...(this.settings.fastMode || {}) } },
+    fastMode () {
+      const stored = this.settings.fastMode || {}
+      return { enabled: false, depth: 10, multiPv: 3, ...stored, mode: stored.mode || (stored.enabled ? 'fast' : 'full') }
+    },
     engineVsEngine () { return this.settings.engineVsEngine || { useGlobal: true, white: {}, black: {} } },
     chaosAvailable () { return !!(this.settings.chaosTraining || (this.settings.chaosMode && this.settings.chaosMode !== 'off') || (this.engineVsEngine.white && this.engineVsEngine.white.chaosMode && this.engineVsEngine.white.chaosMode !== 'off') || (this.engineVsEngine.black && this.engineVsEngine.black.chaosMode && this.engineVsEngine.black.chaosMode !== 'off')) },
     currentDifficultyCp () {

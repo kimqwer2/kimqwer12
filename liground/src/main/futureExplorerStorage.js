@@ -41,18 +41,31 @@ function normalizeFutureExplorerData (data) {
   return next
 }
 
-export function loadFutureExplorerData () {
-  if (!fs.existsSync(futureExplorerPath)) return emptyFutureExplorerData()
-  return normalizeFutureExplorerData(JSON.parse(fs.readFileSync(futureExplorerPath, 'utf8')))
+export async function loadFutureExplorerData () {
+  try {
+    const contents = await fs.promises.readFile(futureExplorerPath, 'utf8')
+    return normalizeFutureExplorerData(JSON.parse(contents))
+  } catch (err) {
+    if (err.code === 'ENOENT') return emptyFutureExplorerData()
+    if (err instanceof SyntaxError) {
+      await fs.promises.rename(futureExplorerPath, `${futureExplorerPath}.corrupt-${Date.now()}`).catch(() => {})
+      return emptyFutureExplorerData()
+    }
+    throw err
+  }
 }
 
-export function saveFutureExplorerData (data) {
+export async function saveFutureExplorerData (data) {
   const payload = normalizeFutureExplorerData(data)
-  fs.writeFileSync(futureExplorerPath, JSON.stringify(payload, null, 2), 'utf8')
+  const temporaryPath = `${futureExplorerPath}.tmp`
+  await fs.promises.writeFile(temporaryPath, JSON.stringify(payload, null, 2), 'utf8')
+  await fs.promises.rename(temporaryPath, futureExplorerPath)
   return payload
 }
 
-export function clearFutureExplorerData () {
-  if (fs.existsSync(futureExplorerPath)) fs.unlinkSync(futureExplorerPath)
+export async function clearFutureExplorerData () {
+  await fs.promises.unlink(futureExplorerPath).catch(err => {
+    if (err.code !== 'ENOENT') throw err
+  })
   return emptyFutureExplorerData()
 }
