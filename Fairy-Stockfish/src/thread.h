@@ -74,6 +74,7 @@ public:
   GateHistory gateHistory;
   LowPlyHistory lowPlyHistory;
   CapturePieceToHistory captureHistory;
+  JanggiRoleHistory janggiRoleHistory;
   ContinuationHistory continuationHistory[2][2];
   Score trend;
 };

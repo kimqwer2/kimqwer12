@@ -64,9 +64,9 @@ namespace {
 
 /// MovePicker constructor for the main search
 MovePicker::MovePicker(const Position& p, Move ttm, Depth d, const ButterflyHistory* mh, const GateHistory* dh, const LowPlyHistory* lp,
-                       const CapturePieceToHistory* cph, const PieceToHistory** ch, Move cm, const Move* killers, int pl)
+                       const CapturePieceToHistory* cph, const PieceToHistory** ch, const JanggiRoleHistory* jrh, Move cm, const Move* killers, int pl)
            : pos(p), mainHistory(mh), gateHistory(dh), lowPlyHistory(lp), captureHistory(cph), continuationHistory(ch),
-             ttMove(ttm), refutations{{killers[0], 0}, {killers[1], 0}, {cm, 0}}, depth(d), ply(pl) {
+             janggiRoleHistory(jrh), ttMove(ttm), refutations{{killers[0], 0}, {killers[1], 0}, {cm, 0}}, depth(d), ply(pl) {
 
   assert(d > 0);
 
@@ -76,8 +76,9 @@ MovePicker::MovePicker(const Position& p, Move ttm, Depth d, const ButterflyHist
 
 /// MovePicker constructor for quiescence search
 MovePicker::MovePicker(const Position& p, Move ttm, Depth d, const ButterflyHistory* mh, const GateHistory* dh,
-                       const CapturePieceToHistory* cph, const PieceToHistory** ch, Square rs)
-           : pos(p), mainHistory(mh), gateHistory(dh), captureHistory(cph), continuationHistory(ch), ttMove(ttm), recaptureSquare(rs), depth(d) {
+                       const CapturePieceToHistory* cph, const PieceToHistory** ch, const JanggiRoleHistory* jrh, Square rs)
+           : pos(p), mainHistory(mh), gateHistory(dh), captureHistory(cph), continuationHistory(ch),
+             janggiRoleHistory(jrh), ttMove(ttm), recaptureSquare(rs), depth(d) {
 
   assert(d <= 0);
 
@@ -90,7 +91,7 @@ MovePicker::MovePicker(const Position& p, Move ttm, Depth d, const ButterflyHist
 /// MovePicker constructor for ProbCut: we generate captures with SEE greater
 /// than or equal to the given threshold.
 MovePicker::MovePicker(const Position& p, Move ttm, Value th, const GateHistory* dh, const CapturePieceToHistory* cph)
-           : pos(p), gateHistory(dh), captureHistory(cph), ttMove(ttm), threshold(th) {
+           : pos(p), gateHistory(dh), captureHistory(cph), janggiRoleHistory(nullptr), ttMove(ttm), threshold(th) {
 
   assert(!pos.checkers());
 
@@ -114,13 +115,18 @@ void MovePicker::score() {
                    + (*captureHistory)[pos.moved_piece(m)][to_sq(m)][type_of(pos.piece_on(to_sq(m)))];
 
       else if constexpr (Type == QUIETS)
+      {
+          auto role = JanggiModernSearch::role_of(pos, m, false);
           m.value =      (*mainHistory)[pos.side_to_move()][from_to(m)]
                    +     (*gateHistory)[pos.side_to_move()][gating_square(m)]
                    + 2 * (*continuationHistory[0])[history_slot(pos.moved_piece(m))][to_sq(m)]
                    +     (*continuationHistory[1])[history_slot(pos.moved_piece(m))][to_sq(m)]
                    +     (*continuationHistory[3])[history_slot(pos.moved_piece(m))][to_sq(m)]
                    +     (*continuationHistory[5])[history_slot(pos.moved_piece(m))][to_sq(m)]
-                   + (ply < MAX_LPH ? std::min(4, depth / 3) * (*lowPlyHistory)[ply][from_to(m)] : 0);
+                   + (ply < MAX_LPH ? std::min(4, depth / 3) * (*lowPlyHistory)[ply][from_to(m)] : 0)
+                   + (janggiRoleHistory ? (*janggiRoleHistory)[pos.side_to_move()][role][from_to(m)] : 0)
+                   + JanggiModernSearch::reduction_bias(role) / 4;
+      }
 
       else // Type == EVASIONS
       {

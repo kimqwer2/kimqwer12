@@ -25,6 +25,7 @@
 
 #include "movegen.h"
 #include "position.h"
+#include "janggimodern_search.h"
 #include "types.h"
 
 namespace Stockfish {
@@ -95,6 +96,7 @@ typedef Stats<int16_t, 13365, COLOR_NB, SQUARE_NB> GateHistory;
 /// search and filled during iterative deepening.
 constexpr int MAX_LPH = 4;
 typedef Stats<int16_t, 10692, MAX_LPH, int(SQUARE_NB + 1) * int(1 << SQUARE_BITS)> LowPlyHistory;
+typedef Stats<int16_t, 10692, COLOR_NB, JanggiModernSearch::ROLE_NB, int(SQUARE_NB + 1) * int(1 << SQUARE_BITS)> JanggiRoleHistory;
 
 /// CounterMoveHistory stores counter moves indexed by [piece][to] of the previous
 /// move, see www.chessprogramming.org/Countermove_Heuristic
@@ -131,12 +133,14 @@ public:
                                            const GateHistory*,
                                            const CapturePieceToHistory*,
                                            const PieceToHistory**,
+                                           const JanggiRoleHistory*,
                                            Square);
   MovePicker(const Position&, Move, Depth, const ButterflyHistory*,
                                            const GateHistory*,
                                            const LowPlyHistory*,
                                            const CapturePieceToHistory*,
                                            const PieceToHistory**,
+                                           const JanggiRoleHistory*,
                                            Move,
                                            const Move*,
                                            int);
@@ -154,6 +158,7 @@ private:
   const LowPlyHistory* lowPlyHistory;
   const CapturePieceToHistory* captureHistory;
   const PieceToHistory** continuationHistory;
+  const JanggiRoleHistory* janggiRoleHistory;
   Move ttMove;
   ExtMove refutations[3], *cur, *endMoves, *endBadCaptures;
   int stage;

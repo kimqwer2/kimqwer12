@@ -1086,6 +1086,7 @@ moves_loop: // When in check, search starts from here
                                       &thisThread->lowPlyHistory,
                                       &captureHistory,
                                       contHist,
+                                      &thisThread->janggiRoleHistory,
                                       countermove,
                                       ss->killers,
                                       ss->ply);
@@ -1331,6 +1332,8 @@ moves_loop: // When in check, search starts from here
                              + (*contHist[0])[history_slot(movedPiece)][to_sq(move)]
                              + (*contHist[1])[history_slot(movedPiece)][to_sq(move)]
                              + (*contHist[3])[history_slot(movedPiece)][to_sq(move)]
+                             + thisThread->janggiRoleHistory[us][JanggiModernSearch::role_of(pos, move, givesCheck)][from_to(move)]
+                             + JanggiModernSearch::reduction_bias(JanggiModernSearch::role_of(pos, move, givesCheck))
                              - 4923;
 
               // Decrease/increase reduction for moves with a good/bad history (~30 Elo)
@@ -1635,6 +1638,7 @@ moves_loop: // When in check, search starts from here
                                       &thisThread->gateHistory,
                                       &thisThread->captureHistory,
                                       contHist,
+                                      &thisThread->janggiRoleHistory,
                                       to_sq((ss-1)->currentMove));
 
     // Loop through the moves until no moves remain or a beta cutoff occurs
@@ -1830,7 +1834,11 @@ moves_loop: // When in check, search starts from here
         for (int i = 0; i < quietCount; ++i)
         {
             if (!(pos.walling() && from_to(quietsSearched[i]) == from_to(bestMove)))
+            {
                 thisThread->mainHistory[us][from_to(quietsSearched[i])] << -bonus2;
+                if (JanggiModernSearch::enabled(pos))
+                    thisThread->janggiRoleHistory[us][JanggiModernSearch::role_of(pos, quietsSearched[i], false)][from_to(quietsSearched[i])] << -bonus2;
+            }
             if (pos.walling())
                 thisThread->gateHistory[us][gating_square(quietsSearched[i])] << -bonus2;
             update_continuation_histories(ss, pos.moved_piece(quietsSearched[i]), to_sq(quietsSearched[i]), -bonus2);
@@ -1893,6 +1901,8 @@ moves_loop: // When in check, search starts from here
     Color us = pos.side_to_move();
     Thread* thisThread = pos.this_thread();
     thisThread->mainHistory[us][from_to(move)] << bonus;
+    if (JanggiModernSearch::enabled(pos))
+        thisThread->janggiRoleHistory[us][JanggiModernSearch::role_of(pos, move, false)][from_to(move)] << bonus;
     if (pos.walling())
         thisThread->gateHistory[us][gating_square(move)] << bonus;
     update_continuation_histories(ss, pos.moved_piece(move), to_sq(move), bonus);
