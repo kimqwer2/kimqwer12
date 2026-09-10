@@ -3,7 +3,8 @@ import { app } from 'electron'
 import Database from 'better-sqlite3'
 
 const dbPath = path.join(app.getPath('userData'), 'review-cache.db')
-const db = new Database(dbPath, { verbose: console.log })
+const sqlDebug = process.env.LIGROUND_SQL_TRACE === '1' ? console.log : undefined
+const db = new Database(dbPath, { verbose: sqlDebug })
 db.pragma('journal_mode = WAL')
 
 export function createReviewSchema () {

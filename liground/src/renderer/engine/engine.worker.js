@@ -6,6 +6,7 @@ import EngineSender from './sender'
 
 // create sender with 50ms interval
 const msg = new EngineSender(50)
+const ENGINE_TRACE_ENABLED = typeof process !== 'undefined' && process.env && process.env.LIGROUND_ENGINE_TRACE === '1'
 
 /** @type {import('child_process').ChildProcess} */
 let child = null
@@ -84,14 +85,16 @@ async function run (binary, cwd, listeners) {
 
   // success
   if (typeof child.pid === 'number') {
-    child.stdout.on('data', chunk => {
-      const text = chunk && chunk.toString ? chunk.toString() : ''
-      if (!text) return
-      const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
-      for (const line of lines) {
-        msg.debug(`[engine raw][${workerLabel}] ${line}`)
-      }
-    })
+    if (ENGINE_TRACE_ENABLED) {
+      child.stdout.on('data', chunk => {
+        const text = chunk && chunk.toString ? chunk.toString() : ''
+        if (!text) return
+        const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+        for (const line of lines) {
+          msg.debug(`[engine raw][${workerLabel}] ${line}`)
+        }
+      })
+    }
 
     // create engine
     engine = new EngineDriver(child.stdin, child.stdout)
@@ -179,7 +182,7 @@ function resolveEvalFilePath (value) {
 
 async function exec (cmd) {
   cmd = cmd.trim()
-  msg.debug(`Received command "${cmd}"`)
+  if (ENGINE_TRACE_ENABLED) msg.debug(`Received command "${cmd}"`)
   if (cmd.toLowerCase() === 'stop') {
     deepAnalysisCancelled = true
   }

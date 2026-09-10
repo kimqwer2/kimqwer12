@@ -5,6 +5,8 @@ function arrayify (data) {
   return Array.isArray(data) ? data : [data]
 }
 
+const ENGINE_TRACE_ENABLED = typeof process !== 'undefined' && process.env && process.env.LIGROUND_ENGINE_TRACE === '1'
+
 /**
  * Class to handle communication with engine.
  * Emits `debug`, `error`, `io`, `info` events.
@@ -46,6 +48,10 @@ export class Engine extends EventEmitter {
     this.reviewRequestSeq = 0
     this.deepRequestSeq = 0
     this.optionState = {}
+    // The evaluation worker owns a single UCI process. Serializing evaluations
+    // prevents overlapping callers from replacing `onmessage` and consuming the
+    // same bestmove as if it belonged to both positions.
+    this.evalQueue = Promise.resolve()
     this.evalWorker.addEventListener('message', ({ data }) => {
       if (data.type === 'cache') {
         if (this.deepAnalysisActive) {
@@ -126,7 +132,7 @@ export class Engine extends EventEmitter {
    * @param {string} command UCI command
    */
   send (command) {
-    try {
+    if (ENGINE_TRACE_ENABLED) try {
       const line = typeof command === 'string' ? command.trim() : String(command)
       if (line) {
         console.log('[engine-cmd-trace]', line)
@@ -193,7 +199,7 @@ export class Engine extends EventEmitter {
    * @returns {Promise<string>} score in cp or mate
    */
   evaluate (fen, depth) {
-    return new Promise(resolve => {
+    const evaluation = this.evalQueue.then(() => new Promise(resolve => {
       this.evalWorker.onmessage = ({ data }) => {
         if (data.type === 'cache') {
           for (const { type, payload } of data.events) {
@@ -208,7 +214,10 @@ export class Engine extends EventEmitter {
         payload: { fen, depth },
         type: 'eval'
       })
-    })
+    }))
+    // Keep the queue usable if error propagation is added to evaluations later.
+    this.evalQueue = evaluation.catch(() => {})
+    return evaluation
   }
 
   /**

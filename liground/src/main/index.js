@@ -134,7 +134,6 @@ ipcMain.handle('eval-cache-get', async (event, payload) => {
     if (!positionKey || !engineName) return null
     const [name, version] = engineName.split(' ')
     const evaluation = getEvals(positionKey, name, version)
-    console.log(JSON.stringify(evaluation))
     return evaluation
   } catch (err) {
     console.error('[eval-cache-get] failed', err)
