@@ -6,6 +6,7 @@ import allEngines from './store/engines'
 import { createReviewRequest, emptyReviewState, emptyReviewSequenceState, REVIEW_MARKER_MODES, REVIEW_MODES } from '../shared/review/schema'
 import { analyzeReviewRequest } from '../shared/review/reviewService'
 import { buildMainlineFromMove } from '../shared/gameSequence'
+import { createPositionSnapshot, positionCommandFromSnapshot } from '../shared/enginePosition'
 import { addSequenceToOpeningGraph, applyOpeningExplorationBias, chooseWeightedCandidate, createOpeningGraph, mergeOpeningGraphs, normalizeOpeningGraph, openingCandidatesForFen, refreshTransitionMeta } from '../shared/openingGraph'
 import { fenToEpd } from '../shared/openingLookup'
 
@@ -24,6 +25,8 @@ try {
 const MIN_CACHE_DEPTH = 20
 let lastCacheKey = null
 let lastFocusModeGetterLog = null
+let futureExplorerPersistTimer = null
+const standardStartFenCache = new Map()
 
 
 function parseRepeatDelayMs (value, fallbackMs = 0) {
@@ -377,7 +380,8 @@ const CHAOS_VALIDATION_PRESETS = [
 
 const DEFAULT_CHAOS_VALIDATION = { preset: 'Normal', stage1Depth: 4, stage2Depth: 10, maxAttempts: 24 }
 const DEFAULT_OPPONENT_VERIFICATION = { stage1Depth: 6, stage2Depth: 12, maxCandidates: 8 }
-const DEFAULT_MISTAKE_PREVENTION_FAST_MODE = { enabled: false, depth: 10, multiPv: 3 }
+const DEFAULT_MISTAKE_PREVENTION_FAST_MODE = { mode: 'full', enabled: false, depth: 10, multiPv: 3 }
+const MOVE_SELECTION_BUDGETS = ['fast', 'balanced', 'full']
 const CHAOS_MODES = ['off', 'fast', 'search']
 const PREVENTION_MODES = ['perfect', 'practical', 'flexible']
 const OPENING_STABILIZER_DEFAULTS = { enabled: true, phase1Moves: 5, phase1Cp: 25, phase2Moves: 10, phase2Cp: 75, phase3Moves: 20 }
@@ -456,7 +460,9 @@ function normalizeMistakePreventionFastModeSettings (settings = {}) {
   const merged = { ...DEFAULT_MISTAKE_PREVENTION_FAST_MODE, ...(settings || {}) }
   const depth = Math.max(1, Math.min(30, Math.floor(Number(merged.depth) || DEFAULT_MISTAKE_PREVENTION_FAST_MODE.depth)))
   const multiPv = Math.max(1, Math.min(20, Math.floor(Number(merged.multiPv) || DEFAULT_MISTAKE_PREVENTION_FAST_MODE.multiPv)))
-  return { enabled: merged.enabled === true, depth, multiPv }
+  const legacyMode = merged.enabled === true ? 'fast' : 'full'
+  const mode = MOVE_SELECTION_BUDGETS.includes(merged.mode) ? merged.mode : legacyMode
+  return { mode, enabled: mode === 'fast', balanced: mode === 'balanced', limited: mode !== 'full', depth, multiPv }
 }
 
 function normalizeChaosValidationSettings (settings = {}) {
@@ -554,7 +560,9 @@ async function selectTrainingOpponentMove ({ engineInstance, fen, variant, is960
   const fastSettings = normalizeMistakePreventionFastModeSettings(fastMode || {})
   const opponentVerification = fastSettings.enabled
     ? { stage1Depth: Math.max(1, Math.min(DEFAULT_OPPONENT_VERIFICATION.stage1Depth, fastSettings.depth)), stage2Depth: fastSettings.depth, maxCandidates: Math.max(1, Math.min(DEFAULT_OPPONENT_VERIFICATION.maxCandidates, fastSettings.multiPv)) }
-    : DEFAULT_OPPONENT_VERIFICATION
+    : fastSettings.balanced
+      ? { stage1Depth: DEFAULT_OPPONENT_VERIFICATION.stage1Depth, stage2Depth: Math.max(DEFAULT_OPPONENT_VERIFICATION.stage2Depth, fastSettings.depth), maxCandidates: Math.min(DEFAULT_OPPONENT_VERIFICATION.maxCandidates, Math.max(4, fastSettings.multiPv * 2)) }
+      : DEFAULT_OPPONENT_VERIFICATION
   const rootCandidates = normalizeTrapRootCandidates(rootLines, bestmove, sideToMove)
   const rootBest = rootCandidates.find(line => line.ucimove === bestmove) || rootCandidates[0]
   const bestRaw = rootBest && typeof rootBest.cp === 'number' ? null : await engineInstance.evaluate(fen, chaos ? validation.stage2Depth : opponentVerification.stage2Depth)
@@ -608,8 +616,10 @@ async function selectTrainingOpponentMove ({ engineInstance, fen, variant, is960
   const rootFiltered = rootPool.filter(line => line.ucimove && moves.includes(line.ucimove) && typeof line.cp === 'number').map(line => ({ move: line.ucimove, cpLoss: Math.max(0, bestCp - line.cp), estimatedForMover: line.cp, source: 'root_multipv', depth: line.depth }))
   const seeded = rootFiltered.filter(candidate => candidate.cpLoss <= maxLoss)
   const sampleSize = fastSettings.enabled
-    ? Math.min(moves.length, opponentVerification.maxCandidates)
-    : Math.min(moves.length, Math.max(opponentVerification.maxCandidates, Math.ceil(Math.sqrt(moves.length) * 3)))
+    ? 0
+    : fastSettings.balanced
+      ? Math.min(moves.length, Math.max(2, Math.ceil(Math.sqrt(moves.length))))
+      : Math.min(moves.length, Math.max(opponentVerification.maxCandidates, Math.ceil(Math.sqrt(moves.length) * 3)))
   const seededMoves = new Set(seeded.map(c => c.move))
   const shuffled = moves.filter(move => !seededMoves.has(move)).sort(() => Math.random() - 0.5)
   const stage1 = seeded.slice()
@@ -619,7 +629,7 @@ async function selectTrainingOpponentMove ({ engineInstance, fen, variant, is960
       if (candidate && candidate.cpLoss <= maxLoss) stage1.push({ ...candidate, source: 'stage1', depth: opponentVerification.stage1Depth })
     } catch (err) {}
   }
-  const verifyDepth = fastSettings.enabled ? opponentVerification.stage2Depth : Math.max(opponentVerification.stage2Depth, Math.min(18, Number(level && level.verificationDepth) || opponentVerification.stage2Depth))
+  const verifyDepth = fastSettings.limited ? opponentVerification.stage2Depth : Math.max(opponentVerification.stage2Depth, Math.min(18, Number(level && level.verificationDepth) || opponentVerification.stage2Depth))
   const candidates = []
   for (const quick of stage1.slice(0, opponentVerification.maxCandidates)) {
     try {
@@ -2040,7 +2050,7 @@ function engineVsEngineSelectorConfig ({ state, sideSettings, useGlobal }) {
     competitiveSettings,
     trainingSettings,
     enabled: personalityEnabled || openingStabilizerSettings.enabled || recoverySettings.enabled || trainingSettings.opponentTraining,
-    multiPv: trainingSettings.fastMode.enabled ? trainingSettings.fastMode.multiPv : Math.max(humanTrapSettings.multiPv, closeWinSettings.maxCandidates, competitiveSettings.pressureMultiPv, recoverySettings.enabled ? 5 : 1, openingStabilizerSettings.enabled ? 3 : 1, trainingSettings.opponentTraining ? 5 : 1)
+    multiPv: trainingSettings.fastMode.limited ? trainingSettings.fastMode.multiPv : Math.max(humanTrapSettings.multiPv, closeWinSettings.maxCandidates, competitiveSettings.pressureMultiPv, recoverySettings.enabled ? 5 : 1, openingStabilizerSettings.enabled ? 3 : 1, trainingSettings.opponentTraining ? 5 : 1)
   }
 }
 
@@ -2094,61 +2104,17 @@ function collectRootInfoLine (rootLines, info) {
   }
 }
 
-function normalizedMoveLineFromHistory (moves) {
-  if (!Array.isArray(moves) || moves.length === 0) return ''
-  const line = []
-  let node = moves[moves.length - 1]
-  while (node) {
-    if (node.uci) line.push(node.uci)
-    node = node.prev
-  }
-  return line.reverse().join(' ')
-}
-
 function buildPositionCommand (gameState) {
-  const safeFen = typeof gameState.fen === 'string' ? gameState.fen.trim() : ''
-  const safeStartFen = typeof gameState.startFen === 'string' ? gameState.startFen.trim() : ''
-  const moves = Array.isArray(gameState.moves) ? gameState.moves : []
   const variant = gameState.variant || 'chess'
   const is960 = !!gameState.is960
-  const moveLine = normalizedMoveLineFromHistory(moves)
-  if (!safeStartFen) {
-    throw new Error('Invalid GameState: missing startFen. Refusing to fallback to startpos.')
-  }
-  // Reconstruct authoritative position from startFen + move history.
-  let reconstructedFen = safeStartFen
-  if (moveLine) {
-    try {
-      const board = is960 ? new ffish.Board(variant, safeStartFen, true) : new ffish.Board(variant, safeStartFen)
-      for (const mv of moveLine.split(/\s+/).filter(Boolean)) {
-        board.push(mv)
-      }
-      reconstructedFen = board.fen()
-    } catch (err) {
-      throw new Error(`Failed to reconstruct position from GameState: ${err.message}`)
-    }
-  }
-  if (safeFen && normalizeFen(safeFen) !== normalizeFen(reconstructedFen)) {
-    throw new Error(`[GameState] fen mismatch detected: live=${safeFen} reconstructed=${reconstructedFen}`)
-  }
-
-  // === 여기서부터 추가/변경되는 영역입니다 ===
-  
-  // 1. 시작 FEN이 해당 변형 규칙의 표준 시작 위치와 일치하는지 판별합니다.
-  let isStandardStart = false
-  try {
+  const createBoard = (boardVariant, fen, boardIs960) => boardIs960 ? new ffish.Board(boardVariant, fen, true) : new ffish.Board(boardVariant, fen)
+  const snapshot = createPositionSnapshot(gameState, { createBoard, normalizeFen })
+  const standardKey = `${variant}|${is960 ? '960' : 'standard'}`
+  if (!standardStartFenCache.has(standardKey)) {
     const defaultBoard = is960 ? new ffish.Board(variant, undefined, true) : new ffish.Board(variant)
-    isStandardStart = normalizeFen(safeStartFen) === normalizeFen(defaultBoard.fen())
-  } catch (err) {
-    isStandardStart = false
+    standardStartFenCache.set(standardKey, defaultBoard.fen())
   }
-
-  // 2. 엔진에 단일 FEN 대신 전체 기보 히스토리(moves ...)를 포함시켜 반환합니다.
-  if (isStandardStart) {
-    return moveLine ? `position startpos moves ${moveLine}` : 'position startpos'
-  } else {
-    return moveLine ? `position fen ${safeStartFen} moves ${moveLine}` : `position fen ${safeStartFen}`
-  }
+  return positionCommandFromSnapshot(snapshot, standardStartFenCache.get(standardKey), normalizeFen)
 }
 
 function reviewMoveToOverlaySquares (move) {
@@ -2910,6 +2876,9 @@ export const store = new Vuex.Store({
       if (state.review && state.review.currentResult && state.review.currentResult.fen !== payload) {
         state.review.overlays = []
       }
+    },
+    positionSyncError (state, payload) {
+      Vue.set(state, 'positionSyncError', payload || null)
     },
     engineIndex (state, payload) {
       state.engineIndex = payload
@@ -4508,8 +4477,9 @@ export const store = new Vuex.Store({
     async playSingleEngineMove (context, payload = {}) {
       // Manual single-action engine move:
       // position -> go -> receive bestmove once -> apply exactly one move -> stop.
-      context.dispatch('stopEngine')
-      context.dispatch('position')
+      await context.dispatch('stopEngine', { source: 'single-engine-move' })
+      const positioned = await context.dispatch('position')
+      if (positioned === false) return
 
       context.commit('nextSingleMoveRequestSeq')
       const requestSeq = context.state.singleMoveRequestSeq
@@ -4538,12 +4508,12 @@ export const store = new Vuex.Store({
         handleInfo = info => collectRootInfoLine(rootLines, info)
         engine.on('info', handleInfo)
         if (!personality.enabled || autoPlaySelector) {
-          engine.send(`setoption name MultiPV value ${autoPlaySelector ? autoPlaySelector.multiPv : (rootFastMode.enabled && rootMpSettings && rootMpSettings.opponentTraining ? rootFastMode.multiPv : Math.max(1, rootRecoverySettings.enabled ? 5 : 3))}`)
+          engine.send(`setoption name MultiPV value ${autoPlaySelector ? autoPlaySelector.multiPv : (rootFastMode.limited && rootMpSettings && rootMpSettings.opponentTraining ? rootFastMode.multiPv : Math.max(1, rootRecoverySettings.enabled ? 5 : 3))}`)
         }
       }
 
       if (autoPlaySelector) console.info('[EngineAutoPlay]', { side: autoPlaySide, phase: 'search-start', level: rootLevel.name, multiPv: autoPlaySelector.multiPv, useGlobal: normalizeEngineVsEngineSettings(context.state.mistakePrevention && context.state.mistakePrevention.engineVsEngine, context.state.mistakePrevention || {}).useGlobal })
-      context.dispatch('goEngine', rootFastMode.enabled && rootMpSettings && rootMpSettings.opponentTraining ? { ...payload, depth: rootFastMode.depth, source: 'mistake-prevention-fast-mode' } : payload)
+      context.dispatch('goEngine', rootFastMode.limited && rootMpSettings && rootMpSettings.opponentTraining ? { ...payload, depth: rootFastMode.depth, source: `mistake-prevention-${rootFastMode.mode}-mode` } : payload)
 
       try {
         let bestmove = sanitizeEngineMove(await bestMovePromise)
@@ -4670,10 +4640,11 @@ export const store = new Vuex.Store({
           }
         }
         if (autoPlaySelector) console.info('[EngineAutoPlay]', { side: autoPlaySide, phase: 'commit', move: bestmove })
+        if (requestSeq !== context.state.singleMoveRequestSeq || normalizeFen(context.getters.fen) !== normalizeFen(rootFen) || context.getters.turn !== autoPlaySideToMove) return
         const finalRootLoss = rootCpLossForMove({ rootLines: rootLines.filter(Boolean), bestmove: engineBestmove, move: bestmove, sideToMove: context.getters.turn })
         logMoveSelectionStage(selectionTrace, 'Final Commit', { selectedMove: bestmove, cpLimit: mpLevel.thresholdCp, cpLoss: finalRootLoss && finalRootLoss.cpLoss, candidates: rootLines.filter(Boolean), reason: 'committing selected move' })
-        await logCommittedMoveEvaluation({ trace: selectionTrace, engineInstance: engine, fen: rootFen, variant: context.getters.variant, is960: context.getters.is960, move: bestmove })
         await context.dispatch('push', { move: bestmove, prev: context.getters.currentMove[0], skipMistakePrevention: true })
+        logCommittedMoveEvaluation({ trace: selectionTrace, engineInstance: engine, fen: rootFen, variant: context.getters.variant, is960: context.getters.is960, move: bestmove })
       } catch (err) {
         console.error('[playSingleEngineMove] Failed to apply single engine move:', err)
       } finally {
@@ -4730,7 +4701,7 @@ export const store = new Vuex.Store({
           reason: 'analysis_root_search_started',
           selectedAt: Date.now()
         })
-        engine.send(`setoption name MultiPV value ${autoPlaySelector ? autoPlaySelector.multiPv : (goFastMode.enabled && mpSettings && mpSettings.opponentTraining ? goFastMode.multiPv : Math.max(personality.humanTrapSettings.multiPv, personality.closeWinSettings.maxCandidates, personality.competitiveSettings.pressureMultiPv, recoverySettings.enabled ? 5 : 1, openingStabilizerSettings.enabled ? 3 : 1))}`)
+        engine.send(`setoption name MultiPV value ${autoPlaySelector ? autoPlaySelector.multiPv : (goFastMode.limited && mpSettings && mpSettings.opponentTraining ? goFastMode.multiPv : Math.max(personality.humanTrapSettings.multiPv, personality.closeWinSettings.maxCandidates, personality.competitiveSettings.pressureMultiPv, recoverySettings.enabled ? 5 : 1, openingStabilizerSettings.enabled ? 3 : 1))}`)
       }
       console.log('[engine-order] cmd:', goCmd)
       engine.send(goCmd)
@@ -5072,9 +5043,11 @@ export const store = new Vuex.Store({
                 console.info('[RecoveryMode]', { entered: true, cpLoss: recoveryTrigger.cpLoss, durationPlies: recoverySettings.durationPlies, thresholdCp: recoverySettings.thresholdCp, recoveryRatio: recoverySettings.recoveryRatio, difficultyCp: recoverySettings.difficultyCp, move })
               }
             }
+            const stillEngineToMoveAtCommit = ((context.getters.turn && engineIsWhite) || (!context.getters.turn && !engineIsWhite))
+            if (!context.state.PvE || !stillEngineToMoveAtCommit || normalizeFen(context.getters.fen) !== normalizeFen(rootFenForSelection)) return
             logMoveSelectionStage(selectionTrace, 'Final Commit', { selectedMove: move, cpLimit: level.thresholdCp, cpLoss: rootCpLossForMove({ rootLines: humanTrapRootLines.filter(Boolean), bestmove: engineBestmove, move, sideToMove: turnIsWhite }) && rootCpLossForMove({ rootLines: humanTrapRootLines.filter(Boolean), bestmove: engineBestmove, move, sideToMove: turnIsWhite }).cpLoss, candidates: humanTrapRootLines.filter(Boolean), reason: 'committing selected move' })
-            await logCommittedMoveEvaluation({ trace: selectionTrace, engineInstance: pveEngine, fen: rootFenForSelection, variant: context.getters.variant, is960: context.getters.is960, move })
             await context.dispatch('push', { move, prev: context.getters.currentMove[0] })
+            logCommittedMoveEvaluation({ trace: selectionTrace, engineInstance: pveEngine, fen: rootFenForSelection, variant: context.getters.variant, is960: context.getters.is960, move })
           } catch (err) {
             console.error('[PvEMakeMove] Engine provided invalid move:', ucimove, err)
             // try to restart the engine calculation on current position
@@ -5174,8 +5147,8 @@ export const store = new Vuex.Store({
             if (selector.enabled) inst.send(`setoption name MultiPV value ${selector.multiPv || eveMultiPv}`)
             inst.send(buildPositionCommand(context.getters.gameState))
             const fastMode = normalizeMistakePreventionFastModeSettings(selector.trainingSettings && selector.trainingSettings.fastMode)
-            inst.send(fastMode.enabled ? `go depth ${fastMode.depth}` : limiterToGo(lim))
-            console.info('[EvE]', { side, phase: 'search-start', fen: eveRoot[side].fen, multiPv: selector.multiPv || 1, fastMode: fastMode.enabled })
+            inst.send(fastMode.limited ? `go depth ${fastMode.depth}` : limiterToGo(lim))
+            console.info('[EvE]', { side, phase: 'search-start', fen: eveRoot[side].fen, multiPv: selector.multiPv || 1, computeBudget: fastMode.mode })
           } catch (err) {
             console.error('[EvE] Failed to send position/go:', err)
           }
@@ -5350,7 +5323,8 @@ export const store = new Vuex.Store({
       context.commit('active', false)
     },
     stopEnginePvE (context) {
-      engine.send('stop')
+      const pveEngine = context.state.PvEEngineInstance
+      if (pveEngine) pveEngine.send('stop')
     },
     PvEfalse (context) {
       // Stop and clean up old PvE engine
@@ -5372,7 +5346,7 @@ export const store = new Vuex.Store({
         context.commit('active', false)
       }
     },
-    stopEngine (context, payload = {}) {
+    async stopEngine (context, payload = {}) {
       const source = payload && payload.source ? payload.source : 'unknown'
       console.log('[engine-stop] requested', { source, stack: (new Error('[trace] stopEngine caller')).stack })
       if (
@@ -5384,7 +5358,12 @@ export const store = new Vuex.Store({
         console.warn('[engine-guard] stopEngine blocked during opening-generation session', { source })
         return
       }
-      engine.send('stop')
+      context.commit('nextSingleMoveRequestSeq')
+      try {
+        await engine.stopMainSearch()
+      } catch (err) {
+        console.error('[engine-stop] barrier failed', { source, message: err.message, requestId: err.requestId })
+      }
       context.commit('resetEngineTime')
       context.commit('active', false)
       if (context.state.deepAnalysis.running) {
@@ -5415,11 +5394,18 @@ export const store = new Vuex.Store({
       console.log('[engine-order] cmd: position fen', context.getters.fen)
       try {
         engine.send(buildPositionCommand(context.getters.gameState))
+        context.commit('positionSyncError', null)
       } catch (err) {
-        console.error('[GameState] position sync mismatch. Rebuilding UI state from canonical GameState startFen.', err)
-        context.commit('fen', context.state.gameState.startFen)
-        context.dispatch('updateBoard')
-        engine.send(buildPositionCommand(context.getters.gameState))
+        const failure = {
+          code: 'POSITION_HISTORY_MISMATCH',
+          message: err.message,
+          variant: context.getters.variant,
+          fen: context.getters.fen,
+          startFen: context.state.gameState.startFen
+        }
+        context.commit('positionSyncError', failure)
+        console.error('[GameState] Refusing to alter the board or send an inconsistent engine position.', failure)
+        return false
       }
       const eve = new CustomEvent('position', { detail: { fen: context.getters.fen } })
       document.dispatchEvent(eve)
@@ -7062,7 +7048,14 @@ export const store = new Vuex.Store({
       context.commit('futureExplorerPrepareOpening', payload)
       return context.dispatch('persistFutureExplorer')
     },
-    async persistFutureExplorer (context) {
+    persistFutureExplorer (context) {
+      if (futureExplorerPersistTimer) clearTimeout(futureExplorerPersistTimer)
+      futureExplorerPersistTimer = setTimeout(() => {
+        futureExplorerPersistTimer = null
+        context.dispatch('persistFutureExplorerNow')
+      }, 300)
+    },
+    async persistFutureExplorerNow (context) {
       const data = normalizeFutureExplorerState(context.state.futureExplorer)
       try {
         if (ipcRenderer) {
@@ -7075,6 +7068,10 @@ export const store = new Vuex.Store({
       }
     },
     async clearFutureExplorer (context) {
+      if (futureExplorerPersistTimer) {
+        clearTimeout(futureExplorerPersistTimer)
+        futureExplorerPersistTimer = null
+      }
       context.commit('futureExplorerReset')
       try {
         if (ipcRenderer) {

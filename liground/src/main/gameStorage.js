@@ -25,6 +25,22 @@ function readJsonFile (filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'))
 }
 
+function atomicWriteJson (filePath, value) {
+  const temporaryPath = `${filePath}.tmp`
+  fs.writeFileSync(temporaryPath, JSON.stringify(value, null, 2), 'utf8')
+  fs.renameSync(temporaryPath, filePath)
+}
+
+function assertManagedGamePath (filePath) {
+  const resolved = path.resolve(String(filePath || ''))
+  const libraryRoot = `${path.resolve(savedGamesDir)}${path.sep}`
+  const registered = loadSavedGamePaths().games.map(item => path.resolve(item))
+  if (!resolved.startsWith(libraryRoot) && !registered.includes(resolved)) {
+    throw new Error('Saved-game path is outside the managed library')
+  }
+  return resolved
+}
+
 function normalizeSavedGame (game, filePath) {
   const metadata = game && game.metadata ? game.metadata : {}
   const moves = Array.isArray(game && game.moves) ? game.moves : []
@@ -167,26 +183,29 @@ export function saveGameToLibrary (game) {
     analysis: game.analysis || {},
     review: game.review || null
   }
-  const filePath = game.filePath || gamePathFor(metadata.name, savedAt)
+  const filePath = game.filePath ? assertManagedGamePath(game.filePath) : gamePathFor(metadata.name, savedAt)
   ensureSavedGamesDir()
-  fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), 'utf8')
+  atomicWriteJson(filePath, payload)
   addGamePath(filePath)
   return normalizeSavedGame(payload, filePath)
 }
 
 export function readSavedGame (filePath) {
+  filePath = assertManagedGamePath(filePath)
   const game = readJsonFile(filePath)
   return { ...game, filePath }
 }
 
 export function renameSavedGame (filePath, name) {
+  filePath = assertManagedGamePath(filePath)
   const game = readJsonFile(filePath)
   game.metadata = { ...(game.metadata || {}), name: String(name || '').trim() || 'Untitled Game', updatedAt: new Date().toISOString() }
-  fs.writeFileSync(filePath, JSON.stringify(game, null, 2), 'utf8')
+  atomicWriteJson(filePath, game)
   return normalizeSavedGame(game, filePath)
 }
 
 export function deleteSavedGame (filePath) {
+  filePath = assertManagedGamePath(filePath)
   if (fs.existsSync(filePath)) fs.unlinkSync(filePath)
   removeGamePath(filePath)
   return true

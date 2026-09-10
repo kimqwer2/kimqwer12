@@ -157,6 +157,14 @@ export default class EngineDriver {
     })
   }
 
+  /** Force a new UCI readiness acknowledgement for an ordering barrier. */
+  barrier () {
+    this.ready = false
+    this.pendingReady = true
+    this._write('isready')
+    return waitFor(this.events, 'ready').then(() => undefined)
+  }
+
   /**
    * Execute a UCI command.
    * @param {string} cmd UCI command

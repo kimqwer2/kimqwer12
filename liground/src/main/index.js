@@ -255,7 +255,7 @@ ipcMain.handle('saved-games-library-delete', async (_event, filePath) => {
 
 ipcMain.handle('future-explorer-load', async () => {
   try {
-    return { success: true, data: loadFutureExplorerData() }
+    return { success: true, data: await loadFutureExplorerData() }
   } catch (err) {
     return { success: false, error: err.message }
   }
@@ -263,7 +263,7 @@ ipcMain.handle('future-explorer-load', async () => {
 
 ipcMain.handle('future-explorer-save', async (_event, payload) => {
   try {
-    return { success: true, data: saveFutureExplorerData(payload || {}) }
+    return { success: true, data: await saveFutureExplorerData(payload || {}) }
   } catch (err) {
     return { success: false, error: err.message }
   }
@@ -271,7 +271,7 @@ ipcMain.handle('future-explorer-save', async (_event, payload) => {
 
 ipcMain.handle('future-explorer-clear', async () => {
   try {
-    return { success: true, data: clearFutureExplorerData() }
+    return { success: true, data: await clearFutureExplorerData() }
   } catch (err) {
     return { success: false, error: err.message }
   }
