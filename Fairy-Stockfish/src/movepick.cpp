@@ -31,6 +31,41 @@ int history_slot(Piece pc) {
 
 namespace {
 
+
+
+  bool is_janggimodern_pos(const Position& pos) {
+    const Variant* v = pos.variant();
+    return v->variantTemplate == "janggi" && !v->bikjangRule && v->materialCounting == JANGGI_MATERIAL && v->moveRepetitionIllegal;
+  }
+
+  int janggimodern_move_order_bonus(const Position& pos, Move m, bool noisy) {
+    if (!is_janggimodern_pos(pos))
+        return 0;
+
+    Piece moved = pos.moved_piece(m);
+    Piece captured = pos.piece_on(to_sq(m));
+    bool check = pos.gives_check(m);
+    int bonus = 0;
+
+    // JanggiModern tactical ordering: cannon screens and palace diagonals often
+    // decide tactics before material does, so force those moves ahead of generic
+    // history-only ordering without changing legality or generation.
+    if (check)
+        bonus += type_of(moved) == JANGGI_CANNON ? 18000 : type_of(moved) == ROOK ? 12000 : 7000;
+    if (type_of(moved) == JANGGI_CANNON)
+        bonus += noisy ? 9000 : 4500;
+    if (captured != NO_PIECE && type_of(captured) == JANGGI_CANNON)
+        bonus += 6000;
+    if (type_of(moved) == KNIGHT || type_of(moved) == JANGGI_ELEPHANT)
+        bonus += check || noisy ? 2500 : 900;
+    if (type_of(moved) == ROOK)
+        bonus += check || noisy ? 3000 : 700;
+    if (type_of(moved) == WAZIR || type_of(moved) == KING)
+        bonus -= noisy ? 0 : 600;
+
+    return bonus;
+  }
+
   enum Stages {
     MAIN_TT, CAPTURE_INIT, GOOD_CAPTURE, REFUTATION, QUIET_INIT, QUIET, BAD_CAPTURE,
     EVASION_TT, EVASION_INIT, EVASION,
@@ -111,7 +146,8 @@ void MovePicker::score() {
       if constexpr (Type == CAPTURES)
           m.value =  int(PieceValue[MG][pos.piece_on(to_sq(m))]) * 6
                    + (*gateHistory)[pos.side_to_move()][gating_square(m)]
-                   + (*captureHistory)[pos.moved_piece(m)][to_sq(m)][type_of(pos.piece_on(to_sq(m)))];
+                   + (*captureHistory)[pos.moved_piece(m)][to_sq(m)][type_of(pos.piece_on(to_sq(m)))]
+                   + janggimodern_move_order_bonus(pos, m, true);
 
       else if constexpr (Type == QUIETS)
           m.value =      (*mainHistory)[pos.side_to_move()][from_to(m)]
@@ -120,16 +156,19 @@ void MovePicker::score() {
                    +     (*continuationHistory[1])[history_slot(pos.moved_piece(m))][to_sq(m)]
                    +     (*continuationHistory[3])[history_slot(pos.moved_piece(m))][to_sq(m)]
                    +     (*continuationHistory[5])[history_slot(pos.moved_piece(m))][to_sq(m)]
-                   + (ply < MAX_LPH ? std::min(4, depth / 3) * (*lowPlyHistory)[ply][from_to(m)] : 0);
+                   + (ply < MAX_LPH ? std::min(4, depth / 3) * (*lowPlyHistory)[ply][from_to(m)] : 0)
+                   + janggimodern_move_order_bonus(pos, m, false);
 
       else // Type == EVASIONS
       {
           if (pos.capture(m))
               m.value =  PieceValue[MG][pos.piece_on(to_sq(m))]
-                       - Value(type_of(pos.moved_piece(m)));
+                       - Value(type_of(pos.moved_piece(m)))
+                       + janggimodern_move_order_bonus(pos, m, true);
           else
               m.value =      (*mainHistory)[pos.side_to_move()][from_to(m)]
                        + 2 * (*continuationHistory[0])[history_slot(pos.moved_piece(m))][to_sq(m)]
+                       + janggimodern_move_order_bonus(pos, m, false)
                        - (1 << 28);
       }
 }
