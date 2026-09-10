@@ -151,7 +151,7 @@ top:
 
     case GOOD_CAPTURE:
         if (select<Best>([&]() {
-            return pos.see_ge(cur->move, Value(-69 * cur->value / 1024))
+            return pos.see_ge(cur->move, Value(-69 * cur->value / 1024 - 500 * (pos.captures_to_hand() && pos.gives_check(cur->move))))
                    ? true : (*endBadCaptures++ = *cur, false);
         }))
             return (cur - 1)->move;
