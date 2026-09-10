@@ -66,6 +66,61 @@ namespace {
   constexpr uint64_t TtHitAverageWindow     = 4096;
   constexpr uint64_t TtHitAverageResolution = 1024;
 
+
+  bool janggimodern_search(const Position& pos) {
+    return pos.variant()->variantTemplate == "janggi"
+        && pos.variant()->materialCounting == JANGGI_MATERIAL
+        && !pos.variant()->bikjangRule
+        && pos.variant()->moveRepetitionIllegal;
+  }
+
+  bool janggi_topology_move(const Position& pos, Move m, bool givesCheck, bool captureOrPromotion) {
+    if (!janggimodern_search(pos))
+        return false;
+
+    Piece moved = pos.moved_piece(m);
+    Piece captured = pos.piece_on(to_sq(m));
+    PieceType movedType = type_of(moved);
+    PieceType capturedType = type_of(captured);
+
+    // JanggiModern's unstable moves are not every attacked-square move. The
+    // moves that break shallow chess assumptions are the ones that change or
+    // exploit long-range topology: cannon screens/captures, rook lanes, checks,
+    // and blocked-leaper releases. Keep this narrow to avoid the failed previous
+    // "everything is tactical" policy that wrecked ordering and effective depth.
+    return givesCheck
+        || (captureOrPromotion && (movedType == JANGGI_CANNON || capturedType == JANGGI_CANNON))
+        || movedType == JANGGI_CANNON
+        || movedType == ROOK
+        || movedType == KNIGHT
+        || movedType == JANGGI_ELEPHANT;
+  }
+
+  int janggi_history_score(const Thread* th, const Position& pos, Stack* ss, Move m) {
+    const Piece pc = pos.moved_piece(m);
+    const Square to = to_sq(m);
+    return th->mainHistory[pos.side_to_move()][from_to(m)]
+         + (*(ss - 1)->continuationHistory)[history_slot(pc)][to]
+         + (*(ss - 2)->continuationHistory)[history_slot(pc)][to];
+  }
+
+  Depth janggi_lmr_reduction(Depth base, Depth depth, int moveCount, int history, bool topologyMove, bool captureOrPromotion, bool givesCheck) {
+    Depth r = base;
+
+    // Preserve generic LMR for ordinary quiet moves. Only replace the chess
+    // assumption that late == tactically irrelevant for topology-changing moves.
+    if (topologyMove)
+        r -= 1 + (depth >= 7) + (moveCount <= 6);
+    if (captureOrPromotion || givesCheck)
+        r--;
+    if (history > 8000)
+        r--;
+    else if (history < -8000 && !topologyMove)
+        r++;
+
+    return std::max(Depth(0), r);
+  }
+
   // Futility margin
   Value futility_margin(Depth d, bool improving) {
     return Value(214 * (d - improving));
@@ -991,6 +1046,7 @@ namespace {
     // much above beta, we can (almost) safely prune the previous move.
     if (   !PvNode
         &&  depth > 4
+        && !janggimodern_search(pos)
         &&  abs(beta) < VALUE_TB_WIN_IN_MAX_PLY
         // if value from transposition table is lower than probCutBeta, don't attempt probCut
         // there and in further interactions with transposition table cutoff depth is set to depth - 3
@@ -1135,6 +1191,8 @@ moves_loop: // When in check, search starts from here
       captureOrPromotion = pos.capture_or_promotion(move);
       movedPiece = pos.moved_piece(move);
       givesCheck = pos.gives_check(move);
+      const bool janggiModern = janggimodern_search(pos);
+      const bool janggiTopology = janggi_topology_move(pos, move, givesCheck, captureOrPromotion);
 
       // Calculate new depth for this move
       newDepth = depth - 1;
@@ -1164,19 +1222,21 @@ moves_loop: // When in check, search starts from here
                   continue;
 
               // SEE based pruning
-              if (!pos.see_ge(move, Value(-218 - 120 * pos.captures_to_hand()) * depth)) // (~25 Elo)
+              if (!(janggiTopology && depth <= 7) && !pos.see_ge(move, Value(-218 - 120 * pos.captures_to_hand()) * depth)) // (~25 Elo)
                   continue;
           }
           else
           {
               // Continuation history based pruning (~20 Elo)
-              if (   lmrDepth < 5
+              if (   lmrDepth < (janggiModern ? 4 : 5)
+                  && !janggiTopology
                   && (*contHist[0])[history_slot(movedPiece)][to_sq(move)] < CounterMovePruneThreshold
                   && (*contHist[1])[history_slot(movedPiece)][to_sq(move)] < CounterMovePruneThreshold)
                   continue;
 
               // Futility pruning: parent node (~5 Elo)
-              if (   lmrDepth < 7
+              if (   lmrDepth < (janggiModern ? 6 : 7)
+                  && !janggiTopology
                   && !ss->inCheck
                   && !pos.extinction_single_piece()
                   && ss->staticEval + (174 + 157 * lmrDepth) * (1 + pos.check_counting()) <= alpha
@@ -1187,7 +1247,7 @@ moves_loop: // When in check, search starts from here
                   continue;
 
               // Prune moves with negative SEE (~20 Elo)
-              if (!(pos.walling_rule() == DUCK) && !pos.see_ge(move, Value(-(30 - std::min(lmrDepth, 18) + 10 * !!pos.flag_region(pos.side_to_move())) * lmrDepth * lmrDepth)))
+              if (!janggiTopology && !(pos.walling_rule() == DUCK) && !pos.see_ge(move, Value(-(30 - std::min(lmrDepth, 18) + 10 * !!pos.flag_region(pos.side_to_move())) * lmrDepth * lmrDepth)))
                   continue;
           }
       }
@@ -1289,6 +1349,8 @@ moves_loop: // When in check, search starts from here
           && (!PvNode || ss->ply > 1 || thisThread->id() % 4 != 3))
       {
           Depth r = reduction(improving, depth, moveCount);
+          if (janggiModern)
+              r = janggi_lmr_reduction(r, depth, moveCount, janggi_history_score(thisThread, pos, ss, move), janggiTopology, captureOrPromotion, givesCheck);
 
           if (PvNode)
               r--;
@@ -1677,6 +1739,7 @@ moves_loop: // When in check, search starts from here
 
       // Do not search moves with negative SEE values
       if (    bestValue > VALUE_TB_LOSS_IN_MAX_PLY
+          && !(janggimodern_search(pos) && (type_of(pos.moved_piece(move)) == JANGGI_CANNON || to_sq(move) == to_sq((ss-1)->currentMove)))
           && !pos.see_ge(move))
           continue;
 
